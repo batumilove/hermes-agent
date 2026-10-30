@@ -83,7 +83,7 @@ def test_metadata_version_rejects_invalid_values(value):
 
 
 def test_import_proof_authenticates_linear_source_and_later_changes(history):
-    from scripts import fork_provenance as provenance
+    from hermes_cli import fork_provenance as provenance
 
     root, release, _stamp = history
     (root / ".github").mkdir()
@@ -119,7 +119,7 @@ def test_cli_creates_stamp_without_changing_source(history, monkeypatch):
 
     root, release, _stamp = history
     original = image_identity.package_version
-    monkeypatch.setattr(image_identity, "package_version", lambda repo, stamp: original(repo, stamp, release))
+    monkeypatch.setattr(image_identity, "package_version", lambda repo, stamp, _release=None: original(repo, stamp, release))
     stamp_file = root / "install-stamp.json"
     monkeypatch.setattr("sys.argv", ["image_identity", "--repo", str(root), "--stamp", str(stamp_file)])
     image_identity.main()

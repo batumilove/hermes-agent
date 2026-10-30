@@ -3,6 +3,7 @@ import importlib.util
 import json
 from pathlib import Path
 import shutil
+import subprocess
 import tempfile
 import unittest
 ROOT = Path(__file__).resolve().parents[2]
@@ -15,6 +16,9 @@ class DirectoryTrackingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp)
             shutil.copytree(ROOT/'website',root/'website',ignore=shutil.ignore_patterns('node_modules','build','.docusaurus'))
+            # Historical derivative controls retain their original reviewed graph.
+            for name in ('package.json', 'package-lock.json'):
+                (root/'website'/name).write_bytes(subprocess.check_output(['git', 'show', '862586795a9a49c798698687bdfe1f96d4dd92d9:website/'+name], cwd=ROOT))
             module.stage(root)
             slot=root/'website/node_modules/@svgr/plugin-svgo'
             slot.parent.mkdir(parents=True)
@@ -31,7 +35,7 @@ class DirectoryTrackingTests(unittest.TestCase):
             for path,keys,value in mutations:
                 target=root/path; original=target.read_bytes();data=json.loads(original);node=data
                 for key in keys[:-1]:node=node[key]
-                node[keys[-1]]=value;target.write_text(json.dumps(data))
+                node[keys[-1]]=value;target.write_text(json.dumps(data), encoding="utf-8")
                 try:
                     with self.subTest(path=path,keys=keys),self.assertRaises(ValueError):module.stage(root,installed=True)
                 finally:target.write_bytes(original)

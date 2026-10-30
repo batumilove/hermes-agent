@@ -4,6 +4,7 @@ import importlib.util
 import json
 from pathlib import Path
 import shutil
+import subprocess
 import tempfile
 import unittest
 
@@ -21,6 +22,9 @@ class AdversarialTracking(unittest.TestCase):
             shutil.copytree(ROOT/'website/vendor/svgr-plugin-svgo', vendor)
             for name in ('package.json', 'package-lock.json'):
                 shutil.copyfile(ROOT/'website'/name, root/'website'/name)
+            # Historical derivative controls retain their original reviewed graph.
+            for name in ('package.json', 'package-lock.json'):
+                (root/'website'/name).write_bytes(subprocess.check_output(['git', 'show', '862586795a9a49c798698687bdfe1f96d4dd92d9:website/'+name], cwd=ROOT))
             slot = root/'website/node_modules/@svgr/plugin-svgo'
             slot.parent.mkdir(parents=True)
             slot.symlink_to('../../vendor/svgr-plugin-svgo')
@@ -37,12 +41,12 @@ class AdversarialTracking(unittest.TestCase):
             for name, keys, value in mutations:
                 p=root/'website'/name; original=p.read_bytes(); data=json.loads(original); node=data
                 for key in keys[:-1]: node=node[key]
-                node[keys[-1]]=value; p.write_text(json.dumps(data))
+                node[keys[-1]]=value; p.write_text(json.dumps(data), encoding="utf-8")
                 try:
                     with self.subTest(keys=keys), self.assertRaises(ValueError): m.stage(root, installed=True)
                 finally: p.write_bytes(original)
             for key in m.TRACKING:
-                p=vendor/'TRACKING.json'; original=p.read_bytes(); data=json.loads(original); data[key]='changed';p.write_text(json.dumps(data))
+                p=vendor/'TRACKING.json'; original=p.read_bytes(); data=json.loads(original); data[key]='changed';p.write_text(json.dumps(data), encoding="utf-8")
                 try:
                     with self.subTest(policy=key), self.assertRaises(ValueError):m.stage(root,installed=True)
                 finally:p.write_bytes(original)

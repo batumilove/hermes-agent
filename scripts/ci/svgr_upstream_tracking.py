@@ -36,6 +36,20 @@ def stage(root, installed=False):
     require('deepmerge' not in manifest['dependencies'], 'unused dependency returned')
     lock = json.loads((root / 'website/package-lock.json').read_text(encoding="utf-8-sig"))
     package_json = json.loads((root / 'website/package.json').read_text(encoding="utf-8-sig"))
+    if NAME not in package_json['dependencies']:
+        # Supported-site topology removes the consumer entirely. Retain the
+        # historical payload/projection controls, but never admit a hidden or
+        # partially removed installed dependency graph.
+        forbidden = {NAME, '@svgr/webpack', '@svgr/core', '@docusaurus/preset-classic', 'deepmerge'}
+        require(not forbidden.intersection(package_json['dependencies']), 'removed dependency returned')
+        require(NAME not in package_json.get('overrides', {}), 'stale derivative override')
+        require(lock['packages']['']['dependencies'] == package_json['dependencies'], 'root lock dependency drift')
+        require(not any(key.startswith('node_modules/@svgr/') or key == 'vendor/svgr-plugin-svgo' or key in {'node_modules/deepmerge', 'node_modules/@docusaurus/preset-classic'} for key in lock['packages']), 'removed dependency remains locked')
+        if installed:
+            for name in forbidden:
+                slot = root / 'website/node_modules' / name
+                require(not slot.exists() and not slot.is_symlink(), 'removed dependency remains installed')
+        return _projection(root)
     require(package_json['dependencies'].get(NAME) == 'file:vendor/svgr-plugin-svgo', 'root dependency custody drift')
     require(package_json['overrides'].get(NAME) == '$' + NAME, 'override custody drift')
     require(lock['packages']['']['dependencies'].get(NAME) == 'file:vendor/svgr-plugin-svgo', 'lock root dependency custody drift')
@@ -47,6 +61,9 @@ def stage(root, installed=False):
         require(slot.is_symlink() and slot.resolve() == source, 'installed directory provenance drift')
         for name, digest in SOURCE['patched_sha256'].items():
             require(hashlib.sha256((slot / name).read_bytes()).hexdigest() == digest, 'installed payload hash drift')
+    return _projection(root)
+
+def _projection(root):
     destination = root / '.osv-lockfiles/svgr-upstream/package-lock.json'
     destination.parent.mkdir(parents=True, exist_ok=True)
     projection = {'name': 'advisory-projection-not-installed-svgr-upstream', 'version': '1.0.0', 'lockfileVersion': 3, 'packages': {'': {'name': 'advisory-projection-not-installed-svgr-upstream','version':'1.0.0'}, 'node_modules/@svgr/plugin-svgo': {'name': NAME, 'version': '8.1.0', 'resolved': TARBALL, 'integrity': INTEGRITY}}}

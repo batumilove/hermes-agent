@@ -6,7 +6,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 class InstalledWorkflowGate(unittest.TestCase):
     def test_actual_shared_pr_weekly_workflow_requires_clean_installed_binding(self):
-        workflow = (ROOT / '.github/workflows/osv-scanner.yml').read_text()
+        workflow = (ROOT / '.github/workflows/osv-scanner.yml').read_text(encoding="utf-8-sig")
         self.assertIn('workflow_call:', workflow)
         self.assertIn('schedule:', workflow)
         self.assertIn('node-version: 26.12.1', workflow)

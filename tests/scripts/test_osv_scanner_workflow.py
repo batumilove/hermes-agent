@@ -30,7 +30,7 @@ SCANNER_IMAGE = (
 
 
 def _workflow() -> dict:
-    return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8-sig"))
 
 
 def _scan_steps() -> list[dict]:
@@ -390,7 +390,7 @@ def test_emit_status_fails_on_corrupt_sarif(tmp_path: Path) -> None:
 
 def _ci_evaluate_run() -> str:
     ci = yaml.safe_load(
-        (ROOT / ".github" / "workflows" / "ci.yaml").read_text(encoding="utf-8")
+        (ROOT / ".github" / "workflows" / "ci.yaml").read_text(encoding="utf-8-sig")
     )
     return next(
         step
@@ -408,7 +408,7 @@ def _run_aggregate_gate(needs: dict) -> subprocess.CompletedProcess[str]:
     quoting bugs in the embedded script surface as failures here.
     """
     ci = yaml.safe_load(
-        (ROOT / ".github" / "workflows" / "ci.yaml").read_text(encoding="utf-8")
+        (ROOT / ".github" / "workflows" / "ci.yaml").read_text(encoding="utf-8-sig")
     )
     evaluate = next(
         step

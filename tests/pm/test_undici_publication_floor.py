@@ -16,7 +16,7 @@ class UndiciPublicationFloor(unittest.TestCase):
         expected = "https://registry.npmjs.org/undici/-/undici-6.29.1.tgz"
         self.assertEqual(UNDICI_OVERLAY_URL, expected)
         root = Path(__file__).resolve().parents[2]
-        lock = json.loads((root / "pm/lock.json").read_text())
+        lock = json.loads((root / "pm/lock.json").read_text(encoding="utf-8-sig"))
         artifacts = lock["packages"]["npm"]["artifacts"]["any"]
         overlays = [row for row in artifacts if "/undici/-/" in row["url"]]
         self.assertEqual(len(overlays), 1)

@@ -87,8 +87,31 @@ def _assert_idle_read_waits(bridge):
     assert time.monotonic() - started >= 0.3, "idle PTY read returned without waiting"
 
 
+@pytest.fixture(params=[False, True], ids=["native-stream", "split-crlf"])
+def split_marker_frame(request, monkeypatch):
+    """Force a legal read boundary before CRLF without replacing PTY I/O or waits."""
+    if not request.param:
+        return
+    pytest.importorskip("ptyprocess")
+    from hermes_cli.pty_bridge import PtyBridge
+
+    original_read = PtyBridge.read
+    pending = {}
+
+    def read(bridge, timeout=0.2):
+        if bridge in pending:
+            return pending.pop(bridge)
+        chunk = original_read(bridge, timeout)
+        if chunk and b"pty-high-fd" in chunk and chunk.endswith(b"\r\n"):
+            pending[bridge] = b"\r\n"
+            return chunk[:-2]
+        return chunk
+
+    monkeypatch.setattr(PtyBridge, "read", read)
+
+
 @pytest.mark.platforms("posix")
-def test_pty_bridge_reads_and_waits_above_fd_setsize(high_fds, monkeypatch):
+def test_pty_bridge_reads_and_waits_above_fd_setsize(high_fds, monkeypatch, split_marker_frame):
     """The PTY bridge delivers output at a high fd and an idle read blocks for its timeout;
     when the selector cannot be created (EMFILE), the bridge either still waits (poll
     fallback) or refuses to spawn, never a busy-looping bridge (macOS poll on a PTY)."""
@@ -103,11 +126,12 @@ def test_pty_bridge_reads_and_waits_above_fd_setsize(high_fds, monkeypatch):
         assert bridge._fd >= 1024
         buf = bytearray()
         deadline = time.monotonic() + 5
-        while b"pty-high-fd" not in buf and time.monotonic() < deadline:
+        expected = b"pty-high-fd\r\n"
+        while expected not in buf and time.monotonic() < deadline:
             chunk = bridge.read(timeout=0.2)
             assert chunk is not None, f"PTY reported EOF before output (got {bytes(buf)!r})"
             buf.extend(chunk)
-        assert b"pty-high-fd" in buf
+        assert bytes(buf) == expected
         _assert_idle_read_waits(bridge)
     finally:
         bridge.close()
