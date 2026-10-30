@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from scripts import fork_provenance
+from hermes_cli import fork_provenance
 from scripts.ci.catalog_upstream_import import verify_import
 
 

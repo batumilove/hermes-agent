@@ -21,7 +21,6 @@
   "dependencies": {
     "@docusaurus/core": "3.10.2",
     "@docusaurus/plugin-client-redirects": "3.10.2",
-    "@docusaurus/preset-classic": "3.10.2",
     "@docusaurus/theme-mermaid": "3.10.2",
     "@mdx-js/react": "3.1.1",
     "@mermaid-js/layout-elk": "0.1.9",
@@ -30,7 +29,12 @@
     "react": "19.2.7",
     "react-dom": "19.2.7",
     "braces": "file:../vendor/npm/braces-3.0.3-hermes.1.tgz",
-    "@svgr/plugin-svgo": "file:vendor/svgr-plugin-svgo"
+    "@docusaurus/plugin-content-docs": "3.10.2",
+    "@docusaurus/plugin-content-pages": "3.10.2",
+    "@docusaurus/plugin-debug": "3.10.2",
+    "@docusaurus/plugin-sitemap": "3.10.2",
+    "@docusaurus/theme-classic": "3.10.2",
+    "@docusaurus/theme-search-algolia": "3.10.2"
   },
   "devDependencies": {
     "@docusaurus/module-type-aliases": "3.10.2",
@@ -65,8 +69,7 @@
     "postcss-selector-parser": "7.1.6",
     "follow-redirects": "1.16.1",
     "launch-editor": "2.14.2",
-    "body-parser@^1": "1.20.9",
-    "@svgr/plugin-svgo": "$@svgr/plugin-svgo"
+    "body-parser@^1": "1.20.9"
   },
   "browserslist": {
     "production": [
