@@ -21,7 +21,7 @@ class DirectoryTrackingTests(unittest.TestCase):
                 ('package.json', '4bb5ff228c9a398eed2ace2c842263894259f9c0888b8f4d462d48066667436b'),
                 ('package-lock.json', '8e7782528c603442f0f54722efd3671cfb98de2e890d43f317bcbf44e5088ec6'),
             ):
-                fixture = (ROOT/'tests/ci/fixtures/svgr-historical'/name).read_bytes()
+                fixture = (ROOT/'tests/ci/fixtures/svgr-historical'/(name + '.fixture')).read_bytes()
                 self.assertEqual(hashlib.sha256(fixture).hexdigest(), digest)
                 (root/'website'/name).write_bytes(fixture)
             module.stage(root)

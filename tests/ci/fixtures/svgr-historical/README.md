@@ -1,5 +1,7 @@
 # Historical SVGR graph fixtures
 
+The `.fixture` suffix marks inert data, not a repository installation lockfile.
+The tests restore the original filenames only inside disposable roots.
 These are byte-for-byte copies of `website/package.json` and
 `website/package-lock.json` from commit
 `862586795a9a49c798698687bdfe1f96d4dd92d9` (not the supported installed graph).
