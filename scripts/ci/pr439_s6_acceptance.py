@@ -59,6 +59,25 @@ def build_probe(image_id, context, tag, output):
         build.check_returncode()
 
 
+def retain_uploadable_lock(mode_output):
+    # Rename only this known probe receipt in the copied evidence, never runtime data.
+    # Default upload-artifact hidden-file exclusion remains enabled.
+    lock = mode_output / 'update_receipts' / '.pm-write.lock'
+    if lock.exists():
+        lock.rename(lock.with_name('pm-write.lock.evidence'))
+
+
+def stop_and_record(name, output, mode):
+    start = time.monotonic()
+    run('docker', 'stop', name)
+    elapsed = time.monotonic() - start
+    # Supplemental telemetry only: retain real terminal state without inventing
+    # a new exit-code policy for deliberately adversarial timeout/stuck modes.
+    terminal = run('docker', 'inspect', name)
+    (output / f'{mode}-post-stop-inspect.json').write_text(terminal.stdout)
+    return elapsed
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--image-id', required=True)
@@ -105,11 +124,10 @@ def main():
             (output / f'{mode}-inspect.json').write_text(json.dumps(config, indent=2))
             assert not config['Mounts'] or all(m['Type'] == 'volume' for m in config['Mounts'])
             assert config['HostConfig']['NetworkMode'] == 'none'
-            start = time.monotonic()
             assert config['Config']['StopTimeout'] == 90
-            run('docker', 'stop', name)
-            elapsed = time.monotonic() - start
+            elapsed = stop_and_record(name, output, mode)
             run('docker', 'cp', f'{name}:/opt/data/logs', str(output / mode))
+            retain_uploadable_lock(output / mode)
             entered = run('docker', 'cp', f'{name}:/opt/data/post-drain-entered', str(output / f'{mode}-entered'), check=False).returncode == 0
             clean = run('docker', 'cp', f'{name}:/opt/data/.clean_shutdown', str(output / f'{mode}-clean'), check=False).returncode == 0
             logs = '\n'.join(p.read_text(errors='replace') for p in (output / mode).glob('*.log'))

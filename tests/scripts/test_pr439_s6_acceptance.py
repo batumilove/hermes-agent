@@ -81,6 +81,54 @@ class BuildEvidence(unittest.TestCase):
                 s6.build_probe(IMAGE, out, 'pr439-s6-test:1', out)
             self.assertEqual((out / 'build.log').read_text(), 'partial stdoutpartial stderr')
 
+    def test_retained_lock_is_visible_and_byte_preserving(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            receipts = root / 'update_receipts'
+            receipts.mkdir()
+            original = receipts / '.pm-write.lock'
+            original.write_bytes(b'lock evidence\x00\n')
+            (receipts / '.unapproved-secret').write_text('must not be selected')
+            s6.retain_uploadable_lock(root)
+            self.assertEqual((receipts / 'pm-write.lock.evidence').read_bytes(), b'lock evidence\x00\n')
+            self.assertFalse(original.exists())
+            self.assertTrue((receipts / '.unapproved-secret').exists())
+
+    def test_terminal_inspect_is_recorded_after_stop(self):
+        calls = []
+        def command(*args, **kwargs):
+            calls.append(args)
+            return subprocess.CompletedProcess(args, 0, '[{"State":{"Running":false,"ExitCode":137}}]', '')
+        with tempfile.TemporaryDirectory() as tmp, patch.object(s6, 'run', side_effect=command):
+            out = pathlib.Path(tmp)
+            s6.stop_and_record('fixture', out, 'stuck')
+            self.assertEqual(calls, [('docker', 'stop', 'fixture'), ('docker', 'inspect', 'fixture')])
+            self.assertIn('137', (out / 'stuck-post-stop-inspect.json').read_text())
+
+    def test_terminal_stop_failure_blocks_recording(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(s6, 'run', side_effect=subprocess.CalledProcessError(9, ['docker', 'stop'])):
+            with self.assertRaises(subprocess.CalledProcessError):
+                s6.stop_and_record('fixture', pathlib.Path(tmp), 'fast')
+            self.assertFalse((pathlib.Path(tmp) / 'fast-post-stop-inspect.json').exists())
+
+    def test_copied_receipt_checksum_set_matches_default_visible_upload(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            for mode in ('fast', 'slow', 'timeout', 'stuck'):
+                receipts = root / mode / 'update_receipts'
+                receipts.mkdir(parents=True)
+                (receipts / '.pm-write.lock').write_bytes(b'')
+                (root / mode / 'gateway.log').write_text(mode)
+                s6.retain_uploadable_lock(root / mode)
+            files = sorted(p for p in root.rglob('*') if p.is_file())
+            visible = [p for p in files if not any(part.startswith('.') for part in p.relative_to(root).parts)]
+            self.assertEqual(files, visible)
+            self.assertEqual(len(files), 8)
+            self.assertEqual(sum(p.name == 'pm-write.lock.evidence' for p in files), 4)
+            for p in files:
+                self.assertEqual(hashlib.sha256(p.read_bytes()).hexdigest(), hashlib.file_digest(p.open('rb'), 'sha256').hexdigest())
+
     def test_parent_mismatch_blocks_build(self):
         calls = []
         def command(*args, **kwargs):
