@@ -18,7 +18,8 @@ ROOT = Path(__file__).resolve().parents[2]
 def probe_recipe(image_id):
     if not re.fullmatch(r'sha256:[0-9a-f]{64}', image_id):
         raise ValueError('invalid immutable image config ID')
-    return f'''FROM {image_id}
+    parent = 'pr439-s6-parent:' + image_id.removeprefix('sha256:')
+    return f'''FROM {parent}
 COPY s6_cleanup_probe.py /opt/hermes/s6_cleanup_probe.py
 CMD ["/opt/hermes/.venv/bin/python", "/opt/hermes/s6_cleanup_probe.py"]
 '''
@@ -26,6 +27,36 @@ CMD ["/opt/hermes/.venv/bin/python", "/opt/hermes/s6_cleanup_probe.py"]
 
 def run(*args, check=True):
     return subprocess.run(args, capture_output=True, text=True, check=check, timeout=120)
+
+
+def build_probe(image_id, context, tag, output):
+    # BuildKit treats FROM sha256:<config-id> as docker.io/library/sha256:<tag>.
+    # Bind a local-only reference to the admitted ID and use the daemon builder.
+    parent = 'pr439-s6-parent:' + image_id.removeprefix('sha256:')
+    run('docker', 'tag', image_id, parent)
+    for phase in ('before', 'after'):
+        actual = run('docker', 'image', 'inspect', parent, '--format', '{{.Id}}').stdout.strip()
+        if actual != image_id:
+            raise ValueError('local probe parent identity changed')
+        if phase == 'after':
+            break
+        command = ('docker', 'build', '--builder', 'default', '--network', 'none',
+                   '--pull=false', '-t', tag, str(context))
+        (output / 'build-command.json').write_text(json.dumps(command) + '\n')
+        try:
+            build = run(*command, check=False)
+        except subprocess.TimeoutExpired as error:
+            stdout, stderr = error.stdout or '', error.stderr or ''
+            stdout = stdout.decode(errors='replace') if isinstance(stdout, bytes) else stdout
+            stderr = stderr.decode(errors='replace') if isinstance(stderr, bytes) else stderr
+            (output / 'build.stdout.log').write_text(stdout)
+            (output / 'build.stderr.log').write_text(stderr)
+            (output / 'build.log').write_text(stdout + stderr)
+            raise
+        (output / 'build.stdout.log').write_text(build.stdout)
+        (output / 'build.stderr.log').write_text(build.stderr)
+        (output / 'build.log').write_text(build.stdout + build.stderr)
+        build.check_returncode()
 
 
 def main():
@@ -51,8 +82,7 @@ def main():
         import hashlib
         (output / 'probe.sha256').write_text(hashlib.sha256(probe).hexdigest() + '\n')
         (output / 'Dockerfile').write_text(dockerfile)
-        build = run('docker', 'build', '--network', 'none', '--pull=false', '-t', tag, str(context))
-        (output / 'build.log').write_text(build.stdout + build.stderr)
+        build_probe(image_id, context, tag, output)
     (output / 'parent-image-config-digest.txt').write_text(image_id + '\n')
     (output / 'probe-image-inspect.json').write_text(run('docker', 'image', 'inspect', tag).stdout)
     results = []

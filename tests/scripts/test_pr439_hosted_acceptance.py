@@ -56,7 +56,7 @@ class Acceptance(unittest.TestCase):
         self.assertIn('control/scripts/ci/pr439_s6_acceptance.py', s6['run'])
         self.assertIn('evidence/image-config-digest.txt', s6['run'])
         harness = (ROOT / 'scripts/ci/pr439_s6_acceptance.py').read_text()
-        self.assertIn('FROM {image_id}', harness)
+        self.assertIn('FROM {parent}', harness)
         self.assertNotIn('COPY . /opt/hermes', harness)
         self.assertNotIn('COPY --chmod', harness)
         for mode in ["('fast', '0', True)", "('slow', '5', True)", "('timeout', '120', False)", "('stuck', '0', False)"]:
@@ -70,7 +70,7 @@ class Acceptance(unittest.TestCase):
         spec.loader.exec_module(module)
         image_id = 'sha256:' + 'a' * 64
         recipe = module.probe_recipe(image_id)
-        self.assertEqual(recipe.splitlines()[0], 'FROM ' + image_id)
+        self.assertEqual(recipe.splitlines()[0], 'FROM pr439-s6-parent:' + 'a' * 64)
         self.assertEqual(len(recipe.splitlines()), 3)
         for invalid in ['latest', image_id + '\nRUN id', 'sha256:' + 'A' * 64]:
             with self.assertRaises(ValueError):
