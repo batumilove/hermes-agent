@@ -4,7 +4,7 @@ Launchers execute store Python in isolated mode. They set the install's
 default home and load hermes_bootstrap before the entry point. Bootstrap
 reads the selected dependency generation at each start.
 
-Windows uses distlib executables or a command-file fallback. POSIX uses
+Windows requires native distlib executables from PM's pinned store supplier. POSIX uses
 an executable shell wrapper. The standalone writer requires PM's store
 interpreter before it publishes either command.
 """
@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from contextlib import suppress
 import json
+import logging
 import os
 import shlex
 import sys
@@ -168,17 +169,22 @@ def _load_script_maker():
 
 
 def _store_script_maker(python_exe: Path):
-    """ScriptMaker from the pip that ships with the interpreter being bound.
+    """Load only PM's authenticated, pinned standalone launcher supplier.
 
-    A launch activates only the dependency environment, which carries no
-    distlib and drops the store's site-packages, so the update that repins
-    Python could only publish a .cmd and retire hermes.exe -- which Desktop's
-    backend sweep, shortcuts and terminal profiles name. python-build-standalone
-    ships pip (the installer mints the first hermes.exe through it), and its
-    vendored distlib is self-contained. It loads under a private name so the
-    store's pip never answers an ``import pip`` in this process."""
-    package = Path(python_exe).parent / "Lib" / "site-packages" / "pip" / "_vendor" / "distlib"
-    if not (package / "scripts.py").is_file():
+    pm.python_bootstrap promotes this package before removing pip and before
+    PM records the store digest. Never resolve a maker from ambient sys.path.
+    """
+    entry = Path(python_exe).parent
+    package = entry / "Lib" / "site-packages" / "distlib"
+    from pm.python_bootstrap import _checked_distlib
+    try:
+        _checked_distlib(package, entry)
+        for resource in ("__init__.py", "scripts.py", "LICENSE.txt", "resources.py", "t32.exe", "t64.exe", "t64-arm.exe"):
+            path = package / resource
+            if (not path.is_file() or not path.resolve().is_relative_to(entry.resolve())
+                    or (resource.endswith('.exe') and not path.read_bytes().startswith(b'MZ'))):
+                raise ValueError(f"invalid native launcher resource: {resource}")
+    except (OSError, ValueError, SyntaxError):
         return None
     import hashlib
     import importlib
@@ -194,8 +200,9 @@ def _store_script_maker(python_exe: Path):
                 return None
             sys.modules[name] = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(sys.modules[name])
-        return importlib.import_module(f"{name}.scripts").ScriptMaker
-    except (ImportError, OSError, SyntaxError, AttributeError):  # a torn or foreign pip: mint a .cmd
+        maker = importlib.import_module(f"{name}.scripts").ScriptMaker
+        return maker
+    except (ImportError, OSError, SyntaxError, AttributeError):  # Refuse a torn selected supplier.
         sys.modules.pop(name, None)
         return None
 
@@ -260,83 +267,100 @@ def mint_launcher(
     if not _is_windows():
         return _mint_shell_launcher(name, out_dir, python_exe, script)
 
-    script_maker_cls = _load_script_maker() or _store_script_maker(python_exe)
-    if script_maker_cls is not None:
-        class _PathedScriptMaker(script_maker_cls):  # type: ignore[misc,valid-type]
-            def _get_script_text(self, entry):
-                return script
+    maker_cls = _store_script_maker(python_exe)
+    if maker_cls is None:
+        return None
 
-        import tempfile
-        from zipfile import BadZipFile, ZipFile
+    class NativeMaker(maker_cls):
+        def _get_script_text(self, entry):
+            return script
 
-        def make(directory: Path) -> list[str]:
-            maker = _PathedScriptMaker(None, str(directory), add_launchers=True)
-            maker.executable = str(python_exe)
-            maker.variants = {""}
-            maker.clobber = True
-            return maker.make(f"{name} = {module}:{func}", {"interpreter_args": ["-I"]})
+    target = out_dir / f"{name}.exe"
+    try:
+        maker = NativeMaker(None, str(out_dir), add_launchers=True)
+        maker.executable = str(python_exe)
+        maker.variants = {""}
+        maker.clobber = False
+        maker.make(f"{name} = {module}:{func}", {"interpreter_args": ["-I"]})
+        if _valid_native(target, python_exe, script):
+            return target
+    except Exception:
+        logging.getLogger(__name__).exception("native launcher generation failed for %s", name)
+    return None
 
-        # distlib's exe ZIP records the current time, so byte equality cannot
-        # detect an unchanged launcher. Compare its loader + shebang and script;
-        # leave an active executable alone when only the ZIP timestamp changed.
-        with tempfile.TemporaryDirectory(prefix=f".{name}-", dir=out_dir) as staging:
-            try:
-                candidate = next((Path(p) for p in make(Path(staging))
-                                  if Path(p).suffix.lower() == ".exe"), None)
-            except Exception:
-                candidate = None
-            if candidate is not None:
-                target = out_dir / candidate.name
+
+def _valid_native(path: Path, python: Path, script: str) -> bool:
+    from zipfile import BadZipFile, ZipFile
+    try:
+        if path.is_symlink() or not path.read_bytes().startswith(b"MZ"):
+            return False
+        with ZipFile(path) as archive:
+            return (archive.namelist() == ["__main__.py"]
+                    and archive.read("__main__.py") == script.encode("utf-8")
+                    and _launcher_python(path) == python)
+    except (OSError, BadZipFile, KeyError, IndexError):
+        return False
+
+
+def _publish_native_set(root: Path, directory: Path, names) -> list[str]:
+    """Prepare every replacement before renaming any old native command.
+
+    Backups stay beside canonical paths, never in disposable staging. A failed
+    rollback leaves those old bytes available for operator recovery. No claim
+    of crash-atomic multi-file publication: callers serialize update writers.
+    """
+    import tempfile
+    import uuid
+    python = resolve_store_python(root, publication=True)
+    if python is None:
+        return []
+    directory.mkdir(parents=True, exist_ok=True)
+    backups = {}
+    published = []
+    with tempfile.TemporaryDirectory(prefix=".native-launchers-", dir=directory) as temp:
+        staging = Path(temp)
+        try:
+            for name in names:
+                path = mint_launcher(name, root, staging, python, None)
+                expected = staging / f"{name}.exe"
+                if (path != expected or not _valid_native(expected, python, _launcher_script(name, root, None))):
+                    return []
+            for name in names:
+                target = directory / f"{name}.exe"
+                candidate = staging / target.name
+                # Leave an unchanged mapped executable alone (ZIP timestamps differ).
+                from zipfile import BadZipFile, ZipFile
                 try:
                     with ZipFile(target) as old, ZipFile(candidate) as new:
                         if (old.namelist() == new.namelist() == ["__main__.py"]
                                 and target.read_bytes()[:old.infolist()[0].header_offset]
                                 == candidate.read_bytes()[:new.infolist()[0].header_offset]
                                 and old.read("__main__.py") == new.read("__main__.py")):
-                            return target
-                except (OSError, BadZipFile, KeyError):
+                            continue
+                except (OSError, BadZipFile, KeyError, IndexError):
                     pass
-                # For changed launchers, distlib's .deleteme replacement can
-                # move an executable Windows still has mapped in memory.
+                if target.exists():
+                    backup = target.with_name(f"{target.name}.{uuid.uuid4().hex}.rollback")
+                    os.replace(target, backup)  # works for a mapped image, or fails closed
+                    backups[target] = backup
+                os.replace(candidate, target)
+                published.append(target)
+        except Exception:
+            logging.getLogger(__name__).exception("native launcher publication failed in %s", directory)
+            for target in reversed(published):
+                if target not in backups:
+                    with suppress(OSError):
+                        target.unlink()
+            for target, backup in reversed(list(backups.items())):
                 try:
-                    written = make(out_dir)
-                except Exception:
-                    written = []
-                for path in written:
-                    if Path(path).suffix.lower() == ".exe":
-                        return Path(path)
-        # distlib ran but produced no exe (unexpected) — fall through to cmd.
-
-    # A prepared app environment need not include distlib, even when the
-    # installer used it to publish a native exe. Keep that executable if its
-    # embedded interpreter and script still match; replacing it with a cmd
-    # would require unlinking the currently running exe on Windows.
-    existing = out_dir / f"{name}.exe"
-    from zipfile import BadZipFile, ZipFile
-    try:
-        with ZipFile(existing) as archive:
-            if archive.namelist() == ["__main__.py"]:
-                prefix = existing.read_bytes()[:archive.infolist()[0].header_offset]
-                shebangs = (f"#!{python_exe} -I\n".encode(),
-                            f'#!"{python_exe}" -I\n'.encode())
-                # Vendored distlib trails the shebang with an extra CRLF
-                # before the zip; compare the shebang line itself.
-                tail = prefix.rstrip(b"\r\n")
-                if (any(tail.endswith(shebang.rstrip(b"\r\n")) for shebang in shebangs)
-                        and archive.read("__main__.py") == script.encode("utf-8")):
-                    return existing
-    except (OSError, BadZipFile, KeyError):
-        pass
-
-    # The script is data to Python, not interpolated shell source.
-    import base64
-    encoded = base64.b64encode(script.encode("utf-8")).decode("ascii")
-    code = f"import base64; exec(base64.b64decode('{encoded}'))"
-    body = (
-        "@echo off\r\n"
-        f'"{python_exe}" -I -c "{code}" %*\r\n'
-    )
-    return _write_atomic(out_dir / f"{name}.cmd", lambda p: p.write_text(body, encoding="utf-8"))
+                    os.replace(backup, target)
+                except OSError:
+                    pass
+            return []
+    for backup in backups.values():
+        with suppress(OSError):
+            backup.unlink()  # mapped old executables may remain; never collect failed rollback backups
+    return [str(directory / f"{name}.exe") for name in names]
 
 
 # A killed move can tear the repair's own code (``hermes_bootstrap``, ``hermes_cli``). With the
@@ -585,6 +609,9 @@ def _publish_conveniences(root: Path, out_dir: Path, names, *, create: bool = Tr
 def stage_launcher(name: str, repo_root: Path, out_dir: Path) -> Path | None:
     """Publish one launcher bound to store Python, or refuse missing tools."""
     repo_root = Path(repo_root)
+    if _is_windows():
+        written = _publish_native_set(repo_root, Path(out_dir), (name,))
+        return Path(written[0]) if written else None
     # A launcher outlives the process that writes it, so the inherited
     # runtime override must not displace the tree's own interpreter.
     store_python = resolve_store_python(repo_root, publication=True)
@@ -783,6 +810,17 @@ def ensure_install_launchers(repo_root: Path, out_dir: Path) -> list[str]:
     owner = (root.parent == home and store.resolve() == (home / "tools").resolve()
              and owning_home_root(root) is None)
     written = []
+    if _is_windows():
+        kept = {name: (None if owner else _kept_shared_launcher(name, local, store, own))
+                for name in WINDOWS_BIN_LAUNCHERS}
+        needed = tuple(name for name, path in kept.items() if path is None)
+        published = _publish_native_set(root, local, needed) if needed else []
+        if len(published) != len(needed):
+            return []
+        written = [str(path) for path in kept.values() if path is not None] + published
+        if Path(out_dir).resolve() == local:
+            return written
+        return _publish_native_set(root, Path(out_dir), WINDOWS_BIN_LAUNCHERS)
     for name in WINDOWS_BIN_LAUNCHERS:
         # ponytail: one guard here covers every caller (launch, sync, repair,
         # install); per-home outputs below stay unguarded. Upgrade to a stamped

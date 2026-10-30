@@ -75,6 +75,31 @@ jobs:
           test-environment: 'true'
           prune-python-cache: true
 
+      - name: Probe installed-wheel provenance (packaging fixture)
+        if: matrix.slice == 1
+        # This is a Python packaging-closure fixture, NOT production Nix acceptance.
+        # Only the build gets the existing explicit Nix-policy fixture flag; the
+        # normal wheel/sdist guard stays fail-closed. No supported PyPI release
+        # or bundled Nix assets are claimed. This probe's import closure is stdlib
+        # only: --no-deps avoids unrelated/private browser-harness resolution.
+        shell: bash
+        run: |
+          set -euo pipefail
+          scratch=$(mktemp -d "$RUNNER_TEMP/packaged-provenance.XXXXXX")
+          trap 'rm -rf "$scratch"' EXIT
+          mkdir -p "$scratch/source" "$scratch/outside"
+          # Build a disposable tracked-source copy, never pollute the checkout.
+          git ls-files -z | tar --null -T - -cf - | tar -xf - -C "$scratch/source"
+          uv venv --python "$HERMES_PYTHON" "$scratch/venv"
+          HERMES_NIX_BUILD=1 uv build --wheel --python "$scratch/venv/bin/python" \
+            --out-dir "$scratch/wheels" "$scratch/source"
+          uv pip install --python "$scratch/venv/bin/python" --no-deps "$scratch"/wheels/*.whl
+          cp tests/packaged_provenance_probe.py "$scratch/outside/probe.py"
+          cd "$scratch/outside"
+          env -u PYTHONPATH -u PYTHONHOME HOME="$scratch/outside" \
+            HERMES_HOME="$scratch/outside/state" \
+            "$scratch/venv/bin/python" -I "$scratch/outside/probe.py"
+
       - name: Check SQLite runs WAL
         # Hermes picks DELETE journal mode on a SQLite with the WAL-reset
         # bug. If the PM-pinned interpreter links one, every WAL test silently

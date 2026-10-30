@@ -114,7 +114,9 @@ def test_workflow_routes_only_authenticated_imports_away_from_readmission(tmp_pa
     branch = git(repo, "branch", "--show-current")
     git(repo, "checkout", "main")
     git(repo, "merge", "--no-ff", branch, "-m", "PR merge")
-    for relative in ("hermes_cli/fork_provenance.py", "scripts/ci/catalog_upstream_import.py"):
+    # The scripts compatibility import delegates to the packaged runtime helper.
+    for relative in ("scripts/fork_provenance.py", "scripts/ci/catalog_upstream_import.py",
+                     "hermes_cli/__init__.py", "hermes_cli/fork_provenance.py"):
         destination = repo / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(root / relative, destination)

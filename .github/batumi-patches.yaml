@@ -5,6 +5,58 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: tornado-66-security-floor
+  kind: operations
+  rationale: Raise the optional Telegram webhook Tornado floor to 6.6 for
+    GHSA-pcg2-g6cj-q92c, GHSA-pw9p-v7r6-gx4p and GHSA-r4j5-9xpp-3985;
+    retain the next-major bound and global release-age policy. Offline tests
+    require the repository Python test environment; no live bot token is needed.
+  paths:
+  - pyproject.toml
+  - uv.lock
+  - tests/test_packaging_metadata.py
+  tests:
+  - python -m pm.build_env --source . --check-lock
+  - scripts/run_tests.sh tests/test_packaging_metadata.py tests/pm/test_project_relock.py
+  retirement: Remove when the accepted upstream baseline carries the fixed
+    Tornado floor, resolved release and equivalent regression coverage.
+- id: native-windows-pinned-launcher-publication
+  kind: core
+  rationale: Preserve both native CLI names on Windows using PM's pinned standalone supplier and staged per-destination publication; fail dependency sync when mandatory launcher publication fails. Required by the original old-gateway update journey; no diagnostic capture ships.
+  paths:
+  - hermes_cli/_launchers.py
+  - hermes_cli/venv_sync.py
+  - tests/conftest.py
+  - tests/fixtures/README-native-supplier.md
+  - tests/fixtures/distlib-0.4.2.json
+  - tests/fixtures/distlib-0.4.2.members/**
+  - tests/hermes_cli/test_native_launcher_diagnostics.py
+  - tests/hermes_cli/test_fixture_prerequisites.py
+  - tests/hermes_cli/test_borrowed_home_launch.py
+  - tests/hermes_cli/test_launcher_fixture_child.py
+  - tests/hermes_cli/test_source_launcher_publication.py
+  - tests/hermes_cli/test_ensure_windows_bin_launchers.py
+  - tests/hermes_cli/test_hermes_home_shared_launchers.py
+  - tests/hermes_cli/test_launcher_runtime_selection.py
+  - tests/installation_launcher_fixture.py
+  - tests/tools/test_bot_delivery_install_launcher.py
+  - tests/test_native_supplier_remediation.py
+  - tests/hermes_cli/test_native_launcher_transaction.py
+  - tests/native_supplier.py
+  - tests/test_native_supplier_fixture.py
+  tests:
+  - python -m pytest tests/test_native_supplier_fixture.py tests/hermes_cli/test_native_launcher_transaction.py tests/hermes_cli/test_source_launcher_publication.py tests/hermes_cli/test_hermes_home_shared_launchers.py
+  retirement: Remove when upstream provides equivalent pinned native pair publication and fail-closed receipts. Unit tests require the ordinary repository pytest environment; injected Windows PE generation is not native execution. Complete PM integration requires Python 3.14 and its full cached dependency set.
+- id: isolated-upgrade-empty-service-discovery
+  kind: compatibility
+  rationale: Model the isolated upgrade fixture's empty service-manager world only for the exact read-only gateway listing; retain denial and logging for mutation and unknown calls without changing production refusal or E2E assertions.
+  paths:
+  - tests/e2e/core/upgrade/_helpers.py
+  - tests/test_upgrade_service_shims.py
+  tests:
+  - python3 tests/test_upgrade_service_shims.py
+  - scripts/run_tests.sh tests/hermes_cli/test_update_pause_ownership.py
+  retirement: Remove when upstream fixtures model exact empty discovery while denying mutations. Run real updater E2E only in its documented private PID namespace with supervisor sockets hidden; focused shim tests do not prove E2E acceptance.
 - id: qs-supported-site-dependency-removal
   kind: compatibility
   rationale: Preserve qs 6.16.2 security fixes while replacing the disabled classic preset
@@ -2394,12 +2446,14 @@ patches:
   kind: core
   rationale: Verify the pinned upstream release and exact tree-import proof when deriving
     source runtime identity, preserving plugin version gates across squashed fork imports.
+    Ship the shared verifier in the runtime package and probe its installed-wheel import closure.
     Runtime snapshots and build/contributor tools share the shipped stdlib-only proof implementation.
   paths:
   - hermes_cli/version_info.py
   - hermes_cli/version_provenance.py
-  - tests/hermes_cli/test_version_import_provenance.py
   - hermes_cli/fork_provenance.py
+  - tests/packaged_provenance_probe.py
+  - tests/hermes_cli/test_version_import_provenance.py
   - scripts/fork_provenance.py
   - scripts/fork_contributors.py
   - scripts/fork_check_base.py

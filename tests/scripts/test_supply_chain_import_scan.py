@@ -81,10 +81,11 @@ def scan_import(tmp_path, request):
     # The literal official URL fetch must resolve to the official branch.
     _git(repo, "update-ref", "refs/heads/main", official)
     (repo / "scripts").mkdir()
-    for relative in ("scripts/fork_check_base.py", "hermes_cli/fork_provenance.py"):
-        destination = repo / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(ROOT / relative, destination)
+    for name in ("fork_check_base.py", "fork_provenance.py"):
+        shutil.copyfile(ROOT / "scripts" / name, repo / "scripts" / name)
+    (repo / "hermes_cli").mkdir()
+    for name in ("__init__.py", "fork_provenance.py"):
+        shutil.copyfile(ROOT / "hermes_cli" / name, repo / "hermes_cli" / name)
     return repo, previous, tip, official
 
 

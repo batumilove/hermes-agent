@@ -1,0 +1,21 @@
+{
+  "version": "0.4.2",
+  "archive_sha256": "11cc9d8fb5ac9bf4e5c6230bbef52ba26233a80d0ae65179b28e6b0c6f292467",
+  "source_archive_sha256": "0ab3305457051cd3e7c031857e005f1bda17c218a1990567dacaaac6dd1d14f0",
+  "source_member_prefix": "python/lib/python3.14/site-packages/pip/_vendor/distlib/",
+  "source_provenance": "Previously authenticated local Python archive; preserved packet manifest artifacts/python.tar.gz. No downloads. Test-only subset, original bytes and LICENSE.txt retained.",
+  "files": {
+    "LICENSE.txt": "808e10c8a6ab8deb149ff9b3fb19f447a808094606d712a9ca57fead3552599d",
+    "__init__.py": "b66613841d719a07d18d1b72cbc60fd22d329ab1769fa795b307302ba3986dc7",
+    "compat.py": "1d3ce1398f7c73f7f231513bc6d56e659f80564378f9119eb3e8569afbb0aae9",
+    "resources.py": "c19b7f024a3c4d8f8be9920098fe3627b30d5f45d3105ea090cd0e9b917b50f6",
+    "scripts.py": "ad59b803e61f1900e9b0e4703b2ec0c1ea724536b2bb2eab73e32768230101c3",
+    "t32.exe": "6b4195e640a85ac32eb6f9628822a622057df1e459df7c17a12f97aeabc9415b",
+    "t64-arm.exe": "ebc4c06b7d95e74e315419ee7e88e1d0f71e9e9477538c00a93a9ff8c66a6cfc",
+    "t64.exe": "81a618f21cb87db9076134e70388b6e9cb7c2106739011b6a51772d22cae06b7",
+    "util.py": "9f64035ef0745edc2bb5e872827c1d2e02e42e26b9f2c663ce064f2b20faac01",
+    "w32.exe": "47872cc77f8e18cf642f868f23340a468e537e64521d9a3a416c8b84384d064b",
+    "w64-arm.exe": "c5dc9884a8f458371550e09bd396e5418bf375820a31b9899f6499bf391c7b2e",
+    "w64.exe": "7a319ffaba23a017d7b1e18ba726ba6c54c53d6446db55f92af53c279894f8ad"
+  }
+}

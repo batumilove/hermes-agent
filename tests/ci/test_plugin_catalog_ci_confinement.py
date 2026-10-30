@@ -321,7 +321,9 @@ def test_changed_entries_step(tmp_path, change, rc, listed, text):
     # The mixed path authenticates official imports. Serve a local official
     # history and execute the real verifier so an unproven mixed PR fails closed.
     _git(repo, "config", f"url.{repo.as_uri()}.insteadOf", "https://github.com/NousResearch/hermes-agent.git")
-    for relative in ("hermes_cli/fork_provenance.py", "scripts/ci/catalog_upstream_import.py"):
+    # The scripts compatibility import delegates to the packaged runtime helper.
+    for relative in ("scripts/fork_provenance.py", "scripts/ci/catalog_upstream_import.py",
+                     "hermes_cli/__init__.py", "hermes_cli/fork_provenance.py"):
         destination = repo / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / relative, destination)
