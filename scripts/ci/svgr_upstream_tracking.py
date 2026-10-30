@@ -23,19 +23,19 @@ def stage(root, installed=False):
     root = root.absolute()
     source = root / 'website/vendor/svgr-plugin-svgo'
     require(not source.is_symlink() and source.resolve() == source, 'noncanonical directory custody')
-    tracking = json.loads((source / 'TRACKING.json').read_text())
+    tracking = json.loads((source / 'TRACKING.json').read_text(encoding="utf-8-sig"))
     require(tracking == TRACKING, 'approved maintenance policy or identity drift')
-    metadata = json.loads((source / 'SOURCE.json').read_text())
+    metadata = json.loads((source / 'SOURCE.json').read_text(encoding="utf-8-sig"))
     require(metadata == SOURCE, 'upstream source binding drift')
     for name, digest in SOURCE['patched_sha256'].items():
         path = source / name
         require(not path.is_symlink() and path.resolve().is_relative_to(source), 'source symlink escape')
         require(hashlib.sha256(path.read_bytes()).hexdigest() == digest, 'directory payload hash drift')
-    manifest = json.loads((source / 'package.json').read_text())
+    manifest = json.loads((source / 'package.json').read_text(encoding="utf-8-sig"))
     require(manifest['name'] == '@hermes-security/svgr-plugin-svgo' and manifest['version'] == '8.1.0-hermes.1', 'directory identity drift')
     require('deepmerge' not in manifest['dependencies'], 'unused dependency returned')
-    lock = json.loads((root / 'website/package-lock.json').read_text())
-    package_json = json.loads((root / 'website/package.json').read_text())
+    lock = json.loads((root / 'website/package-lock.json').read_text(encoding="utf-8-sig"))
+    package_json = json.loads((root / 'website/package.json').read_text(encoding="utf-8-sig"))
     require(package_json['dependencies'].get(NAME) == 'file:vendor/svgr-plugin-svgo', 'root dependency custody drift')
     require(package_json['overrides'].get(NAME) == '$' + NAME, 'override custody drift')
     require(lock['packages']['']['dependencies'].get(NAME) == 'file:vendor/svgr-plugin-svgo', 'lock root dependency custody drift')
@@ -50,7 +50,7 @@ def stage(root, installed=False):
     destination = root / '.osv-lockfiles/svgr-upstream/package-lock.json'
     destination.parent.mkdir(parents=True, exist_ok=True)
     projection = {'name': 'advisory-projection-not-installed-svgr-upstream', 'version': '1.0.0', 'lockfileVersion': 3, 'packages': {'': {'name': 'advisory-projection-not-installed-svgr-upstream','version':'1.0.0'}, 'node_modules/@svgr/plugin-svgo': {'name': NAME, 'version': '8.1.0', 'resolved': TARBALL, 'integrity': INTEGRITY}}}
-    destination.write_text(json.dumps(projection, indent=2) + '\n')
+    destination.write_text(json.dumps(projection, indent=2) + '\n', encoding="utf-8")
     return destination
 
 def validate_scan(code, payload):
@@ -89,7 +89,7 @@ def main():
         print(stage(args.root, installed=args.installed))
     else:
         require(args.results is not None, 'missing scanner results path')
-        validate_scan(args.exit_code, json.loads(args.results.read_text()))
+        validate_scan(args.exit_code, json.loads(args.results.read_text(encoding="utf-8-sig")))
         print('Upstream identity advisory scan: zero findings')
 
 if __name__ == '__main__':

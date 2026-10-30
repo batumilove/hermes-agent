@@ -21,6 +21,9 @@ patches:
   - tests/ci/test_svgr_directory_tracking.py
   - tests/ci/test_svgr_installed_gate.py
   - tests/ci/test_svgr_adversarial.py
+  - tests/ci/test_pr450_ci_repairs.py
+  - tests/scripts/test_osv_scanner_workflow.py
+  - contributors/emails/local-qualification@invalid
   - .github/workflows/osv-scanner.yml
   tests:
   - node website/scripts/test-security-dependencies.cjs

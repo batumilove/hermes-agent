@@ -59,7 +59,7 @@ def _docker_step(image: str) -> dict:
         if isinstance(step, dict)
         and isinstance(step.get("run"), str)
         and image in step["run"]
-        and "--entrypoint /root/osv-reporter" not in step["run"]
+        and "--entrypoint /tools/osv-reporter" not in step["run"]
         and "--lockfile=.osv-lockfiles/hermes/uv.lock" in step["run"]
     ]
     assert len(matches) == 1, f"expected exactly one step invoking {image}"
@@ -121,6 +121,7 @@ def _run_results_validation(tmp_path: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["bash", "-euo", "pipefail", "-c", _named_step("Validate scan results")["run"]],
         cwd=tmp_path,
+        env={**os.environ, "RUNNER_TEMP": str(tmp_path)},
         capture_output=True,
         text=True,
         check=False,
@@ -134,7 +135,8 @@ def test_missing_osv_results_fail_validation(tmp_path: Path) -> None:
 
 
 def test_malformed_osv_results_fail_validation(tmp_path: Path) -> None:
-    (tmp_path / "results.json").write_text("not json", encoding="utf-8")
+    (tmp_path / "osv-output").mkdir()
+    (tmp_path / "osv-output/results.json").write_text("not json", encoding="utf-8")
 
     result = _run_results_validation(tmp_path)
 
@@ -142,7 +144,8 @@ def test_malformed_osv_results_fail_validation(tmp_path: Path) -> None:
 
 
 def test_well_formed_osv_results_pass_validation(tmp_path: Path) -> None:
-    (tmp_path / "results.json").write_text('{"results": []}', encoding="utf-8")
+    (tmp_path / "osv-output").mkdir()
+    (tmp_path / "osv-output/results.json").write_text('{"results": []}', encoding="utf-8")
 
     result = _run_results_validation(tmp_path)
 
@@ -178,7 +181,7 @@ def _reporter_step() -> dict:
         for step in _scan_steps()
         if isinstance(step, dict)
         and isinstance(step.get("run"), str)
-        and "--entrypoint /root/osv-reporter" in step["run"]
+        and "--entrypoint /tools/osv-reporter" in step["run"]
     ]
     assert len(matches) == 1, "expected exactly one osv-reporter step"
     return matches[0]
