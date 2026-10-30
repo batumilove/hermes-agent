@@ -31,6 +31,8 @@ patches:
   - tests/fixtures/distlib-0.4.2.json
   - tests/fixtures/distlib-0.4.2.members/**
   - tests/hermes_cli/test_native_launcher_diagnostics.py
+  - tests/hermes_cli/test_fixture_prerequisites.py
+  - tests/hermes_cli/test_borrowed_home_launch.py
   - tests/hermes_cli/test_launcher_fixture_child.py
   - tests/hermes_cli/test_source_launcher_publication.py
   - tests/hermes_cli/test_ensure_windows_bin_launchers.py
