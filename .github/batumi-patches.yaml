@@ -5,24 +5,68 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
-- id: qs-svgr-unused-deepmerge-remediation
+- id: qs-supported-site-dependency-removal
   kind: compatibility
-  rationale: Resolve qs security fixes and remove the unused vulnerable deepmerge
-    declaration from an integrity-verified SVGR plugin derivative without changing
-    upstream executable bytes or suppressing advisories.
+  rationale: Preserve qs 6.16.2 security fixes while replacing the disabled classic preset
+    with supported constituents, removing unused SVGR and deepmerge entirely.
   paths:
   - scripts/whatsapp-bridge/package-lock.json
   - website/.npmrc
   - website/package.json
   - website/package-lock.json
   - website/scripts/test-security-dependencies.cjs
-  - website/vendor/svgr-plugin-svgo/**
+  - website/docusaurus.config.ts
   tests:
   - node website/scripts/test-security-dependencies.cjs
   - npm --prefix website audit --registry=https://registry.npmjs.org
   - npm --prefix scripts/whatsapp-bridge audit --registry=https://registry.npmjs.org
-  retirement: Remove the derivative when a maintained upstream plugin removes or
-    fixes deepmerge and the resolved graph, consumer probes and website build pass.
+  retirement: Retire when upstream supplies equivalent supported site configuration and
+    fixed qs resolution without reintroducing unused vulnerable dependencies.
+- id: upgrade-service-manager-shim-contract
+  kind: compatibility
+  rationale: Permit only the exact production read-only gateway unit listing in the
+    upgrade sandbox while retaining argv logging, mutation denial, near-match refusal,
+    and the live-system guard before shim execution.
+  paths:
+  - tests/e2e/core/upgrade/_helpers.py
+  - tests/scripts/test_upgrade_service_manager_shims.py
+  tests:
+  - scripts/run_tests.sh tests/scripts/test_upgrade_service_manager_shims.py
+  retirement: Remove when upstream upgrade shims admit the same exact read-only discovery
+    command and preserve equivalent mutation-denial and live-system-guard regressions.
+- id: high-fd-pty-stream-framing-regression
+  kind: compatibility
+  rationale: Preserve the existing high-fd output and idle-wait assertions while accepting
+    legal PTY read boundaries that split the marker from CRLF; exercise both native and
+    forced split framing without replacing real PTY I/O or readiness waits.
+  paths:
+  - tests/tools/test_drain_high_fd.py
+  tests:
+  - scripts/run_tests.sh tests/tools/test_drain_high_fd.py
+  retirement: Remove when upstream high-fd PTY regression coverage accepts split CRLF
+    framing while retaining real output, idle-wait, and EMFILE fallback assertions.
+- id: hosted-image-history-and-undici-floor
+  kind: operations
+  rationale: Acquire disconnected source history before invoking the existing release/import
+    identity policy, populate source-bound packageVersion in both application image paths,
+    and retain the reviewed Undici 6.29.1 security floor with WebSocket boundary regressions.
+    Offline tests require pytest, PyYAML, FastAPI and repository test dependencies in an
+    isolated disposable home; hosted preparation additionally requires Git HTTPS access.
+  paths:
+  - .github/workflows/docker.yml
+  - scripts/build/image_identity.py
+  - tests/scripts/test_hosted_image_identity.py
+  - tests/scripts/test_image_identity.py
+  - pm/lock.json
+  - pm/npm_security_overlay.py
+  - tests/pm/test_npm_security_overlay.py
+  - tests/tools/test_dockerfile_vulnerability_floors.py
+  - tests/hermes_cli/test_websocket_preaccept_boundary.py
+  tests:
+  - scripts/run_tests.sh tests/scripts/test_hosted_image_identity.py tests/scripts/test_image_identity.py tests/scripts/test_fork_provenance_v2.py tests/hermes_cli/test_version_import_provenance.py
+  - scripts/run_tests.sh tests/pm/test_npm_security_overlay.py tests/tools/test_dockerfile_vulnerability_floors.py tests/hermes_cli/test_websocket_preaccept_boundary.py
+  retirement: Remove when upstream provides equivalent verified history acquisition and
+    image package identity preparation, patched Undici floor, and boundary regressions.
 - id: s6-waited-cleanup-immutable-publication
   kind: operations
   rationale: Preserve bounded gateway-only shutdown before the short s6 sweep and
@@ -2350,14 +2394,31 @@ patches:
   kind: core
   rationale: Verify the pinned upstream release and exact tree-import proof when deriving
     source runtime identity, preserving plugin version gates across squashed fork imports.
+    Runtime snapshots and build/contributor tools share the shipped stdlib-only proof implementation.
   paths:
   - hermes_cli/version_info.py
   - hermes_cli/version_provenance.py
   - tests/hermes_cli/test_version_import_provenance.py
+  - hermes_cli/fork_provenance.py
   - scripts/fork_provenance.py
+  - scripts/fork_contributors.py
+  - scripts/fork_check_base.py
+  - scripts/check_fork_delta.py
+  - scripts/ci/prepare_upgrade_source.py
+  - scripts/ci/catalog_upstream_import.py
+  - tests/scripts/test_hosted_image_identity.py
+  - tests/scripts/test_upgrade_source_checkout.py
+  - tests/scripts/test_catalog_upstream_import.py
+  - tests/scripts/test_fork_provenance_v2.py
+  - tests/scripts/test_image_identity.py
+  - tests/scripts/test_supply_chain_import_scan.py
+  - tests/ci/test_plugin_catalog_ci_confinement.py
   - scripts/build/image_identity.py
   - website/docs/getting-started/updating.md
   tests:
   - scripts/run_tests.sh tests/hermes_cli/test_version_import_provenance.py tests/hermes_cli/test_version_info.py
     tests/scripts/test_image_identity.py tests/scripts/test_fork_provenance_v2.py
+  - scripts/run_tests.sh tests/scripts/test_hosted_image_identity.py tests/scripts/test_upgrade_source_checkout.py
+    tests/scripts/test_catalog_upstream_import.py tests/scripts/test_supply_chain_import_scan.py
+    tests/ci/test_plugin_catalog_ci_confinement.py
   retirement: Remove when upstream runtime identity admits verified tree-import ancestry.

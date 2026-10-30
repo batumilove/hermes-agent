@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from scripts import fork_provenance
+from hermes_cli import fork_provenance
 from scripts.ci.catalog_upstream_import import verify_import
 
 
@@ -114,7 +114,7 @@ def test_workflow_routes_only_authenticated_imports_away_from_readmission(tmp_pa
     branch = git(repo, "branch", "--show-current")
     git(repo, "checkout", "main")
     git(repo, "merge", "--no-ff", branch, "-m", "PR merge")
-    for relative in ("scripts/fork_provenance.py", "scripts/ci/catalog_upstream_import.py"):
+    for relative in ("hermes_cli/fork_provenance.py", "scripts/ci/catalog_upstream_import.py"):
         destination = repo / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(root / relative, destination)

@@ -10,7 +10,7 @@ import sys
 
 import pytest
 
-from scripts import fork_provenance as provenance
+from hermes_cli import fork_provenance as provenance
 from scripts.ci import prepare_upgrade_source as upgrade
 
 
