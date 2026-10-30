@@ -5,6 +5,21 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: tornado-66-security-floor
+  kind: operations
+  rationale: Raise the optional Telegram webhook Tornado floor to 6.6 for
+    GHSA-pcg2-g6cj-q92c, GHSA-pw9p-v7r6-gx4p and GHSA-r4j5-9xpp-3985;
+    retain the next-major bound and global release-age policy. Offline tests
+    require the repository Python test environment; no live bot token is needed.
+  paths:
+  - pyproject.toml
+  - uv.lock
+  - tests/test_packaging_metadata.py
+  tests:
+  - python -m pm.build_env --source . --check-lock
+  - scripts/run_tests.sh tests/test_packaging_metadata.py tests/pm/test_project_relock.py
+  retirement: Remove when the accepted upstream baseline carries the fixed
+    Tornado floor, resolved release and equivalent regression coverage.
 - id: qs-svgr-unused-deepmerge-remediation
   kind: compatibility
   rationale: Resolve qs security fixes and remove the unused vulnerable deepmerge
