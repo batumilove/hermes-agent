@@ -2307,6 +2307,8 @@ patches:
   - gateway/session_settlement_recovery.py
   - tests/gateway/test_daemon_handoff_completion.py
   - tests/gateway/fixtures/shared_authority_peer.py
+  - tests/hermes_cli/test_runtime_maintenance_exclusion.py
+  - tests/hermes_cli/test_runtime_maintenance_oracle.py
   tests:
   - scripts/run_tests.sh tests/gateway/test_bootstrap_browse_reservation.py tests/hermes_cli/test_browse_schema_drift.py
   - scripts/run_tests.sh tests/gateway/test_agent_cache.py tests/gateway/test_shutdown_runtime_ownership.py tests/gateway/test_managed_turn_shutdown_drain.py tests/gateway/test_session_kanban.py
