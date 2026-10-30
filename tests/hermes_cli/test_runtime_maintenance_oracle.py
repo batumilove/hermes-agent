@@ -3,8 +3,6 @@ import sqlite3
 
 import pytest
 
-from gateway.runtime_ownership import ProfileOwnership
-from hermes_cli.backup import restore_quick_snapshot
 from tests.hermes_cli.test_runtime_maintenance_exclusion import (
     _live_bundle_state, _assert_live_bundle_unchanged,
 )
@@ -12,6 +10,10 @@ from tests.hermes_cli.test_runtime_maintenance_exclusion import (
 
 @pytest.fixture
 def live_database(tmp_path):
+    # Import only after pytest's HOME isolation; collection-time imports bind
+    # backup's native-home default before the per-test guard is installed.
+    from gateway.runtime_ownership import ProfileOwnership
+
     home = tmp_path / 'state'
     home.mkdir()
     path = home / 'state.db'
@@ -31,6 +33,8 @@ def live_database(tmp_path):
 
 
 def test_readonly_bookkeeping_is_not_a_refused_restore_mutation(live_database, caplog):
+    from hermes_cli.backup import restore_quick_snapshot
+
     home, path, writer = live_database
     # Do the logical read before advancing WAL, leaving an older read mark.
     _live_bundle_state(path)
@@ -55,6 +59,8 @@ def test_readonly_bookkeeping_is_not_a_refused_restore_mutation(live_database, c
 
 @pytest.mark.parametrize('suffix', ['', '-wal'])
 def test_oracle_rejects_durable_file_mutation(live_database, suffix):
+    from hermes_cli.backup import restore_quick_snapshot
+
     home, path, _ = live_database
     before = _live_bundle_state(path)
     assert not restore_quick_snapshot('not-opened-under-live-authority', hermes_home=home)
@@ -71,6 +77,8 @@ def test_oracle_rejects_durable_file_mutation(live_database, suffix):
 
 
 def test_oracle_rejects_logical_mutation_independently(live_database):
+    from hermes_cli.backup import restore_quick_snapshot
+
     home, path, writer = live_database
     before = _live_bundle_state(path)
     assert not restore_quick_snapshot('not-opened-under-live-authority', hermes_home=home)
