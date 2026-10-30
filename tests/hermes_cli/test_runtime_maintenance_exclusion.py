@@ -11,7 +11,56 @@ from tests.gateway.fixtures.local_recovery_probe import Model, daemon, rpc, webs
 from tests.waiting import async_wait_until
 
 
-def test_restore_refuses_live_authority_without_changing_data(tmp_path):
+def _live_bundle_state(path, *, logical=True):
+    """Observe rows before physical state: SELECT itself can update read marks."""
+    import hashlib
+    import sys
+
+    state = {}
+    if logical:
+        db = sqlite3.connect(f'file:{path}?mode=ro', uri=True)
+        try:
+            db.execute('BEGIN')
+            state['logical'] = tuple(db.iterdump())
+        finally:
+            db.close()
+    bundle = [Path(str(path) + suffix) for suffix in ('', '-wal', '-shm')]
+    state['topology'] = {
+        p.name: (p.stat().st_dev, p.stat().st_ino, p.stat().st_size)
+        for p in bundle if p.exists()
+    }
+    state['durable'] = {
+        p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+        for p in bundle[:2] if p.exists()
+    }
+    shm = bundle[2].read_bytes() if bundle[2].exists() else None
+    if shm is None:
+        state['shm_index'] = None
+        return state
+    # SQLite's Unix/Windows WAL-index format, not a byte-104 mask:
+    # https://www.sqlite.org/walformat.html#the_wal_index_header
+    # 0..95 are duplicate transaction headers (version 3007000).
+    # 100..119 are the five native-endian uint32 reader marks. Retain every
+    # other byte, including checkpoint counters, both transaction headers and
+    # the complete frame-index/hash-table area. No checkpoint is permitted
+    # during this measurement (DB/WAL hashes also independently reject one).
+    assert int.from_bytes(shm[:4], sys.byteorder) == 3007000
+    assert shm[:48] == shm[48:96]
+    assert shm[12] == 1
+    assert len(shm) >= 32768 and len(shm) % 32768 == 0
+    state['shm_index'] = shm[:100], shm[120:]
+    return state
+
+
+def _assert_live_bundle_unchanged(before, after):
+    assert before['topology'] == after['topology'], 'bundle identity/topology changed'
+    assert before['durable'] == after['durable'], 'durable DB/WAL bytes changed'
+    assert before['shm_index'] == after['shm_index'], 'SHM transaction/index changed'
+    if 'logical' in before and 'logical' in after:
+        assert before['logical'] == after['logical'], 'logical database state changed'
+
+
+def test_restore_refuses_live_authority_without_changing_data(tmp_path, caplog):
     from hermes_cli.backup import create_quick_snapshot, restore_quick_snapshot
 
     root = Path(__file__).resolve().parents[2]
@@ -54,9 +103,15 @@ def test_restore_refuses_live_authority_without_changing_data(tmp_path):
             assert dict(before) == {'warm': 'terminal', 'started': 'started', 'queued': 'queued'}
             import hashlib
             bundle = [Path(str(home / 'state.db') + suffix) for suffix in ('', '-wal', '-shm')]
-            hashes = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in bundle if p.exists()}
+            baseline = _live_bundle_state(home / 'state.db')
             restored = restore_quick_snapshot(snapshot, hermes_home=home)
-            assert hashes == {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in bundle if p.exists()}
+            assert not restored
+            assert 'maintenance refused' in caplog.text.lower()
+            # Capture physical state before our deliberate post-refusal SELECT.
+            physical_after = _live_bundle_state(home / 'state.db', logical=False)
+            _assert_live_bundle_unchanged(baseline, physical_after)
+            logical_after = _live_bundle_state(home / 'state.db')
+            assert baseline['logical'] == logical_after['logical']
             after = rows()
             print(json.dumps({'live_restore': restored, 'before': before, 'after': after}), flush=True)
             assert not restored and after == before
