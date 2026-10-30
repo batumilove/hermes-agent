@@ -5,6 +5,22 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: native-windows-pinned-launcher-publication
+  kind: core
+  rationale: Preserve both native CLI names on Windows using PM's pinned standalone supplier and staged per-destination publication; fail dependency sync when mandatory launcher publication fails. Required by the original old-gateway update journey; no diagnostic capture ships.
+  paths:
+  - hermes_cli/_launchers.py
+  - hermes_cli/venv_sync.py
+  - tests/conftest.py
+  - tests/fixtures/README-native-supplier.md
+  - tests/fixtures/distlib-0.4.2.json
+  - tests/fixtures/distlib-0.4.2.tar.gz
+  - tests/hermes_cli/test_native_launcher_transaction.py
+  - tests/native_supplier.py
+  - tests/test_native_supplier_fixture.py
+  tests:
+  - python -m pytest tests/test_native_supplier_fixture.py tests/hermes_cli/test_native_launcher_transaction.py tests/hermes_cli/test_source_launcher_publication.py tests/hermes_cli/test_hermes_home_shared_launchers.py
+  retirement: Remove when upstream provides equivalent pinned native pair publication and fail-closed receipts. Unit tests require the ordinary repository pytest environment; injected Windows PE generation is not native execution. Complete PM integration requires Python 3.14 and its full cached dependency set.
 - id: isolated-upgrade-empty-service-discovery
   kind: compatibility
   rationale: Model the isolated upgrade fixture's empty service-manager world only for the exact read-only gateway listing; retain denial and logging for mutation and unknown calls without changing production refusal or E2E assertions.
