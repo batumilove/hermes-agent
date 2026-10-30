@@ -23,8 +23,10 @@ assert.match(plugin(svg, {svgo:true, svgoConfig:{plugins:[]}}, {}), /id="shape"/
 assert.throws(() => plugin('<svg><', {svgo:true}, {}));
 for (const base of [root, path.resolve(root, '../scripts/whatsapp-bridge')]) {
   const r = createRequire(path.join(base, 'package.json'));
-  const qs = r('qs');
-  assert.equal(r('qs/package.json').version, '6.16.2');
+  // npm may nest the override beneath Express rather than hoist it.
+  const expressRequire = createRequire(r.resolve('express'));
+  const qs = expressRequire('qs');
+  assert.equal(expressRequire('qs/package.json').version, '6.16.1');
   for (const encodeValuesOnly of [false, true]) {
     assert.doesNotThrow(() => qs.stringify(JSON.parse('{"a":[{"toString":"x"}]}'), {arrayFormat:'comma', encodeValuesOnly}));
   }

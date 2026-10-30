@@ -32,7 +32,9 @@ patches:
   - website/package-lock.json
   - website/scripts/test-security-dependencies.cjs
   - website/vendor/svgr-plugin-svgo/**
+  - tests/test_qs_release_policy.py
   tests:
+  - python -m pytest --noconftest tests/test_qs_release_policy.py
   - node website/scripts/test-security-dependencies.cjs
   - npm --prefix website audit --registry=https://registry.npmjs.org
   - npm --prefix scripts/whatsapp-bridge audit --registry=https://registry.npmjs.org
