@@ -116,9 +116,17 @@ def test_a_borrower_holding_the_checkout_never_becomes_its_owner(tmp_path, monke
     holder = tmp_path / "data" / "dir"
     root = _checkout(tmp_path, monkeypatch, parent=holder)
     entry = default / "tools" / "python-owner"
-    python = entry / ("python.exe" if os.name == "nt" else "bin/python3")
-    python.parent.mkdir(parents=True)
-    python.touch()
+    from tests.native_supplier import provision_windows_python, unpack_supplier
+
+    if os.name == "nt":
+        python = provision_windows_python(entry)
+    else:
+        import shutil
+
+        python = entry / "bin/python3"
+        python.parent.mkdir(parents=True)
+        shutil.copy2(sys._base_executable, python)
+        unpack_supplier(python.parent / "Lib/site-packages")
     (default / "tools" / "facts.json").write_text(json.dumps(
         {"schema": 1, "packages": {"python": {"version": "fixture", "entry": entry.name}}}), encoding="utf-8")
     _state(default, root)

@@ -19,3 +19,11 @@ size limit; neither archive nor size scanner receives any exception.
 The existing Windows test extra 0.4.4 and production pins are unchanged.
 
 This fixture does not prove native Windows execution or sharing semantics.
+
+Borrowed-home owner publication must use a runnable private interpreter and
+this selected supplier, not a touched executable. The holder remains inert
+where it must never publish. A running repin holder must also commit a minimal
+dependency generation before launcher execution: stdlib-only main code does
+not bypass the real bootstrap's dependency guard. Portable prerequisite tests
+exercise the original setup and real bootstrap in a fresh child; they do not
+replace x64/ARM64 native launcher execution or mapped-image acceptance.

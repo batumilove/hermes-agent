@@ -398,6 +398,8 @@ def test_repin_without_distlib_retires_stale_native_launcher(tmp_path, monkeypat
     (repo / "hermes_cli/main.py").write_text(
         "import sys\ndef main():\n    print('ready', flush=True)\n    sys.stdin.read()\n    return 0\n",
         encoding="utf-8")
+    # Even a stdlib-only holder enters the real dependency bootstrap first.
+    select_generation(repo, "repin-holder", "ready")
     local = repo / ".hermes/bin"
     original = Path(_launchers.ensure_install_launchers(repo, local)[0])
     assert original.suffix == ".exe"
