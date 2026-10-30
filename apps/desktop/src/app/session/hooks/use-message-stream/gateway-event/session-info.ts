@@ -41,7 +41,20 @@ import {
   sessionInfoStatePatch
 } from '../utils'
 
+import type { ClientSessionState } from '../../../../types'
 import type { GatewayEventContext } from './types'
+
+/** Keep an optimistic submit armed until its grace expires, unless the owner
+ * confirms a versioned terminal state. */
+function shouldHoldPreStartTurn(state: ClientSessionState, event: GatewayEventContext['event']): boolean {
+  const armedAt = state.turnStartedAt
+  const withinPreStartGrace =
+    typeof armedAt === 'number' && Date.now() - armedAt < PRE_TURN_LIVE_SETTLE_GRACE_MS
+  const authoritative =
+    typeof event.authority_epoch === 'number' && typeof event.execution_generation === 'number'
+
+  return !authoritative && state.awaitingResponse && !state.sawAssistantPayload && !state.turnLive && withinPreStartGrace
+}
 
 /**
  * Whether a `session.info` payload's `stored_session_id` may be treated as the
@@ -419,22 +432,7 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
           // age bounds the hold; past the grace window (or with no clock
           // at all) the gateway's running=false is authoritative and the
           // settle below releases the session.
-          const armedAt = state.turnStartedAt
-
-          const withinPreStartGrace =
-            typeof armedAt === 'number' && Date.now() - armedAt < PRE_TURN_LIVE_SETTLE_GRACE_MS
-
-          // The owner stamps its claimed execution on the event params, not the payload.
-          const authoritative =
-            typeof event.authority_epoch === 'number' && typeof event.execution_generation === 'number'
-
-          if (
-            !authoritative &&
-            state.awaitingResponse &&
-            !state.sawAssistantPayload &&
-            !state.turnLive &&
-            withinPreStartGrace
-          ) {
+          if (shouldHoldPreStartTurn(state, event)) {
             return state
           }
 
