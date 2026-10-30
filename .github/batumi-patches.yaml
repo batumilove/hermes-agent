@@ -2385,7 +2385,9 @@ patches:
   - scripts/ci/pr439_hosted_acceptance.py
   - scripts/ci/pr439_s6_acceptance.py
   - tests/scripts/test_pr439_hosted_acceptance.py
+  - tests/scripts/test_pr439_s6_acceptance.py
   tests:
   - python3 tests/scripts/test_pr439_hosted_acceptance.py
+  - python3 tests/scripts/test_pr439_s6_acceptance.py
   - actionlint .github/workflows/pr439-hosted-acceptance.yml
   retirement: Remove after exact-source hosted acceptance is retained or upstream provides an equivalent nonpublishing caller.
