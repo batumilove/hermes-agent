@@ -204,6 +204,7 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
         turnLive: true,
         // A new turn is a new occurrence: the previous turn's late terminal
         // frame (#119569) can no longer claim its heartbeat-settled bubble.
+        reconnectHistoryPending: false,
         heartbeatSettledStreamId: null,
         // Keep the submit-time seed (submit.ts seedOptimistic) — resetting
         // here would hide the submit→accept round trip from the timer.

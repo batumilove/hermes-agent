@@ -4,10 +4,11 @@ import { act, cleanup, renderHook } from '@testing-library/react'
 import { useRef } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
+import { useSessionTileDelegate } from '@/app/contrib/hooks/use-session-tile-delegate'
 import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
 import { clearInFlightTurnJournal } from '@/lib/inflight-turn-journal'
 import { $messages, setActiveSessionId, setMessages } from '@/store/session'
-import { $sessionStates } from '@/store/session-states'
+import { $sessionStates, reconcileBusyStatesOnReconnect } from '@/store/session-states'
 
 import { usePromptActions } from '../use-prompt-actions'
 import { useSessionStateCache } from '../use-session-state-cache'
@@ -40,6 +41,17 @@ function mount() {
         busyRef.current = value
       },
       setMessages
+    })
+
+    // Match contrib/wiring.tsx: reconnect retirement must update the hook-owned
+    // cache through its installed delegate, not only the external store mirror.
+    useSessionTileDelegate({
+      archiveSession: noop, branchLoadedSession: async () => false,
+      branchStoredSession: noop, executeSlashCommand: async () => false,
+      removeSession: noop, requestGateway,
+      runtimeIdByStoredSessionIdRef: cache.runtimeIdByStoredSessionIdRef,
+      sessionStateByRuntimeIdRef: cache.sessionStateByRuntimeIdRef,
+      updateSessionState: cache.updateSessionState
     })
 
     const stream = useMessageStream({
@@ -80,6 +92,8 @@ function mount() {
 
   return {
     hydrate,
+    restorePersisted: (messages: ChatMessage[]) =>
+      hook.result.current.cache.updateSessionState(SID, state => ({ ...state, messages })),
     state: () => hook.result.current.cache.sessionStateByRuntimeIdRef.current.get(SID)!,
     send: (type: GatewayEventName, payload: Record<string, unknown> = {}) =>
       act(() => hook.result.current.stream.handleGatewayEvent({ type, payload, session_id: SID })),
@@ -137,6 +151,36 @@ async function toolHeavyTurn(h: ReturnType<typeof mount>) {
   await h.send('message.delta', { text: FULL })
   await flush()
 }
+
+it('recovers a persisted full reply when terminal frames are lost across reconnect', async () => {
+  const h = mount()
+  await h.submit()
+  await h.send('message.start')
+  await h.send('message.delta', { text: 'A8-9wmhbw' })
+  await flush()
+  const persisted = h.state().messages.map(message =>
+    message.role === 'assistant'
+      ? { ...message, parts: [{ type: 'text' as const, text: 'A8-9wmhbw survives the drop' }], pending: false }
+      : message
+  )
+  h.hydrate.mockImplementation(async () => { h.restorePersisted(persisted) })
+  expect(timeline(persisted).filter(([role]) => role === 'assistant')).toEqual([
+    ['assistant', 'A8-9wmhbw survives the drop']
+  ])
+  expect(timeline($messages.get()).filter(([role]) => role === 'assistant')).toEqual([
+    ['assistant', 'A8-9wmhbw']
+  ])
+  // No suffix or complete is delivered. Exercise the actual reconnect owner,
+  // then the backend's authoritative idle report, not a guessed timer delay.
+  act(() => reconcileBusyStatesOnReconnect())
+  await h.send('session.info', { running: false, stored_session_id: STORED })
+  await settle()
+  expect(timeline($messages.get())).toEqual(timeline(persisted))
+  expect(h.state().busy).toBe(false)
+  expect(h.state().awaitingResponse).toBe(false)
+  expect(h.hydrate).toHaveBeenCalledTimes(1)
+  h.dispose()
+})
 
 it('#119569 V1: tool-heavy turn keeps the just-delivered reply across complete', async () => {
   const h = mount()
