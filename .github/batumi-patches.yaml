@@ -17,6 +17,9 @@ patches:
   - website/package-lock.json
   - website/scripts/test-security-dependencies.cjs
   - website/vendor/svgr-plugin-svgo/**
+  - scripts/ci/svgr_upstream_tracking.py
+  - tests/ci/test_svgr_directory_tracking.py
+  - .github/workflows/osv-scanner.yml
   tests:
   - node website/scripts/test-security-dependencies.cjs
   - npm --prefix website audit --registry=https://registry.npmjs.org
@@ -530,6 +533,7 @@ patches:
   - apps/desktop/electron/git-review-ops.test.ts
   - tests/e2e/core/upgrade/network/test_mirrors.py
   - tests/pm/test_update_request_reuse.py
+  - tests/pm/test_undici_publication_floor.py
   tests:
   - scripts/run_tests.sh tests/test_npm_security_policy.py tests/tools/test_lazy_deps.py
   - npm ci --ignore-scripts && npm audit --audit-level=high

@@ -60,6 +60,7 @@ def _docker_step(image: str) -> dict:
         and isinstance(step.get("run"), str)
         and image in step["run"]
         and "--entrypoint /root/osv-reporter" not in step["run"]
+        and "--lockfile=.osv-lockfiles/hermes/uv.lock" in step["run"]
     ]
     assert len(matches) == 1, f"expected exactly one step invoking {image}"
     return matches[0]

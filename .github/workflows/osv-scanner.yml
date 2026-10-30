@@ -66,6 +66,21 @@ jobs:
             nix/node-gyp-11-4-0-package-lock.json \
             .osv-lockfiles/node-gyp-11-4-0/package-lock.json
 
+      - name: Validate derivative and stage original upstream identity
+        run: python3 scripts/ci/svgr_upstream_tracking.py stage
+
+      - name: Enforce original SVGR upstream advisory scan
+        run: |
+          set -euo pipefail
+          rc=0
+          docker run --rm --cap-drop=ALL --security-opt=no-new-privileges \
+            -v "$PWD:/src" -w /src \
+            ghcr.io/google/osv-scanner-action:v2.5.1@sha256:dcd947131d8d11b8d0964de6590661fb921a4ecbd7b90a7cb21083acfc3fd8cc \
+            --output=svgr-upstream-results.json --format=json \
+            --lockfile=.osv-lockfiles/svgr-upstream/package-lock.json || rc=$?
+          python3 scripts/ci/svgr_upstream_tracking.py check \
+            --exit-code="$rc" --results=svgr-upstream-results.json
+
       # Direct digest-pinned osv-scanner invocation (was
       # google/osv-scanner-action/osv-scanner-action@6e4298eb… # v2.5.1).
       # The remote action.yml pins its container by mutable tag
