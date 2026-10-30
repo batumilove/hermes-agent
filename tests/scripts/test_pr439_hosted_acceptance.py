@@ -25,12 +25,14 @@ class Acceptance(unittest.TestCase):
 
     def test_reconciled_binding_is_literal_and_old_identity_rejected(self):
         import yaml
-        source = '381d8e15a0f568c3a2e21be3dff99d221595a3c0'
-        tree = 'b7a5493e92968857f2143cbec0e7221e6f83558f'
+        source = '1e1b607ffb806e0e98fd79fb0d4206d0f80fbdc7'
+        tree = 'dfb3fc438299c2cce00a4f59320fd710bf38277d'
         m = self.module
         self.assertEqual((m.SOURCE, m.TREE), (source, tree))
         self.assertEqual(m.admit(source, tree), (source, tree))
         stale = [
+            ('381d8e15a0f568c3a2e21be3dff99d221595a3c0', 'b7a5493e92968857f2143cbec0e7221e6f83558f'),
+            ('83948dd39987aa6db2d09e21bcc43e50fc153891', '32ae941ab0f0bec753238a47a5e4027e88dbb161'),
             ('1c26b6d9d74901a9ffdcc8c197946ed388b32836', '2c787f4eea7914550bdab7cdf68fa4d0307540ab'),
             ('f47b8970ae32abc11c1f16f4464de40d3c41e09f', '2dacb83a3c8c5d1959f69d64df1d500592076f9d'),
         ]
