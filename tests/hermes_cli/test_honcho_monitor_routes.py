@@ -37,21 +37,32 @@ def test_unrouted_endpoint_is_not_a_health_dependency(collect, pipeline):
     assert "⚪ spark-goat chat: not routed (skipped)" in hm.format_report(snapshot)
 
 
+def test_unknown_report_does_not_imply_spark_dependency(collect):
+    snapshot, request = collect({"_routing": {"status": "unknown"}})
+    snapshot = replace(snapshot, services={"ssh_ok": True})
+    report = hm.format_report(snapshot)
+    assert "Runtime routing: unverified (no provider probe)" in report
+    assert "spark-goat chat:" not in report
+    assert "Honcho routing unknown: effective config sources unverified" in report
+    request.assert_not_called()
+
+
 @pytest.mark.parametrize("stage", ["deriver", "summary", "dream", "dialectic", "embedding"])
 @pytest.mark.parametrize("base", ["http://192.168.10.211:8001/v1", "http://100.69.54.37:8001/v1"])
-def test_any_routed_stage_reactivates_probe_and_failure_alert(collect, stage, base):
+def test_unattested_route_does_not_reactivate_probe(collect, stage, base):
     snapshot, request = collect({stage: {"base_url": base, "model": "served"}})
-    request.assert_called_once()
-    assert not snapshot.spark_goat.get("skipped", False)
+    request.assert_not_called()
+    assert snapshot.spark_goat.get("skipped") is True
     alerts = []
     hm._spark_alerts(snapshot, None, alerts)
-    assert "spark-goat chat failed" in alerts
+    assert "spark-goat chat failed" not in alerts
 
 
-def test_routed_success_preserves_selected_model_and_response(collect):
+def test_unattested_route_keeps_selected_model_without_request(collect):
     snapshot, request = collect(
         {"deriver": {"base_url": "http://192.168.10.211:8001/v1", "model": "served"}},
         (True, {"choices": [{"message": {"content": "hi"}}]}, 0.2),
     )
-    assert snapshot.spark_goat["ok"] is True
-    assert request.call_args.args[1]["model"] == "served"
+    assert snapshot.spark_goat["ok"] is False
+    assert snapshot.spark_goat["model"] == "served"
+    request.assert_not_called()

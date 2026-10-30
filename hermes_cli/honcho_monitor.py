@@ -195,7 +195,10 @@ def parse_pipeline_env(raw: str) -> dict[str, dict[str, str]]:
 
     # Env is only one settings source: defaults, TOML and worker-container
     # divergence are not verified here. Absence is never proof of non-use.
-    routing = {"status": "unknown", "reason": "effective config sources unverified"}
+    routing = {
+        "status": "unknown",
+        "reason": "initializer, dotenv, TOML, fallback and dialectic provenance unverified",
+    }
     if len(raw) > 1024 * 1024:
         return {"_routing": routing}
     env: dict[str, str] = {}
@@ -264,6 +267,18 @@ def parse_pipeline_env(raw: str) -> dict[str, dict[str, str]]:
         if route not in parsed.values():
             parsed["route:" + prefix.lower()] = route
     return parsed
+
+
+def spark_probe_authorized(pipeline: dict[str, dict[str, str]]) -> bool:
+    """Fail closed until current effective-route proof and probe policy exist.
+
+    Parsed environment routes, including fallback URLs, are not evidence that
+    the running application selected them. No status string supplied in this
+    untrusted display mapping grants provider-call authority. The present
+    collector has no effective-config attestation or current probe-policy
+    input, so it cannot positively authorize a Spark call.
+    """
+    return False
 
 
 def load_state(path: Path | str | None = None) -> dict[str, Any]:
@@ -843,7 +858,7 @@ def format_report(snapshot: dict[str, Any] | HonchoSnapshot, previous_state: dic
     else:
         spark_icon = "🟢"
     if spark.get("skipped") and spark.get("routing_unknown"):
-        lines.append("⚪ spark-goat chat: routing unknown (probe not run)")
+        lines.append("⚪ Runtime routing: unverified (no provider probe)")
     elif spark.get("skipped"):
         lines.append("⚪ spark-goat chat: not routed (skipped)")
     else:
@@ -1252,9 +1267,7 @@ def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
     spark_model = select_spark_model(pipeline)
 
     # Retired endpoints are not health dependencies unless a stage routes there.
-    spark_skipped = not any(
-        is_spark_goat_chat_url(stage.get("base_url")) for stage in pipeline.values()
-    )
+    spark_skipped = not spark_probe_authorized(pipeline)
     if spark_skipped or not spark_model:
         spark_ok, spark_data, spark_dt = False, {}, 0.0
     else:
