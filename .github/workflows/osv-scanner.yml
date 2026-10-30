@@ -66,6 +66,50 @@ jobs:
             nix/node-gyp-11-4-0-package-lock.json \
             .osv-lockfiles/node-gyp-11-4-0/package-lock.json
 
+      - name: Set up pinned website runtime
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # 7.0.0
+        with:
+          node-version: 26.12.1
+
+      - name: Clean install derivative with lifecycle scripts suppressed
+        run: |
+          set -euo pipefail
+          npm install --global npm@12.1.0 --ignore-scripts --audit=false --fund=false
+          test "$(node --version)" = v26.12.1
+          test "$(npm --version)" = 12.1.0
+          npm --prefix website ci --ignore-scripts --audit=false --fund=false
+
+      - name: Validate installed derivative and stage original upstream identity
+        run: python3 scripts/ci/svgr_upstream_tracking.py stage --installed
+
+      - name: Prepare least-privilege scanner tools and output
+        run: |
+          set -euo pipefail
+          install -d -m 0700 "$RUNNER_TEMP/osv-tools" "$RUNNER_TEMP/osv-output"
+          image=ghcr.io/google/osv-scanner-action:v2.5.1@sha256:dcd947131d8d11b8d0964de6590661fb921a4ecbd7b90a7cb21083acfc3fd8cc
+          container=$(docker create "$image")
+          trap 'docker rm "$container"' EXIT
+          # The pinned image stores executables under mode-0700 /root.
+          # Extract unchanged binaries, never relax /root or run scans as root.
+          docker cp "$container:/root/osv-scanner" "$RUNNER_TEMP/osv-tools/osv-scanner"
+          docker cp "$container:/root/osv-reporter" "$RUNNER_TEMP/osv-tools/osv-reporter"
+
+      - name: Enforce original SVGR upstream advisory scan
+        run: |
+          set -euo pipefail
+          rc=0
+          docker run --rm \
+            --user "$(id -u):$(id -g)" --cap-drop=ALL --security-opt=no-new-privileges \
+            -v "$PWD:/src:ro" -w /src \
+            -v "$RUNNER_TEMP/osv-tools:/tools:ro" \
+            -v "$RUNNER_TEMP/osv-output:/output" \
+            -e HOME=/output --entrypoint /tools/osv-scanner \
+            ghcr.io/google/osv-scanner-action:v2.5.1@sha256:dcd947131d8d11b8d0964de6590661fb921a4ecbd7b90a7cb21083acfc3fd8cc \
+            --output=/output/svgr-upstream-results.json --format=json \
+            --lockfile=.osv-lockfiles/svgr-upstream/package-lock.json || rc=$?
+          python3 scripts/ci/svgr_upstream_tracking.py check \
+            --exit-code="$rc" --results="$RUNNER_TEMP/osv-output/svgr-upstream-results.json"
+
       # Direct digest-pinned osv-scanner invocation (was
       # google/osv-scanner-action/osv-scanner-action@6e4298eb… # v2.5.1).
       # The remote action.yml pins its container by mutable tag
@@ -77,9 +121,13 @@ jobs:
         run: |
           set -euo pipefail
           docker run --rm \
-            -v "$PWD:/src" -w /src \
+            --user "$(id -u):$(id -g)" --cap-drop=ALL --security-opt=no-new-privileges \
+            -v "$PWD:/src:ro" -w /src \
+            -v "$RUNNER_TEMP/osv-tools:/tools:ro" \
+            -v "$RUNNER_TEMP/osv-output:/output" \
+            -e HOME=/output --entrypoint /tools/osv-scanner \
             ghcr.io/google/osv-scanner-action:v2.5.1@sha256:dcd947131d8d11b8d0964de6590661fb921a4ecbd7b90a7cb21083acfc3fd8cc \
-            --output=results.json \
+            --output=/output/results.json \
             --format=json \
             --lockfile=.osv-lockfiles/hermes/uv.lock \
             --lockfile=pm/uv.lock \
@@ -98,7 +146,7 @@ jobs:
           import json
           from pathlib import Path
 
-          path = Path("results.json")
+          path = Path(__import__("os").environ["RUNNER_TEMP"]) / "osv-output/results.json"
           if not path.is_file() or path.stat().st_size == 0:
               raise SystemExit("OSV scan did not produce results.json")
 
@@ -121,12 +169,16 @@ jobs:
         run: |
           set -euo pipefail
           docker run --rm \
-            -v "$PWD:/src" -w /src \
+            --user "$(id -u):$(id -g)" --cap-drop=ALL --security-opt=no-new-privileges \
+            -v "$PWD:/src:ro" -w /src \
+            -v "$RUNNER_TEMP/osv-tools:/tools:ro" \
+            -v "$RUNNER_TEMP/osv-output:/output" \
+            -e HOME=/output \
             -e GITHUB_TOKEN="$GITHUB_TOKEN" \
-            --entrypoint /root/osv-reporter \
+            --entrypoint /tools/osv-reporter \
             ghcr.io/google/osv-scanner-action:v2.5.1@sha256:dcd947131d8d11b8d0964de6590661fb921a4ecbd7b90a7cb21083acfc3fd8cc \
-            --output=osv-results.sarif \
-            --new=results.json \
+            --output=/output/osv-results.sarif \
+            --new=/output/results.json \
             --gh-annotations=false \
             --fail-on-vuln=true
 
@@ -136,14 +188,14 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: OSV Scanner SARIF file
-          path: osv-results.sarif
+          path: ${{ runner.temp }}/osv-output/osv-results.sarif
           retention-days: 5
 
       - name: Upload to code scanning
         if: ${{ !cancelled() }}
         uses: github/codeql-action/upload-sarif@cdefb33c0f6224e58673d9004f47f7cb3e328b89 # v4.31.10
         with:
-          sarif_file: osv-results.sarif
+          sarif_file: ${{ runner.temp }}/osv-output/osv-results.sarif
 
   emit-status:
     name: Emit review status

@@ -8,7 +8,10 @@ patches:
 - id: qs-supported-site-dependency-removal
   kind: compatibility
   rationale: Preserve qs 6.16.2 security fixes while replacing the disabled classic preset
-    with supported constituents, removing unused SVGR and deepmerge entirely.
+    with supported constituents, removing unused SVGR and deepmerge from the installed graph.
+    Retain the reviewed historical derivative and its strict advisory projection controls
+    as non-installed custody evidence; validate absent dependencies against both manifests
+    and installed slots, while preserving historical derivative adversarial regressions.
   paths:
   - scripts/whatsapp-bridge/package-lock.json
   - website/.npmrc
@@ -16,6 +19,17 @@ patches:
   - website/package-lock.json
   - website/scripts/test-security-dependencies.cjs
   - website/docusaurus.config.ts
+  - website/vendor/svgr-plugin-svgo/**
+  - scripts/ci/svgr_upstream_tracking.py
+  - tests/ci/test_svgr_directory_tracking.py
+  - tests/ci/test_svgr_installed_gate.py
+  - tests/ci/test_svgr_supported_topology.py
+  - tests/ci/test_svgr_adversarial.py
+  - tests/ci/fixtures/svgr-historical/**
+  - tests/ci/test_pr450_ci_repairs.py
+  - tests/scripts/test_osv_scanner_workflow.py
+  - contributors/emails/local-qualification@invalid
+  - .github/workflows/osv-scanner.yml
   tests:
   - node website/scripts/test-security-dependencies.cjs
   - npm --prefix website audit --registry=https://registry.npmjs.org
@@ -574,6 +588,7 @@ patches:
   - apps/desktop/electron/git-review-ops.test.ts
   - tests/e2e/core/upgrade/network/test_mirrors.py
   - tests/pm/test_update_request_reuse.py
+  - tests/pm/test_undici_publication_floor.py
   tests:
   - scripts/run_tests.sh tests/test_npm_security_policy.py tests/tools/test_lazy_deps.py
   - npm ci --ignore-scripts && npm audit --audit-level=high
@@ -2292,6 +2307,8 @@ patches:
   - gateway/session_settlement_recovery.py
   - tests/gateway/test_daemon_handoff_completion.py
   - tests/gateway/fixtures/shared_authority_peer.py
+  - tests/hermes_cli/test_runtime_maintenance_exclusion.py
+  - tests/hermes_cli/test_runtime_maintenance_oracle.py
   tests:
   - scripts/run_tests.sh tests/gateway/test_bootstrap_browse_reservation.py tests/hermes_cli/test_browse_schema_drift.py
   - scripts/run_tests.sh tests/gateway/test_agent_cache.py tests/gateway/test_shutdown_runtime_ownership.py tests/gateway/test_managed_turn_shutdown_drain.py tests/gateway/test_session_kanban.py
