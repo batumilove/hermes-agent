@@ -22,7 +22,7 @@ def test_unresolved_config_is_explicit_unknown(raw):
 def test_env_only_never_proves_toml_defaults_or_worker_config():
     pipeline = hm.parse_pipeline_env('DERIVER_MODEL_CONFIG__MODEL=cloud\nDERIVER_MODEL_CONFIG__OVERRIDES__BASE_URL=https://cloud.example/v1')
     assert pipeline['_routing']['status'] == 'unknown'
-    assert pipeline['_routing']['reason'] == 'effective config sources unverified'
+    assert pipeline['_routing']['reason'] == 'initializer, dotenv, TOML, fallback and dialectic provenance unverified'
 
 @pytest.mark.parametrize('reverse', [False, True])
 def test_nested_leaf_wins_parent_independent_of_env_order(reverse):
