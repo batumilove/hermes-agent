@@ -30,6 +30,13 @@ from pathlib import Path
 
 import pytest
 
+
+@pytest.fixture
+def native_supplier(tmp_path):
+    """Declared exact-pin offline package fixture, independent of test runner."""
+    from tests.native_supplier import unpack_supplier
+    return unpack_supplier(tmp_path / 'native-supplier')
+
 # Ensure project root is importable
 PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:

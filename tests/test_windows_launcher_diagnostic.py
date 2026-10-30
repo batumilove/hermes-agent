@@ -79,43 +79,60 @@ def test_failure_retains_final_snapshot(tmp_path):
         assert str(exc) == 'original oracle'
     assert (tmp_path / 'launcher-diagnostic' / 'after.json').is_file()
 
-def test_maker_oneshot_not_consumed(tmp_path, monkeypatch):
+def test_maker_oneshot_not_consumed(tmp_path, monkeypatch, native_supplier):
+    import shutil
     from hermes_cli import _launchers as launchers
+    from tests.native_supplier import windows_unit_maker
 
-    class Maker:
-        def __init__(self, source, target, **kwargs):
-            self.target = Path(target)
+    python = tmp_path / 'python.exe'
+    python.touch()
+    shutil.copytree(native_supplier, tmp_path / 'Lib/site-packages/distlib')
+    real = windows_unit_maker(python)
+    consumed, calls = [], []
+    class Maker(real):
         def make(self, *args):
-            path = self.target / 'hermes.exe'
-            path.write_bytes(b'MZfixture')
-            return (str(p) for p in [path])
+            paths = super().make(*args)
+            calls.append(paths)
+            def once():
+                consumed.append(True)
+                yield from paths
+            return once()
 
     monkeypatch.setattr(launchers, '_is_windows', lambda: True)
-    monkeypatch.setattr(launchers, '_load_script_maker', lambda: Maker)
+    monkeypatch.setattr(launchers, '_store_script_maker', lambda selected: Maker if selected == python else None)
     for enabled in ('0', '1'):
+        out = tmp_path / enabled
+        out.mkdir()
         monkeypatch.setenv('HERMES_LAUNCHER_DIAGNOSTIC', enabled)
-        assert launchers.mint_launcher('hermes', tmp_path, tmp_path, tmp_path / 'python.exe', None) == tmp_path / 'hermes.exe'
+        result = launchers.mint_launcher('hermes', tmp_path, out, python, None)
+        assert result == out / 'hermes.exe'
+        assert launchers._valid_native(result, python, launchers._launcher_script('hermes', tmp_path, None))
+    assert len(calls) == 2
+    assert consumed == []
 
 
-def test_maker_throwing_observer_preserves_result(tmp_path, monkeypatch):
+def test_maker_throwing_observer_preserves_result(tmp_path, monkeypatch, native_supplier):
+    import shutil
     from hermes_cli import _launchers as launchers
     from hermes_cli import _launcher_diagnostic as observer
+    from tests.native_supplier import windows_unit_maker
 
-    class Maker:
-        def __init__(self, source, target, **kwargs):
-            self.target = Path(target)
-        def make(self, *args):
-            path = self.target / 'hermes.exe'
-            path.write_bytes(b'MZfixture')
-            return [str(path)]
-
+    python = tmp_path / 'python.exe'
+    python.touch()
+    shutil.copytree(native_supplier, tmp_path / 'Lib/site-packages/distlib')
+    attempts = []
     def fail(*args, **kwargs):
+        attempts.append(args)
         raise RuntimeError('DO_NOT_RETAIN')
     monkeypatch.setenv('HERMES_LAUNCHER_DIAGNOSTIC', '1')
     monkeypatch.setattr(observer, 'event', fail)
+    maker = windows_unit_maker(python)
     monkeypatch.setattr(launchers, '_is_windows', lambda: True)
-    monkeypatch.setattr(launchers, '_load_script_maker', lambda: Maker)
-    assert launchers.mint_launcher('hermes', tmp_path, tmp_path, tmp_path / 'python.exe', None) == tmp_path / 'hermes.exe'
+    monkeypatch.setattr(launchers, '_store_script_maker', lambda selected: maker if selected == python else None)
+    result = launchers.mint_launcher('hermes', tmp_path, tmp_path, python, None)
+    assert result == tmp_path / 'hermes.exe'
+    assert attempts
+    assert launchers._valid_native(result, python, launchers._launcher_script('hermes', tmp_path, None))
 
 
 def test_extensionless_both_bins(tmp_path):
@@ -187,7 +204,7 @@ def test_early_store_refusal_observed(tmp_path, monkeypatch):
     rows = []
     monkeypatch.setattr(launchers, '_diagnostic', lambda kind, **fields: rows.append({'kind': kind, **fields}))
     assert launchers._store_script_maker(tmp_path / 'python.exe') is None
-    assert rows == [{'kind': 'store-maker-refusal', 'available': False, 'reason': 'missing-scripts'}]
+    assert rows == [{'kind': 'store-maker-refusal', 'available': False, 'reason': 'invalid-selected-supplier'}]
 
 
 def test_retirement_rename_and_aside_outcomes(tmp_path, monkeypatch):

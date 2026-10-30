@@ -11,12 +11,12 @@ from hermes_cli import _launchers as subject
 
 
 @pytest.fixture
-def runtime(tmp_path, monkeypatch):
+def runtime(tmp_path, monkeypatch, native_supplier):
     python = tmp_path / 'store' / 'python.exe'
     python.parent.mkdir()
     python.touch()
     supplier = python.parent / 'Lib/site-packages/distlib'
-    shutil.copytree(Path(os.environ['TEST_DISTLIB_SUPPLIER']), supplier)
+    shutil.copytree(native_supplier, supplier)
     out = tmp_path / 'bin'
     out.mkdir()
     monkeypatch.setattr(subject, '_is_windows', lambda: True)
