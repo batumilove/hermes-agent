@@ -34,6 +34,7 @@ import {
 } from '@/store/session'
 import { reportInstallMethodWarning } from '@/store/updates'
 
+import type { ClientSessionState } from '../../../../types'
 import {
   applySessionInfoStatePatch,
   hasSessionInfoStatePatch,
@@ -41,7 +42,6 @@ import {
   sessionInfoStatePatch
 } from '../utils'
 
-import type { ClientSessionState } from '../../../../types'
 import type { GatewayEventContext } from './types'
 
 /** Keep an optimistic submit armed until its grace expires, unless the owner
