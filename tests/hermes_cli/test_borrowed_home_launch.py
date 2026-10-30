@@ -122,10 +122,20 @@ def test_a_borrower_holding_the_checkout_never_becomes_its_owner(tmp_path, monke
         python = provision_windows_python(entry)
     else:
         import shutil
+        import sysconfig
 
         python = entry / "bin/python3"
         python.parent.mkdir(parents=True)
         shutil.copy2(sys._base_executable, python)
+        # A copied relocatable interpreter cannot use its original stdlib landmark.
+        # Pair it with private runtime bytes, without borrowing installed suppliers.
+        stdlib = Path(sysconfig.get_path("stdlib"))
+        owner_stdlib = entry / sys.platlibdir / stdlib.name
+        shutil.copytree(stdlib, owner_stdlib,
+                        ignore=shutil.ignore_patterns("site-packages", "__pycache__"))
+        dynload = Path(sysconfig.get_config_var("DESTSHARED"))
+        if dynload.is_dir() and dynload.resolve() != (stdlib / "lib-dynload").resolve():
+            shutil.copytree(dynload, owner_stdlib / "lib-dynload", dirs_exist_ok=True)
         unpack_supplier(python.parent / "Lib/site-packages")
     (default / "tools" / "facts.json").write_text(json.dumps(
         {"schema": 1, "packages": {"python": {"version": "fixture", "entry": entry.name}}}), encoding="utf-8")
