@@ -86,7 +86,12 @@ def publish_launchers(project_root: Path, *, create: bool = True) -> None:
         # this skip is a half-finished update, never a quiet no-op.
         log.warning("launchers: no managed interpreter under %s; %s not published",
                     root, root / ".hermes" / "bin")
-        return
+        from hermes_cli._launchers import _is_windows
+        if not _is_windows():
+            return  # Preserve the external/POSIX bootstrap contract.
+        from pm.package import InstallError
+
+        raise InstallError("launchers", "no managed interpreter", "finish pm install before publishing launchers")
     written = ensure_install_launchers(root, root / ".hermes" / "bin")
     if len(written) != len(ENTRY_POINTS):
         from pm.package import InstallError
@@ -94,9 +99,13 @@ def publish_launchers(project_root: Path, *, create: bool = True) -> None:
         raise InstallError("launchers", "source launcher publication failed", "retry the source update")
     result = expose_cli(root, create=create)
     if not result["ok"]:
-        import logging
+        from hermes_cli._launchers import _is_windows
+        if not _is_windows():
+            log.warning("CLI exposure failed: %s", result["error"])
+            return
+        from pm.package import InstallError
 
-        logging.getLogger(__name__).warning("CLI exposure failed: %s", result["error"])
+        raise InstallError("launchers", f"CLI exposure failed: {result['error']}", "retry the source update")
 
 
 def sync(project_root: Path | None = None, *, check: bool = False) -> dict:

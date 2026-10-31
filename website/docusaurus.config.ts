@@ -1,6 +1,12 @@
 import {themes as prismThemes} from 'prism-react-renderer';
 import type {Config} from '@docusaurus/types';
-import type * as Preset from '@docusaurus/preset-classic';
+import type {Options as DocsOptions} from '@docusaurus/plugin-content-docs';
+import type {Options as ThemeOptions} from '@docusaurus/theme-classic';
+import type {ThemeConfig as BaseThemeConfig} from '@docusaurus/types';
+import type {UserThemeConfig as ClassicThemeConfig} from '@docusaurus/theme-common';
+import type {UserThemeConfig as AlgoliaThemeConfig} from '@docusaurus/theme-search-algolia';
+
+type ThemeConfig = BaseThemeConfig & ClassicThemeConfig & AlgoliaThemeConfig;
 import relativeDocLinks from './src/remark/relativeDocLinks';
 
 const config: Config = {
@@ -38,10 +44,22 @@ const config: Config = {
   },
 
   themes: [
+    ['@docusaurus/theme-classic', {customCss: './src/css/custom.css'} satisfies ThemeOptions],
+    '@docusaurus/theme-search-algolia',
     '@docusaurus/theme-mermaid',
   ],
 
   plugins: [
+    ['@docusaurus/plugin-content-docs', {
+      routeBasePath: '/',
+      sidebarPath: './sidebars.ts',
+      editUrl: 'https://github.com/NousResearch/hermes-agent/edit/main/website/',
+      beforeDefaultRemarkPlugins: [[relativeDocLinks, {siteDir: __dirname}]],
+    } satisfies DocsOptions],
+    '@docusaurus/plugin-content-pages',
+    // Match classic preset defaults: debug in development, sitemap in production.
+    ...(process.env.NODE_ENV !== 'production' ? ['@docusaurus/plugin-debug'] : []),
+    ...(process.env.NODE_ENV === 'production' ? ['@docusaurus/plugin-sitemap'] : []),
     // Static /plugins/<name> and /plugins/by/<author> pages generated from the catalog JSON.
     './plugins/plugin-catalog-pages',
     [
@@ -73,26 +91,6 @@ const config: Config = {
           },
         ],
       },
-    ],
-  ],
-
-  presets: [
-    [
-      'classic',
-      {
-        docs: {
-          routeBasePath: '/',  // Docs at the root of /docs/
-          sidebarPath: './sidebars.ts',
-          editUrl: 'https://github.com/NousResearch/hermes-agent/edit/main/website/',
-          // Relative `.md` links (readable on GitHub, #114428) must also resolve
-          // across the zh-Hans fallback boundary; see src/remark/relativeDocLinks.js.
-          beforeDefaultRemarkPlugins: [[relativeDocLinks, {siteDir: __dirname}]],
-        },
-        blog: false,
-        theme: {
-          customCss: './src/css/custom.css',
-        },
-      } satisfies Preset.Options,
     ],
   ],
 
@@ -211,7 +209,7 @@ const config: Config = {
     mermaid: {
       theme: {light: 'neutral', dark: 'dark'},
     },
-  } satisfies Preset.ThemeConfig,
+  } satisfies ThemeConfig,
 };
 
 export default config;

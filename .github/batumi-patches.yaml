@@ -5,6 +5,150 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: tornado-66-security-floor
+  kind: operations
+  rationale: Raise the optional Telegram webhook Tornado floor to 6.6 for
+    GHSA-pcg2-g6cj-q92c, GHSA-pw9p-v7r6-gx4p and GHSA-r4j5-9xpp-3985;
+    retain the next-major bound and global release-age policy. Offline tests
+    require the repository Python test environment; no live bot token is needed.
+  paths:
+  - pyproject.toml
+  - uv.lock
+  - tests/test_packaging_metadata.py
+  tests:
+  - python -m pm.build_env --source . --check-lock
+  - scripts/run_tests.sh tests/test_packaging_metadata.py tests/pm/test_project_relock.py
+  retirement: Remove when the accepted upstream baseline carries the fixed
+    Tornado floor, resolved release and equivalent regression coverage.
+- id: native-windows-pinned-launcher-publication
+  kind: core
+  rationale: Preserve both native CLI names on Windows using PM's pinned standalone supplier and staged per-destination publication; fail dependency sync when mandatory launcher publication fails. Required by the original old-gateway update journey; no diagnostic capture ships.
+  paths:
+  - hermes_cli/_launchers.py
+  - hermes_cli/venv_sync.py
+  - tests/conftest.py
+  - tests/fixtures/README-native-supplier.md
+  - tests/fixtures/distlib-0.4.2.json
+  - tests/fixtures/distlib-0.4.2.members/**
+  - tests/hermes_cli/test_native_launcher_diagnostics.py
+  - tests/hermes_cli/test_fixture_prerequisites.py
+  - tests/hermes_cli/test_borrowed_home_launch.py
+  - tests/hermes_cli/test_launcher_fixture_child.py
+  - tests/hermes_cli/test_source_launcher_publication.py
+  - tests/hermes_cli/test_ensure_windows_bin_launchers.py
+  - tests/hermes_cli/test_hermes_home_shared_launchers.py
+  - tests/hermes_cli/test_launcher_runtime_selection.py
+  - tests/installation_launcher_fixture.py
+  - tests/tools/test_bot_delivery_install_launcher.py
+  - tests/test_native_supplier_remediation.py
+  - tests/hermes_cli/test_native_launcher_transaction.py
+  - tests/native_supplier.py
+  - tests/test_native_supplier_fixture.py
+  tests:
+  - python -m pytest tests/test_native_supplier_fixture.py tests/hermes_cli/test_native_launcher_transaction.py tests/hermes_cli/test_source_launcher_publication.py tests/hermes_cli/test_hermes_home_shared_launchers.py
+  retirement: Remove when upstream provides equivalent pinned native pair publication and fail-closed receipts. Unit tests require the ordinary repository pytest environment; injected Windows PE generation is not native execution. Complete PM integration requires Python 3.14 and its full cached dependency set.
+- id: isolated-upgrade-empty-service-discovery
+  kind: compatibility
+  rationale: Model the isolated upgrade fixture's empty service-manager world only for the exact read-only gateway listing; retain denial and logging for mutation and unknown calls without changing production refusal or E2E assertions.
+  paths:
+  - tests/e2e/core/upgrade/_helpers.py
+  - tests/test_upgrade_service_shims.py
+  tests:
+  - python3 tests/test_upgrade_service_shims.py
+  - scripts/run_tests.sh tests/hermes_cli/test_update_pause_ownership.py
+  retirement: Remove when upstream fixtures model exact empty discovery while denying mutations. Run real updater E2E only in its documented private PID namespace with supervisor sockets hidden; focused shim tests do not prove E2E acceptance.
+- id: qs-supported-site-dependency-removal
+  kind: compatibility
+  rationale: Preserve qs 6.16.2 security fixes while replacing the disabled classic preset
+    with supported constituents, removing unused SVGR and deepmerge entirely.
+  paths:
+  - scripts/whatsapp-bridge/package-lock.json
+  - website/.npmrc
+  - website/package.json
+  - website/package-lock.json
+  - website/scripts/test-security-dependencies.cjs
+  - website/docusaurus.config.ts
+  tests:
+  - node website/scripts/test-security-dependencies.cjs
+  - npm --prefix website audit --registry=https://registry.npmjs.org
+  - npm --prefix scripts/whatsapp-bridge audit --registry=https://registry.npmjs.org
+  retirement: Retire when upstream supplies equivalent supported site configuration and
+    fixed qs resolution without reintroducing unused vulnerable dependencies.
+- id: upgrade-service-manager-shim-contract
+  kind: compatibility
+  rationale: Permit only the exact production read-only gateway unit listing in the
+    upgrade sandbox while retaining argv logging, mutation denial, near-match refusal,
+    and the live-system guard before shim execution.
+  paths:
+  - tests/e2e/core/upgrade/_helpers.py
+  - tests/scripts/test_upgrade_service_manager_shims.py
+  tests:
+  - scripts/run_tests.sh tests/scripts/test_upgrade_service_manager_shims.py
+  retirement: Remove when upstream upgrade shims admit the same exact read-only discovery
+    command and preserve equivalent mutation-denial and live-system-guard regressions.
+- id: high-fd-pty-stream-framing-regression
+  kind: compatibility
+  rationale: Preserve the existing high-fd output and idle-wait assertions while accepting
+    legal PTY read boundaries that split the marker from CRLF; exercise both native and
+    forced split framing without replacing real PTY I/O or readiness waits.
+  paths:
+  - tests/tools/test_drain_high_fd.py
+  tests:
+  - scripts/run_tests.sh tests/tools/test_drain_high_fd.py
+  retirement: Remove when upstream high-fd PTY regression coverage accepts split CRLF
+    framing while retaining real output, idle-wait, and EMFILE fallback assertions.
+- id: hosted-image-history-and-undici-floor
+  kind: operations
+  rationale: Acquire disconnected source history before invoking the existing release/import
+    identity policy, populate source-bound packageVersion in both application image paths,
+    and retain the reviewed Undici 6.29.1 security floor with WebSocket boundary regressions.
+    Offline tests require pytest, PyYAML, FastAPI and repository test dependencies in an
+    isolated disposable home; hosted preparation additionally requires Git HTTPS access.
+  paths:
+  - .github/workflows/docker.yml
+  - scripts/build/image_identity.py
+  - tests/scripts/test_hosted_image_identity.py
+  - tests/scripts/test_image_identity.py
+  - pm/lock.json
+  - pm/npm_security_overlay.py
+  - tests/pm/test_npm_security_overlay.py
+  - tests/tools/test_dockerfile_vulnerability_floors.py
+  - tests/hermes_cli/test_websocket_preaccept_boundary.py
+  tests:
+  - scripts/run_tests.sh tests/scripts/test_hosted_image_identity.py tests/scripts/test_image_identity.py tests/scripts/test_fork_provenance_v2.py tests/hermes_cli/test_version_import_provenance.py
+  - scripts/run_tests.sh tests/pm/test_npm_security_overlay.py tests/tools/test_dockerfile_vulnerability_floors.py tests/hermes_cli/test_websocket_preaccept_boundary.py
+  retirement: Remove when upstream provides equivalent verified history acquisition and
+    image package identity preparation, patched Undici floor, and boundary regressions.
+- id: s6-waited-cleanup-immutable-publication
+  kind: operations
+  rationale: Preserve bounded gateway-only shutdown before the short s6 sweep and
+    exact named/packaged foreground ownership. Rebind the hosted caller to the
+    reviewed immutable-only publisher with truthful caller SHA. The temporary
+    bridge is manual-only and has no deployment job, even when staging is enabled.
+    Source tests require the repository Python test environment; full-image
+    acceptance additionally requires Docker, a rebuilt exact-source image and
+    disposable data volumes. No live credentials are needed for offline tests.
+  paths:
+  - Dockerfile
+  - docker-compose.yml
+  - docker-compose.windows.yml
+  - docker/cont-finish.d/10-gateway-stop
+  - docker/wait-gateway-stop.py
+  - hermes_cli/service_manager.py
+  - tests/docker/NAMED_PROFILE_IDENTITY.md
+  - tests/docker/S6_CLEANUP_BUDGET.md
+  - tests/docker/s6_cleanup_probe.py
+  - tests/docker/test_named_gateway_identity.py
+  - tests/docker/test_s6_container_cleanup.py
+  - tests/docker/test_s6_wait_contract.py
+  - tests/docker/test_immutable_publication_caller.py
+  - .github/workflows/deploy-compose.yml
+  - website/docs/user-guide/docker.md
+  tests:
+  - scripts/run_tests.sh tests/docker/test_named_gateway_identity.py tests/docker/test_s6_wait_contract.py tests/docker/test_immutable_publication_caller.py
+  retirement: Remove shutdown delta after equivalent upstream gateway-only waited
+    cleanup and owner binding land. Replace the manual publication-only bridge
+    only through a reviewed change explicitly authorizing promotion/deployment.
 - id: mattermost-bounded-thread-context
   kind: compatibility
   rationale: Preserve a validated root reply pointer and bounded thread history on first entry,
@@ -2313,14 +2457,33 @@ patches:
   kind: core
   rationale: Verify the pinned upstream release and exact tree-import proof when deriving
     source runtime identity, preserving plugin version gates across squashed fork imports.
+    Ship the shared verifier in the runtime package and probe its installed-wheel import closure.
+    Runtime snapshots and build/contributor tools share the shipped stdlib-only proof implementation.
   paths:
   - hermes_cli/version_info.py
   - hermes_cli/version_provenance.py
+  - hermes_cli/fork_provenance.py
+  - tests/packaged_provenance_probe.py
   - tests/hermes_cli/test_version_import_provenance.py
   - scripts/fork_provenance.py
+  - scripts/fork_contributors.py
+  - scripts/fork_check_base.py
+  - scripts/check_fork_delta.py
+  - scripts/ci/prepare_upgrade_source.py
+  - scripts/ci/catalog_upstream_import.py
+  - tests/scripts/test_hosted_image_identity.py
+  - tests/scripts/test_upgrade_source_checkout.py
+  - tests/scripts/test_catalog_upstream_import.py
+  - tests/scripts/test_fork_provenance_v2.py
+  - tests/scripts/test_image_identity.py
+  - tests/scripts/test_supply_chain_import_scan.py
+  - tests/ci/test_plugin_catalog_ci_confinement.py
   - scripts/build/image_identity.py
   - website/docs/getting-started/updating.md
   tests:
   - scripts/run_tests.sh tests/hermes_cli/test_version_import_provenance.py tests/hermes_cli/test_version_info.py
     tests/scripts/test_image_identity.py tests/scripts/test_fork_provenance_v2.py
+  - scripts/run_tests.sh tests/scripts/test_hosted_image_identity.py tests/scripts/test_upgrade_source_checkout.py
+    tests/scripts/test_catalog_upstream_import.py tests/scripts/test_supply_chain_import_scan.py
+    tests/ci/test_plugin_catalog_ci_confinement.py
   retirement: Remove when upstream runtime identity admits verified tree-import ancestry.

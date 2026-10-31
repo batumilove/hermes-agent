@@ -8,7 +8,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from scripts import check_fork_delta, fork_provenance
+from scripts import check_fork_delta
+from hermes_cli import fork_provenance
 from scripts.fork_check_base import accepted_upstream, comparison_base
 from scripts.fork_contributors import new_author_emails
 

@@ -65,6 +65,8 @@ def _make_store(tmp_path, monkeypatch, *, version="3.11.15+x20260807"):
     (entry / "bin" / "python3").write_bytes(b"MZ fake store python")
     # Windows layout: python.exe at the entry root.
     (entry / "python.exe").write_bytes(b"MZ fake store python")
+    from tests.native_supplier import unpack_supplier
+    unpack_supplier(entry / 'Lib/site-packages')
     (store / "facts.json").write_text(
         json.dumps(
             {
