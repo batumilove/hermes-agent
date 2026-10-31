@@ -7,7 +7,7 @@ upstream:
 patches:
 - id: modern-glob-minimatch-security-paths
   kind: compatibility
-  rationale: Fix modern named-API glob and minimatch callers while retaining legacy callback and callable-module paths for separate migration. This partial does not clear the full OSV gate.
+  rationale: Scope modern glob and minimatch fixes to exercised ASAR4 and cacache18 callers; retain unqualified node-gyp and other minimatch consumers at published dependency families. This partial does not clear OSV or release-age gates.
   paths:
   - package.json
   - package-lock.json

@@ -80,10 +80,16 @@
     "sanitize-html": "2.18.1",
     "vite": "8.2.4",
     "zod@^4": "4.6.6",
-    "glob@>=9": "14.0.3",
-    "minimatch@>=9": "11.0.3",
     "path-scurry@^3": "3.0.0",
-    "@isaacs/nonrecursive-glob-match": "1.0.3"
+    "@isaacs/nonrecursive-glob-match": "1.0.3",
+    "minimatch@^10": "10.2.6",
+    "@electron/asar@4.1.1": {
+      "glob": "14.0.3",
+      "minimatch": "11.0.3"
+    },
+    "cacache@18.0.4": {
+      "glob": "14.0.3"
+    }
   },
   "engines": {
     "node": "^22.22.0 || ^24.11.0 || >=26.0.0",

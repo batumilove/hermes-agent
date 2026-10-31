@@ -7,11 +7,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_modern_glob_and_minimatch_paths_are_fixed():
     packages = json.loads((ROOT / "package-lock.json").read_text())["packages"]
-    for path, entry in packages.items():
-        if path.endswith("node_modules/glob") and int(entry["version"].split(".")[0]) >= 9:
-            assert entry["version"] == "14.0.3", (path, entry["version"])
-        if path.endswith("node_modules/minimatch") and int(entry["version"].split(".")[0]) >= 9:
-            assert entry["version"] == "11.0.3", (path, entry["version"])
+    assert packages["node_modules/@electron/asar/node_modules/glob"]["version"] == "14.0.3"
+    assert packages["node_modules/cacache/node_modules/glob"]["version"] == "14.0.3"
+    assert packages["node_modules/minimatch"]["version"] == "11.0.3"
+    assert packages["node_modules/get-windows/node_modules/node-gyp/node_modules/glob"]["version"] == "10.5.0"
+    for parent in ["eslint", "@eslint/config-array", "@typescript-eslint/typescript-estree", "app-builder-lib"]:
+        assert packages[f"node_modules/{parent}/node_modules/minimatch"]["version"] == "10.2.6"
+    manifest = json.loads((ROOT / "package.json").read_text())
+    assert "glob@>=9" not in manifest["overrides"]
+    assert "minimatch@>=9" not in manifest["overrides"]
 
 
 def test_legacy_callers_are_not_blindly_overridden():
