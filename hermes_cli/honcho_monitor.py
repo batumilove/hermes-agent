@@ -1331,7 +1331,8 @@ def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
     # persisted metadata, and never let its failure hide service-health checks.
     try:
         metadata = acquire_metadata(transport=readonly_transport)
-    except Exception:
+    except (OSError, ValueError, TypeError, KeyError, AttributeError,
+            RuntimeError, subprocess.SubprocessError, OverflowError):
         metadata = {}
     disk_usage = shutil.disk_usage(_state_path().parent)
     observer = {

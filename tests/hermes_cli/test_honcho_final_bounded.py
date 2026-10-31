@@ -6,8 +6,8 @@ from unittest.mock import Mock
 import pytest
 from hermes_cli import honcho_config_acquisition as a
 from hermes_cli import honcho_monitor as hm
-from test_honcho_config_acquisition import packet
-from test_honcho_monitor_metadata_integration import setup_offline
+from tests.hermes_cli.test_honcho_config_acquisition import packet
+from tests.hermes_cli.test_honcho_monitor_metadata_integration import setup_offline
 
 REAL_TRANSPORT = a.readonly_transport
 

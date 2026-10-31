@@ -28,6 +28,11 @@ def bounded_file(path, limit=300000):
 def bounded_run(argv, *, timeout=20, limit=262144):
     import selectors
     import signal
+    # Windows selectors cannot monitor anonymous subprocess pipes. Refuse before
+    # spawning rather than leaving a child behind on an unsupported transport.
+    if (os.name != 'posix' or not hasattr(os, 'killpg')
+            or not hasattr(signal, 'SIGKILL')):
+        raise OSError('metadata transport requires POSIX pipe selectors')
     deadline = time.monotonic() + timeout
     proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, start_new_session=True)
@@ -60,12 +65,15 @@ def bounded_run(argv, *, timeout=20, limit=262144):
     finally:
         # Kill the session even if the direct child exited but left pipe owners.
         try:
-            os.killpg(proc.pid, signal.SIGKILL)
+            if hasattr(os, 'killpg') and hasattr(signal, 'SIGKILL'): os.killpg(proc.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-        proc.wait()
-        proc.stdout.close()
-        proc.stderr.close()
+        finally:
+            try:
+                proc.wait(timeout=1.0)
+            finally:
+                proc.stdout.close()
+                proc.stderr.close()
 
 # Executed with isolated Python, without site initialization or application imports.
 # No environment value is returned. Route-leaf values are hashed only after strict
@@ -209,7 +217,8 @@ def acquire_metadata(*, transport=readonly_transport, clock=time.time, monotonic
             observations[name]['identity'] = {k: row[k] for k in ('container_id', 'image_id', 'started_at')}
         return dict(failure, reason='parser_source_closure_not_proven', stable=True,
                     collection_started_at=start, collected_at=end, observations=observations)
-    except Exception:
+    except (OSError, ValueError, TypeError, KeyError, AttributeError,
+            RuntimeError, subprocess.SubprocessError, OverflowError):
         # Never expose remote stderr, environment, source, or exception messages.
         return failure
 
