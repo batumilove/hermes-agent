@@ -1624,6 +1624,13 @@ patches:
   - .mailmap
   - hermes_cli/honcho_monitor.py
   - hermes_cli/honcho_queue_diagnostic.py
+  - hermes_cli/honcho_config_acquisition.py
+  - tests/hermes_cli/test_honcho_config_acquisition.py
+  - tests/hermes_cli/test_honcho_config_receipt.py
+  - tests/hermes_cli/test_honcho_final_bounded.py
+  - tests/hermes_cli/test_honcho_metadata_hardening.py
+  - tests/hermes_cli/test_honcho_monitor_metadata_integration.py
+  - tests/hermes_cli/test_honcho_acquisition_cleanup.py
   - scripts/honcho_monitor.py
   - tests/hermes_cli/test_honcho_monitor.py
   - tests/hermes_cli/test_honcho_queue_diagnostic.py
@@ -1633,6 +1640,9 @@ patches:
   - tests/hermes_cli/test_honcho_routing_unknown.py
   - tests/hermes_cli/test_literal_model_regression.py
   tests:
+  - scripts/run_tests.sh tests/hermes_cli/test_honcho_config_acquisition.py tests/hermes_cli/test_honcho_config_receipt.py
+    tests/hermes_cli/test_honcho_final_bounded.py tests/hermes_cli/test_honcho_metadata_hardening.py
+    tests/hermes_cli/test_honcho_monitor_metadata_integration.py tests/hermes_cli/test_honcho_acquisition_cleanup.py
   - scripts/run_tests.sh tests/hermes_cli/test_honcho_monitor.py tests/hermes_cli/test_honcho_queue_diagnostic.py
   - scripts/run_tests.sh tests/hermes_cli/test_honcho_monitor_routes.py tests/hermes_cli/test_honcho_routing_provenance.py tests/hermes_cli/test_honcho_route_review.py tests/hermes_cli/test_honcho_routing_unknown.py tests/hermes_cli/test_literal_model_regression.py
   retirement: Remove when the live watchdog and diagnostics migrate to a durable operations package that
