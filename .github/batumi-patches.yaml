@@ -2404,6 +2404,8 @@ patches:
   - apps/desktop/package.json
   - ui-tui/package.json
   - tests-js/package.json
+  - tests/gateway/test_google_chat_pyasn1_security.py
+  - plugins/platforms/google_chat/oauth.py
   - tests-js/security-lock-floors.test.ts
   - website/package.json
   - website/package-lock.json
