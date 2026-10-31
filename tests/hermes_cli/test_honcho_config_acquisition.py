@@ -17,7 +17,7 @@ def packet():
 
 def test_acquires_independent_baseline_and_never_asserts_route():
     calls = []
-    def transport(script):
+    def transport(script, **kwargs):
         calls.append(script)
         return json.dumps(packet())
     result = acquisition.acquire_metadata(transport=transport, clock=lambda: 2000)
@@ -40,7 +40,7 @@ def test_changes_invalidate_collection(field):
     first, second = packet(), packet()
     second["containers"]["deriver"][field] = {"changed": True} if isinstance(second["containers"]["deriver"][field], dict) else "changed"
     samples = iter([json.dumps(first), json.dumps(second)])
-    result = acquisition.acquire_metadata(transport=lambda _: next(samples), clock=lambda: 2000)
+    result = acquisition.acquire_metadata(transport=lambda _, **kwargs: next(samples), clock=lambda: 2000)
     assert result["status"] != "inspected_config_matches"
     assert result["receipt"] is None
     assert result.get("stable") is not True
@@ -48,20 +48,20 @@ def test_changes_invalidate_collection(field):
 
 @pytest.mark.parametrize("raw", ["{", "[]", "x" * 262145])
 def test_bad_transport_is_sanitized(raw):
-    result = acquisition.acquire_metadata(transport=lambda _: raw, clock=lambda: 2000)
+    result = acquisition.acquire_metadata(transport=lambda _, **kwargs: raw, clock=lambda: 2000)
     assert result["reason"] == "metadata_acquisition_failed"
     assert result["observations"] == {}
 
 
 def test_transport_exception_is_not_reflected():
-    def fail(_):
+    def fail(_, **kwargs):
         raise RuntimeError("credential-sentinel")
     assert "credential-sentinel" not in json.dumps(acquisition.acquire_metadata(transport=fail))
 
 
 def test_elapsed_ttl_rejected():
     stamps = iter([1000, 1301])
-    result = acquisition.acquire_metadata(transport=lambda _: json.dumps(packet()), clock=lambda: next(stamps))
+    result = acquisition.acquire_metadata(transport=lambda _, **kwargs: json.dumps(packet()), clock=lambda: next(stamps))
     assert result["reason"] == "collection_expired_or_changed"
 
 

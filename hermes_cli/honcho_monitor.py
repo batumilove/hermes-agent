@@ -912,6 +912,9 @@ def format_report(snapshot: dict[str, Any] | HonchoSnapshot, previous_state: dic
     if snapshot.services.get("ssh_ok") is False:
         lines.append("  Remote sample: stale (SSH unavailable; last valid counters/config shown)")
 
+    lines.append("  Configured routes (declared/observed API-container env; NOT effective loaded configuration)")
+    if snapshot.services.get("ssh_ok") is False:
+        lines.append("  Configured routes: UNKNOWN (cached env shown below; not a current observation)")
     for label, key in (
         ("Embedding", "embedding"),
         ("Deriver", "deriver"),
@@ -920,7 +923,21 @@ def format_report(snapshot: dict[str, Any] | HonchoSnapshot, previous_state: dic
         ("Dialectic", "dialectic"),
     ):
         stage = snapshot.pipeline.get(key, {})
-        lines.append(f"  {label}: {stage.get('model', '?')} @ {short_host(stage.get('base_url'))}")
+        model, base = stage.get('model', ''), stage.get('base_url', '')
+        if (not isinstance(model, str) or not re.fullmatch(r'[A-Za-z0-9_./:-]{1,400}', model)
+                or not isinstance(base, str) or not sanitize_base_url(base).startswith(('http://', 'https://'))):
+            lines.append(f"  {label}: UNKNOWN (missing/malformed declared env route)")
+        else:
+            lines.append(f"  {label}: {model} @ {short_host(base)}")
+    for key, stage in snapshot.pipeline.items():
+        if key.startswith('route:'):
+            model, base = stage.get('model', ''), stage.get('base_url', '')
+            if (isinstance(model, str) and re.fullmatch(r'[A-Za-z0-9_./:-]{1,400}', model)
+                    and isinstance(base, str) and sanitize_base_url(base).startswith(('http://', 'https://'))):
+                lines.append(f"  {key}: {model} @ {short_host(base)} [declared env only]")
+            else:
+                lines.append("  Additional declared env route: UNKNOWN (missing/malformed)")
+    lines.append("  Provenance: API-container env settings only; defaults/files/worker settings unverified; DB-inferred dimensions are stored-vector observations, NOT actual dispatch")
 
     embed = snapshot.pipeline.get("embedding", {})
     vector_dims_display = _embedding_vector_dimensions_display(embed, snapshot.db)

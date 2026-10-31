@@ -154,7 +154,7 @@ def fingerprint(value):
                                      allow_nan=False).encode()).hexdigest()
 
 
-def readonly_transport(script):
+def readonly_transport(script, *, timeout):
     """Fixed approved Teleport destination; no host/env escape hatch or retries."""
     import shlex
     return bounded_run([
@@ -162,10 +162,10 @@ def readonly_transport(script):
         '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes',
         '-o', 'ConnectTimeout=5', 'ubuntu@honcho.teleport.batumi.works',
         'python3 -I -S -c ' + shlex.quote(script),
-    ], timeout=100)
+    ], timeout=timeout)
 
 
-def acquire_metadata(*, transport=readonly_transport, clock=time.time):
+def acquire_metadata(*, transport=readonly_transport, clock=time.time, monotonic=time.monotonic):
     """Acquire twice, independently; return only digest observations and UNKNOWN.
 
     Transport is injectable for offline tests, not evidence of authenticity.
@@ -177,9 +177,13 @@ def acquire_metadata(*, transport=readonly_transport, clock=time.time):
                'receipt': None, 'observations': {}}
     try:
         start = clock()
+        deadline = monotonic() + 15.0
         samples = []
         for _ in range(2):
-            raw = transport(REMOTE_SCRIPT)
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                return failure
+            raw = transport(REMOTE_SCRIPT, timeout=remaining)
             if not isinstance(raw, str) or len(raw) > 262144:
                 return failure
             sample = json.loads(raw, object_pairs_hook=_unique)
@@ -190,6 +194,8 @@ def acquire_metadata(*, transport=readonly_transport, clock=time.time):
             for row in sample['containers'].values():
                 _validate_row(row)
             samples.append(sample)
+        if monotonic() > deadline:
+            return failure
         end = clock()
         if (type(start) not in (int, float) or type(end) not in (int, float)
                 or not math.isfinite(start) or not math.isfinite(end)

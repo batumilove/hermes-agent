@@ -19,7 +19,7 @@ def test_identity_rejected(role, field, value):
         del p['containers'][role][field]
     else:
         p['containers'][role][field] = value
-    r = a.acquire_metadata(transport=lambda _: json.dumps(p), clock=lambda: 2000)
+    r = a.acquire_metadata(transport=lambda _, **kwargs: json.dumps(p), clock=lambda: 2000)
     assert r.get('stable') is not True
     assert r['observations'] == {}
 
@@ -27,11 +27,11 @@ def test_identity_rejected(role, field, value):
 def test_malformed_stable_packet(field, value):
     p = packet()
     p['containers']['api'][field] = value
-    assert a.acquire_metadata(transport=lambda _: json.dumps(p))['observations'] == {}
+    assert a.acquire_metadata(transport=lambda _, **kwargs: json.dumps(p))['observations'] == {}
 
 def test_duplicate_keys_rejected():
     raw = json.dumps(packet()).replace('"hostname": "honcho"', '"hostname":"bad","hostname":"honcho"')
-    assert a.acquire_metadata(transport=lambda _: raw)['observations'] == {}
+    assert a.acquire_metadata(transport=lambda _, **kwargs: raw)['observations'] == {}
 
 def test_read_is_limit_plus_one():
     class Stream(io.BytesIO):
@@ -54,7 +54,7 @@ def test_bounded_child(code):
     assert time.monotonic() - start < 2
 
 def test_fresh_report_and_ttl():
-    r = a.acquire_metadata(transport=lambda _: json.dumps(packet()), clock=lambda: 2000)
+    r = a.acquire_metadata(transport=lambda _, **kwargs: json.dumps(packet()), clock=lambda: 2000)
     assert 'observed' in a.metadata_line(r, now=2000)
     assert 'api=' in a.metadata_line(r, now=2000)
     for now in (1999, 2301):
@@ -65,7 +65,7 @@ def test_fresh_report_and_ttl():
 def test_report_collects_once_pair_not_legacy():
     from hermes_cli import honcho_monitor as m
     calls = []
-    def transport(script):
+    def transport(script, **kwargs):
         calls.append(script)
         return json.dumps(packet())
     with patch.object(m, 'collect_snapshot', side_effect=AssertionError('legacy forbidden')):

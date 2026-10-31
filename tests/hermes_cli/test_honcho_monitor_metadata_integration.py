@@ -49,7 +49,7 @@ def test_snapshot_and_main_render_metadata_once(monkeypatch, tmp_path, capsys):
 @pytest.mark.parametrize("raw", ["{", "{}", "[]"])
 def test_bad_metadata_isolated_from_service_report(monkeypatch, tmp_path, raw):
     setup_offline(monkeypatch, tmp_path)
-    monkeypatch.setattr(acquisition, "readonly_transport", lambda _: raw)
+    monkeypatch.setattr(acquisition, "readonly_transport", lambda _, **kwargs: raw)
     snapshot, _ = hm.collect_snapshot()
     assert "Metadata: UNKNOWN" in hm.format_report(snapshot)
     assert "DB stats probe failed" in hm.format_report(snapshot)
@@ -57,7 +57,7 @@ def test_bad_metadata_isolated_from_service_report(monkeypatch, tmp_path, raw):
 
 def test_consumer_ttl_and_missing_record(monkeypatch, tmp_path):
     setup_offline(monkeypatch, tmp_path)
-    monkeypatch.setattr(acquisition, "readonly_transport", lambda _: json.dumps(packet()))
+    monkeypatch.setattr(acquisition, "readonly_transport", lambda _, **kwargs: json.dumps(packet()))
     snapshot, _ = hm.collect_snapshot()
     assert snapshot.metadata["stable"] is True
     stale = hm.datetime.fromtimestamp(snapshot.metadata["collected_at"] + 301, hm.UTC)
