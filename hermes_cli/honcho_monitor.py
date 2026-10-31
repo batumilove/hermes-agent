@@ -269,6 +269,88 @@ def parse_pipeline_env(raw: str) -> dict[str, dict[str, str]]:
     return parsed
 
 
+def collect_config_attestation(raw: str, current: dict, policy: dict, *, now: float) -> dict:
+    """Validate bounded, content-free *inspected* config metadata, without I/O.
+
+    ``current`` must come from a separately collected fresh read-only observation
+    of BOTH containers; ``policy`` is independently reviewed expected metadata.
+    Equal hashes are consistency checks, not signatures or loaded-byte evidence.
+    This function cannot establish collection provenance, parser correctness,
+    historical startup inputs, loaded settings, or actual provider dispatch.
+    Never feed cached monitor state into ``current``. TTL is fixed at 300 seconds.
+    Unknown keys are rejected, never echoed (including exceptions/credentials).
+    """
+    unknown = {"configuration": "unknown", "actual_routing": "unknown",
+               "reason": "invalid_or_unverified_config_receipt", "probe_authorized": False}
+    fingerprints = {"source_manifest_sha256", "settings_sha256", "parser_manifest_sha256",
+                    "source_inputs_sha256", "env_allowlist_sha256", "config_fingerprint",
+                    "routes_fingerprint"}
+    fields = fingerprints | {"container_id", "image_id", "started_at", "router_enabled"}
+
+    def number(value):
+        return type(value) in (int, float) and 0 <= value < float("inf")
+
+    def digest(value):
+        return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+
+    def containers(value):
+        if type(value) is not dict or set(value) != {"api", "deriver"}:
+            return False
+        for item in value.values():
+            if type(item) is not dict or set(item) != fields:
+                return False
+            if not all(digest(item[key]) for key in fingerprints | {"container_id"}):
+                return False
+            image = item["image_id"]
+            if not isinstance(image, str) or not image.startswith("sha256:") or not digest(image[7:]):
+                return False
+            if not number(item["started_at"]) or item["started_at"] > now:
+                return False
+            if type(item["router_enabled"]) is not bool:
+                return False
+        return True
+
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate field")
+            result[key] = value
+        return result
+
+    try:
+        if not number(now) or not isinstance(raw, str) or len(raw) > 65536:
+            return unknown
+        receipt = json.loads(raw, object_pairs_hook=unique_object)
+        if type(receipt) is not dict or set(receipt) != {
+            "schema_version", "scope", "collected_at", "policy_version", "containers"
+        }:
+            return unknown
+        if type(policy) is not dict or set(policy) != {"version", "containers"}:
+            return unknown
+        if type(receipt["schema_version"]) is not int or receipt["schema_version"] != 1:
+            return unknown
+        if receipt["scope"] != "inspected_config_only":
+            return unknown
+        if type(policy["version"]) is not int or policy["version"] < 1:
+            return unknown
+        if type(receipt["policy_version"]) is not int or receipt["policy_version"] != policy["version"]:
+            return unknown
+        stamp = receipt["collected_at"]
+        if not number(stamp) or not 0 <= now - stamp <= 300:
+            return unknown
+        if not all(containers(value) for value in (receipt["containers"], current, policy["containers"])):
+            return unknown
+        if any(item["started_at"] > stamp for item in receipt["containers"].values()):
+            return unknown
+        if receipt["containers"] != current or current != policy["containers"]:
+            return unknown
+    except (ValueError, TypeError, RecursionError, KeyError, OverflowError):
+        return unknown
+    return {"configuration": "inspected_config_matches", "actual_routing": "unknown",
+            "reason": "no_natural_dispatch_receipt", "probe_authorized": False}
+
+
 def spark_probe_authorized(pipeline: dict[str, dict[str, str]]) -> bool:
     """Fail closed until current effective-route proof and probe policy exist.
 
@@ -806,6 +888,10 @@ def format_report(snapshot: dict[str, Any] | HonchoSnapshot, previous_state: dic
 
     lines = [f"🩺 Honcho — {_now_utc(now).strftime('%H:%M UTC')}"]
     lines.append(_service_row(snapshot.services))
+    # Cached display mappings are not fresh receipt collection. Do not upgrade
+    # either attestation from pipeline/env strings or service-health booleans.
+    lines.append("  Inspected configuration: UNKNOWN (fresh receipt not collected)")
+    lines.append("  Actual request routing: UNKNOWN (no natural dispatch receipt)")
     if snapshot.services.get("ssh_ok") is False:
         lines.append("  Remote sample: stale (SSH unavailable; last valid counters/config shown)")
 
