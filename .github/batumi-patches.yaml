@@ -1827,6 +1827,17 @@ patches:
   retirement: Remove when upstream provides equivalent canonical cross-process ownership, compare-and-delete
     marker lifecycle, fail-closed intake, scheduled/catch-up dispatch suppression, and a sealed bounded-handoff
     restart with PID-bound live occupancy and post-replacement acceptance.
+- id: buzz-attachment-auth-and-quoted-parent
+  kind: compatibility
+  rationale: Authenticate allowlisted Buzz attachment downloads with exact NIP-98 URL authority, reject port zero before signing, and retain quoted-parent attachment context.
+  paths:
+  - plugins/platforms/buzz/adapter.py
+  - plugins/platforms/buzz/nostr_auth.py
+  - tests/gateway/test_buzz_attachment_auth_regression.py
+  - tests/gateway/test_buzz_quoted_parent_regression.py
+  tests:
+  - scripts/run_tests.sh tests/gateway/test_buzz_attachment_auth_regression.py tests/gateway/test_buzz_quoted_parent_regression.py
+  retirement: Remove when upstream provides equivalent authority-bound attachment authentication and quoted-parent coverage, including fail-closed explicit port zero handling.
 - id: buzz-allowlisted-dm-metadata-fallback
   kind: compatibility
   rationale: Let explicitly allow-listed Buzz senders use relay-materialized DM conversations when kind-9
