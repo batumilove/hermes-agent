@@ -5,6 +5,17 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: modern-glob-minimatch-security-paths
+  kind: compatibility
+  rationale: Fix modern named-API glob and minimatch callers while retaining legacy callback and callable-module paths for separate migration. This partial does not clear the full OSV gate.
+  paths:
+  - package.json
+  - package-lock.json
+  - tests/test_modern_glob_security.py
+  - tests/fixtures/modern_glob_callers.cjs
+  tests:
+  - scripts/run_tests.sh tests/test_modern_glob_security.py
+  retirement: Remove scoped overrides when upstream parents resolve fixed compatible releases. Real archive/cache smoke evidence is retained in the task handoff; legacy and Nix paths remain blocked.
 - id: tornado-66-security-floor
   kind: operations
   rationale: Raise the optional Telegram webhook Tornado floor to 6.6 for
