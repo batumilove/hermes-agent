@@ -119,6 +119,7 @@ class HonchoSnapshot:
     deriver: dict[str, Any]
     ingestion: dict[str, Any] = field(default_factory=dict)
     observer: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 def sanitize_base_url(url: str | None) -> str:
@@ -897,10 +898,13 @@ def format_report(snapshot: dict[str, Any] | HonchoSnapshot, previous_state: dic
             deriver=dict(snapshot.get("deriver", {})),
             ingestion=dict(snapshot.get("ingestion", {})),
             observer=dict(snapshot.get("observer", {})),
+            metadata=snapshot.get("metadata", {}),
         )
 
     lines = [f"🩺 Honcho — {_now_utc(now).strftime('%H:%M UTC')}"]
     lines.append(_service_row(snapshot.services))
+    from hermes_cli.honcho_config_acquisition import metadata_line
+    lines.append(metadata_line(snapshot.metadata, now=_now_utc(now).timestamp()))
     # Cached display mappings are not fresh receipt collection. Do not upgrade
     # either attestation from pipeline/env strings or service-health booleans.
     lines.append("  Inspected configuration: UNKNOWN (fresh receipt not collected)")
@@ -996,7 +1000,7 @@ def format_report(snapshot: dict[str, Any] | HonchoSnapshot, previous_state: dic
     if alerts:
         lines.append(f"⚠️ {len(alerts)}: {'; '.join(alerts)}")
     else:
-        lines.append("✅ All nominal")
+        lines.append("✅ Service checks nominal; configuration and actual routing UNKNOWN")
 
     return "\n".join(lines)
 
@@ -1305,6 +1309,13 @@ def _deriver_log_command() -> str:
 
 
 def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
+    from hermes_cli.honcho_config_acquisition import acquire_metadata, readonly_transport
+    # Exactly one metadata acquisition (two independent samples). Never reuse
+    # persisted metadata, and never let its failure hide service-health checks.
+    try:
+        metadata = acquire_metadata(transport=readonly_transport)
+    except Exception:
+        metadata = {}
     disk_usage = shutil.disk_usage(_state_path().parent)
     observer = {
         "disk_total_bytes": disk_usage.total,
@@ -1464,6 +1475,7 @@ def collect_snapshot() -> tuple[HonchoSnapshot, dict[str, Any]]:
         },
         ingestion=ingestion,
         observer=observer,
+        metadata=metadata,
     )
 
     current_state = {
