@@ -8,27 +8,97 @@ import json
 import math
 import subprocess
 import time
+import os
+import re
+from datetime import UTC, datetime
+
+
+def bounded_file(path, limit=300000):
+    import stat
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, 'rb') as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise ValueError('not regular')
+        data = stream.read(limit + 1)
+        if len(data) > limit:
+            raise ValueError('file bounds')
+        return data
+
+
+def bounded_run(argv, *, timeout=20, limit=262144):
+    import selectors
+    import signal
+    deadline = time.monotonic() + timeout
+    proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, start_new_session=True)
+    output = bytearray()
+    sizes = {'out': 0, 'err': 0}
+    try:
+        with selectors.DefaultSelector() as selector:
+            selector.register(proc.stdout, selectors.EVENT_READ, 'out')
+            selector.register(proc.stderr, selectors.EVENT_READ, 'err')
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError('metadata timeout')
+                for key, _ in selector.select(min(remaining, .1)):
+                    chunk = os.read(key.fileobj.fileno(), min(8192, limit + 1 - sizes[key.data]))
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                        continue
+                    sizes[key.data] += len(chunk)
+                    if sizes[key.data] > limit:
+                        raise ValueError('output bounds')
+                    if key.data == 'out':
+                        output.extend(chunk)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError('metadata timeout')
+            if proc.wait(timeout=remaining) != 0:
+                raise ValueError('metadata child failed')
+        return output.decode('utf-8')
+    finally:
+        # Kill the session even if the direct child exited but left pipe owners.
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait()
+        proc.stdout.close()
+        proc.stderr.close()
 
 # Executed with isolated Python, without site initialization or application imports.
 # No environment value is returned. Route-leaf values are hashed only after strict
 # syntax checks; parent JSON, provider parameters and other overrides are unsupported.
 _CONTAINER_SCRIPT = r'''
-import hashlib,json,os,pathlib,re
+import hashlib,json,os,pathlib,re,stat
 from urllib.parse import urlsplit
 out={'source_manifest':{},'parser_manifest':{},'source_presence':{},'env_input':{},'unsupported_input':False}
 def digest(b): return hashlib.sha256(b).hexdigest()
 def manifest(root,dest):
  root=pathlib.Path(root)
- paths=sorted(root.rglob('*.py'))
- if len(paths)>512: raise ValueError()
- total=0
- for p in paths:
-  if p.is_symlink() or not p.is_file(): raise ValueError()
-  b=p.read_bytes();total+=len(b)
-  if len(b)>300000 or total>6000000: raise ValueError()
-  dest[str(p.relative_to(root))]=digest(b)
+ count=0;total=0
+ pending=[root]
+ while pending:
+  directory=pending.pop()
+  with os.scandir(directory) as entries:
+   for entry in entries:
+    count+=1
+    if count>2048 or entry.is_symlink(): raise ValueError()
+    if entry.is_dir(follow_symlinks=False):
+     pending.append(pathlib.Path(entry.path));continue
+    p=pathlib.Path(entry.path)
+    if not entry.name.endswith('.py'): continue
+    if len(dest)>=512: raise ValueError()
+    b=bounded_file(str(p));total+=len(b)
+    if total>6000000: raise ValueError()
+    dest[str(p.relative_to(root))]=digest(b)
 manifest('/app/src',out['source_manifest'])
-sites=list(pathlib.Path('/app/.venv/lib').glob('python*/site-packages'))
+sites=[]
+for entry in pathlib.Path('/app/.venv/lib').iterdir():
+ if entry.name.startswith('python') and (entry/'site-packages').is_dir():
+  sites.append(entry/'site-packages')
+  if len(sites)>1: raise ValueError()
 if len(sites)!=1: raise ValueError()
 for package in ('pydantic_settings','dotenv'):
  d={};manifest(sites[0]/package,d)
@@ -57,15 +127,17 @@ for key in sorted(os.environ):
 print(json.dumps(out,sort_keys=True,separators=(',',':')))
 '''
 
+import inspect
+_CONTAINER_SCRIPT = inspect.getsource(bounded_file) + _CONTAINER_SCRIPT
+
 # Host-side stdlib only. Docker inspect explicitly selects metadata, never Env.
-REMOTE_SCRIPT = '''import json,subprocess,socket
+REMOTE_SCRIPT = '''import json,subprocess,socket,os,time
+BOUNDED_HELPER
 out={'hostname':socket.gethostname(),'containers':{}}
 for role,name in (('api','honcho-api-1'),('deriver','honcho-deriver-1')):
  fmt='{"container_id":{{json .Id}},"image_id":{{json .Image}},"started_at":{{json .State.StartedAt}},"running":{{json .State.Running}}}'
  def run(argv):
-  p=subprocess.run(argv,capture_output=True,text=True,timeout=20,check=True)
-  if len(p.stdout)>262144: raise ValueError()
-  return json.loads(p.stdout)
+  return json.loads(bounded_run(argv))
  before=run(['docker','inspect','--format',fmt,name])
  if before['running'] is not True: raise ValueError()
  data=run(['docker','exec',before['container_id'],'python','-I','-S','-c',PAYLOAD])
@@ -73,7 +145,7 @@ for role,name in (('api','honcho-api-1'),('deriver','honcho-deriver-1')):
  if before!=after: raise ValueError()
  out['containers'][role]=dict(before,**data)
 print(json.dumps(out,sort_keys=True,separators=(',',':')))
-'''.replace('PAYLOAD', repr(_CONTAINER_SCRIPT))
+'''.replace('PAYLOAD', repr(_CONTAINER_SCRIPT)).replace('BOUNDED_HELPER', inspect.getsource(bounded_run))
 
 
 def fingerprint(value):
@@ -85,15 +157,12 @@ def fingerprint(value):
 def readonly_transport(script):
     """Fixed approved Teleport destination; no host/env escape hatch or retries."""
     import shlex
-    proc = subprocess.run([
+    return bounded_run([
         'ssh', '-F', '/var/lib/tbot/hermes-cron-ssh/ssh_config',
         '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes',
         '-o', 'ConnectTimeout=5', 'ubuntu@honcho.teleport.batumi.works',
         'python3 -I -S -c ' + shlex.quote(script),
-    ], capture_output=True, text=True, timeout=100, check=True)
-    if len(proc.stdout) > 262144:
-        raise ValueError('metadata bounds')
-    return proc.stdout
+    ], timeout=100)
 
 
 def acquire_metadata(*, transport=readonly_transport, clock=time.time):
@@ -113,17 +182,13 @@ def acquire_metadata(*, transport=readonly_transport, clock=time.time):
             raw = transport(REMOTE_SCRIPT)
             if not isinstance(raw, str) or len(raw) > 262144:
                 return failure
-            sample = json.loads(raw)
+            sample = json.loads(raw, object_pairs_hook=_unique)
             if set(sample) != {'hostname', 'containers'} or sample['hostname'] != 'honcho':
                 return failure
             if set(sample['containers']) != {'api', 'deriver'}:
                 return failure
             for row in sample['containers'].values():
-                if row['running'] is not True or type(row['unsupported_input']) is not bool:
-                    return failure
-                for field in ('source_manifest', 'parser_manifest', 'source_presence', 'env_input'):
-                    if type(row[field]) is not dict:
-                        return failure
+                _validate_row(row)
             samples.append(sample)
         end = clock()
         if (type(start) not in (int, float) or type(end) not in (int, float)
@@ -135,8 +200,77 @@ def acquire_metadata(*, transport=readonly_transport, clock=time.time):
             observations[name] = {field + '_sha256': fingerprint(row[field]) for field in
                                   ('source_manifest', 'parser_manifest', 'source_presence', 'env_input')}
             observations[name]['metadata_sha256'] = fingerprint(row)
+            observations[name]['identity'] = {k: row[k] for k in ('container_id', 'image_id', 'started_at')}
         return dict(failure, reason='parser_source_closure_not_proven', stable=True,
-                    collected_at=end, observations=observations)
+                    collection_started_at=start, collected_at=end, observations=observations)
     except Exception:
         # Never expose remote stderr, environment, source, or exception messages.
         return failure
+
+
+def _unique(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError('duplicate key')
+        result[key] = value
+    return result
+
+
+def _validate_row(row):
+    fields = {'container_id', 'image_id', 'started_at', 'running', 'unsupported_input',
+              'source_manifest', 'parser_manifest', 'source_presence', 'env_input'}
+    if type(row) is not dict or set(row) != fields:
+        raise ValueError('row schema')
+    _validate_identity({k: row[k] for k in ('container_id', 'image_id', 'started_at')})
+    if row['running'] is not True or type(row['unsupported_input']) is not bool:
+        raise ValueError('booleans')
+    for field in ('source_manifest', 'parser_manifest', 'env_input'):
+        value = row[field]
+        if type(value) is not dict or len(value) > (1024 if field == 'parser_manifest' else 512):
+            raise ValueError('map bounds')
+        if field != 'env_input' and not value:
+            raise ValueError('missing inventory')
+        for key, digest in value.items():
+            if not isinstance(key, str) or not 0 < len(key) <= 400 or not re.fullmatch(r'[A-Za-z0-9_./:-]+', key):
+                raise ValueError('map key')
+            if not isinstance(digest, str) or not re.fullmatch('[0-9a-f]{64}', digest):
+                raise ValueError('digest')
+    presence = row['source_presence']
+    allowed = {'/app/src/.env', '/app/.env', '/.env', '/app/config.toml'}
+    if type(presence) is not dict or not presence or not set(presence) <= allowed or any(type(v) is not bool for v in presence.values()):
+        raise ValueError('presence')
+
+
+def _validate_identity(identity):
+    if type(identity) is not dict or set(identity) != {'container_id', 'image_id', 'started_at'}:
+        raise ValueError('identity')
+    for key, pattern in [('container_id', '[0-9a-f]{64}'), ('image_id', 'sha256:[0-9a-f]{64}'), ('started_at', r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?Z')]:
+        if not isinstance(identity[key], str) or not re.fullmatch(pattern, identity[key]):
+            raise ValueError('identity shape')
+    datetime.fromisoformat(identity['started_at'])
+
+
+def metadata_line(record, *, now):
+    unknown = '  Metadata: UNKNOWN (missing, stale, changed or malformed observation)'
+    try:
+        start, end = record['collection_started_at'], record['collected_at']
+        if any(type(v) not in (int, float) or not math.isfinite(v) for v in (start, end, now)):
+            return unknown
+        if not 0 <= end - start <= 300 or not 0 <= now - end <= 300 or record['stable'] is not True:
+            return unknown
+        if record['reason'] != 'parser_source_closure_not_proven' or record['receipt'] is not None or record['probe_authorized'] is not False:
+            return unknown
+        rows = record['observations']
+        if set(rows) != {'api', 'deriver'}:
+            return unknown
+        for row in rows.values():
+            _validate_identity(row['identity'])
+            for key in ('source_manifest_sha256', 'parser_manifest_sha256', 'source_presence_sha256', 'env_input_sha256', 'metadata_sha256'):
+                if not re.fullmatch('[0-9a-f]{64}', row[key]):
+                    return unknown
+        stamp = datetime.fromtimestamp(end, UTC).isoformat()
+        labels = '; '.join(name + '=' + rows[name]['identity']['container_id'] + '/' + rows[name]['identity']['image_id'] + '/' + rows[name]['identity']['started_at'] for name in ('api', 'deriver'))
+        return '  Metadata: observed at ' + stamp + '; sampled stable; ' + labels + '; configuration interpretation UNSUPPORTED (parser_source_closure_not_proven)'
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return unknown

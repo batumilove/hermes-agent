@@ -871,6 +871,19 @@ def _normalize_queue_by_type(raw: Any) -> dict[str, dict[str, int]]:
     return result
 
 
+def collect_metadata_report(*, transport=None, clock=time.time) -> str:
+    """Fresh metadata-only report; never invokes full snapshot, DB or probes."""
+    from hermes_cli.honcho_config_acquisition import acquire_metadata, metadata_line, readonly_transport
+    record = acquire_metadata(transport=readonly_transport if transport is None else transport, clock=clock)
+    return '\n'.join([
+        'Honcho metadata-only monitor candidate',
+        metadata_line(record, now=clock()),
+        '  Inspected configuration: UNKNOWN (parser closure unproven)',
+        '  Actual request routing: UNKNOWN (no natural dispatch receipt)',
+        '  receipt=null; probe_authorized=false',
+    ])
+
+
 def format_report(snapshot: dict[str, Any] | HonchoSnapshot, previous_state: dict[str, Any] | None = None, now: datetime | None = None) -> str:
     if isinstance(snapshot, dict):
         snapshot = HonchoSnapshot(
