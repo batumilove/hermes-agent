@@ -5,6 +5,17 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: modern-glob-minimatch-security-paths
+  kind: compatibility
+  rationale: Scope modern glob and minimatch fixes to exercised ASAR4 and cacache18 callers; retain unqualified node-gyp and other minimatch consumers at published dependency families. This partial does not clear OSV or release-age gates.
+  paths:
+  - package.json
+  - package-lock.json
+  - tests/test_modern_glob_security.py
+  - tests/fixtures/modern_glob_callers.cjs
+  tests:
+  - scripts/run_tests.sh tests/test_modern_glob_security.py
+  retirement: Remove scoped overrides when upstream parents resolve fixed compatible releases. Real archive/cache smoke evidence is retained in the task handoff; legacy and Nix paths remain blocked.
 - id: tornado-66-security-floor
   kind: operations
   rationale: Raise the optional Telegram webhook Tornado floor to 6.6 for
@@ -2404,6 +2415,8 @@ patches:
   - apps/desktop/package.json
   - ui-tui/package.json
   - tests-js/package.json
+  - tests/gateway/test_google_chat_pyasn1_security.py
+  - plugins/platforms/google_chat/oauth.py
   - tests-js/security-lock-floors.test.ts
   - website/package.json
   - website/package-lock.json
