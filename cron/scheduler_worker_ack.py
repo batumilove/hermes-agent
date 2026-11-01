@@ -3,6 +3,19 @@ from pathlib import Path
 from typing import Callable
 
 
+def owned_worker_execution(execution_id: str) -> dict | None:
+    """Reject revoked or replaced owners at the real execution-entry boundary."""
+    import os
+    from cron import executions as e
+
+    current = e.get_execution(execution_id)
+    expected = (e._PROCESS_ID, os.getpid(), e._process_start_time(os.getpid()))
+    if (current is None or current['status'] != 'running'
+            or tuple(current[k] for k in ('process_id', 'pid', 'process_started_at')) != expected):
+        return None
+    return current
+
+
 def worker_still_owned(execution_id: str, adopted: dict, endpoint: float | None) -> bool:
     """Revalidate the durable owner and shared acknowledgement deadline."""
     from cron import scheduler as s

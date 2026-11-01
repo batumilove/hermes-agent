@@ -3280,7 +3280,10 @@ def _start_owned_run(job: dict, execution_id: str) -> Optional[contextvars.Token
     """Win the run's ``claimed`` → ``running`` CAS and bind its cron identity; ``None`` when the run
     lost ownership first. A restart-safe worker already won it by adopting the row."""
     if os.environ.get("_HERMES_CRON_EXTERNAL_WORKER") == execution_id:
-        record = get_execution(execution_id)
+        from cron.scheduler_worker_ack import owned_worker_execution
+
+        if (record := owned_worker_execution(execution_id)) is None:
+            return None
     elif (record := mark_execution_running(execution_id)) is None:
         return None
     return enter_cron_execution(job, execution_id, record or {})
@@ -3328,6 +3331,11 @@ def _run_one_job_body(
         # including the crash notice in the except below when claim_dispatch or
         # mark_execution_running raises, so install it before either.
         _fire_scope_tokens = _install_fire_secret_scope()
+        # Admission must precede finite dispatch bookkeeping as well as user effects.
+        _identity_token = _start_owned_run(job, execution_id)
+        if _identity_token is None:
+            logger.warning("Cron job %s lost execution ownership before start; skipping", job["id"])
+            return True
         # Commit a finite one-shot's dispatch BEFORE its side effect so a tick dying mid-run cannot
         # re-fire it forever on restart. No-op for recurring/infinite jobs (at-most-times).
         # This lives here in the shared body so BOTH the built-in ticker and the external provider (Chronos
@@ -3340,15 +3348,6 @@ def _run_one_job_body(
                 execution_id, success=False,
                 error="Dispatch claim rejected; execution was not started.")
             return True  # not an error — already handled/removed
-
-        # Claimed durably before dispatch; becomes running only right before the actual run.
-        # Detached workers transition to running while adopting; in-process paths must win the
-        # claimed->running CAS here before any user script or agent side effect may begin.
-        # The identity plugins read via ctx.current_cron_execution() is bound only on that win.
-        _identity_token = _start_owned_run(job, execution_id)
-        if _identity_token is None:
-            logger.warning("Cron job %s lost execution ownership before start; skipping", job["id"])
-            return True
 
         # Bind the firing profile's COMPLETE terminal policy for this fire — agent build, run, delivery
         # and bookkeeping (gateway/run.py _profile_runtime_scope does the same per turn) — else the
