@@ -94,11 +94,14 @@ patches:
   - cron/scheduler_worker_ack.py
   - tests/cron/adoption_contention_contract.py
   - tests/cron/test_adoption_remediation.py
+  - tests/cron/test_worker_entry_ownership.py
+  - tests/cron/test_worker_contention_entry.py
   - tests/cron/test_external_worker_config_hooks.py
   - tests/cron/test_external_worker_secret_sources.py
   tests:
   - scripts/run_tests.sh tests/cron/test_execution_ledger.py tests/cron/test_restart_safe_worker.py tests/cron/test_adoption_remediation.py -k 'not test_managed_gateway_restart_preserves_active_worker_and_single_side_effect'
   - scripts/run_tests.sh tests/cron/test_external_worker_config_hooks.py tests/cron/test_external_worker_secret_sources.py
+  - scripts/run_tests.sh tests/cron/test_worker_entry_ownership.py tests/cron/test_worker_contention_entry.py
   - python3 tests/cron/adoption_contention_contract.py .
   retirement: Remove when the accepted upstream baseline supplies equivalent bounded
     cron adoption ownership, contention and acknowledgement regression coverage,
