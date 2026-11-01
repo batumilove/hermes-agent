@@ -2550,6 +2550,7 @@ patches:
     or downgrading the newer accepted dependency floors. Record current locked
     release-age retirement dates without adding exemptions or changing the threshold.
   paths:
+  - contributors/emails/codex@openai.com
   - .npmrc
   - website/.npmrc
   - .github/batumi-patches.yaml
