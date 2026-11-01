@@ -579,7 +579,7 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────────────
   # CI timing report: collect per-job/step durations from the GitHub API,
-  # cache them on main (as a baseline), and on PRs generate an HTML diff
+  # cache them on default-branch pushes (as a baseline), and on PRs generate an HTML diff
   # report with a gantt chart + per-step breakdown. The report is uploaded
   # as an artifact and a markdown summary is written to $GITHUB_STEP_SUMMARY.
   #
@@ -608,10 +608,10 @@ jobs:
         with:
           path: ci-timings-baseline.json
           # Prefix-match: exact key will never hit (run_id differs), so
-          # restore-keys finds the most recent baseline from main.
-          key: ci-timings-baseline-never-exact
+          # restore-keys finds the most recent baseline from the default branch.
+          key: trusted-ci-timings-baseline-${{ github.event.repository.default_branch }}-never-exact
           restore-keys: |
-            ci-timings-baseline-
+            trusted-ci-timings-baseline-${{ github.event.repository.default_branch }}-
 
       - name: Collect timings and generate report
         env:
@@ -663,8 +663,8 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           cat ci-timings-summary.md >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Save baseline cache (main only)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      - name: Save baseline cache (default-branch push only)
+        if: github.event_name == 'push' && github.event.repository.default_branch != '' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
         run: |
           # Degraded runs (API rate-limited) produce no ci-timings.json —
           # skip rather than fail, and never cache an empty baseline.
@@ -674,9 +674,9 @@ jobs:
             echo "No timings JSON this run — skipping baseline update"
           fi
 
-      - name: Upload baseline to cache (main only)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && hashFiles('ci-timings-baseline.json') != ''
+      - name: Upload baseline to cache (default-branch push only)
+        if: github.event_name == 'push' && github.event.repository.default_branch != '' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && hashFiles('ci-timings-baseline.json') != ''
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ci-timings-baseline.json
-          key: ci-timings-baseline-${{ github.run_id }}
+          key: trusted-ci-timings-baseline-${{ github.event.repository.default_branch }}-${{ github.run_id }}

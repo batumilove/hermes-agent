@@ -43,6 +43,18 @@ patches:
   retirement: Remove when upstream preserves equivalent per-request failure,
     uncertainty, partial-delivery and rate-limit contracts with adapter and
     streaming-consumer regression coverage.
+- id: trusted-default-branch-ci-baselines
+  kind: operations
+  rationale: Seed timing and duration caches only on default-branch pushes; isolate
+    renamed-branch namespaces while keeping PRs restore-only.
+  paths:
+  - .github/workflows/ci.yaml
+  - .github/workflows/tests.yml
+  - tests/scripts/test_ci_cache_trust.py
+  tests:
+  - scripts/run_tests.sh tests/scripts/test_ci_cache_trust.py
+  retirement: Remove when upstream supplies default-branch push guards and equivalent
+    namespaced restore/save identities with negative event coverage.
 - id: local-npm-source-cache-identity
   kind: compatibility
   rationale: Invalidate installed workspace caches when vendored npm file dependency
