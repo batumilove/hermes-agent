@@ -5,6 +5,18 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: desktop-confirmation-async-lifetime
+  kind: core
+  rationale: Prevent an asynchronous confirmation from closing its former owner or arming a timer after
+    the dialog unmounts, including the immediate-dismiss path and rejected operations.
+  paths:
+  - apps/desktop/src/components/ui/confirm-dialog.tsx
+  - apps/desktop/src/components/ui/confirm-dialog.test.tsx
+  tests:
+  - npm exec --workspace apps/desktop -- vitest run --project ui src/components/ui/confirm-dialog.test.tsx
+    src/plugins/hermes-bots/canonical-group-workspace.test.tsx
+  retirement: Remove when upstream guards confirmation settlement by component lifetime and passes the
+    delayed-resolution unmount contracts for both dismissal modes.
 - id: mattermost-delivery-failure-semantics
   kind: compatibility
   rationale: Preserve per-request Mattermost POST refusal and delivery uncertainty,
