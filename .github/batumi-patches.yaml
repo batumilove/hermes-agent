@@ -874,6 +874,7 @@ patches:
     and retirement condition. Verify immutable import provenance before selecting an upstream comparison
     for blob and critical-pattern gates; later PRs retain their target-branch gates.
   paths:
+  - hermes_cli/AGENTS.md
   - scripts/ci/catalog_upstream_import.py
   - tests/scripts/test_catalog_upstream_import.py
   - tests/ci/test_plugin_catalog_ci_confinement.py
