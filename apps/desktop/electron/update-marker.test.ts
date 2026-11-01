@@ -290,15 +290,21 @@ test('a dead owner with a LIVE delegate keeps the marker live (C1 rule 6)', asyn
 
 test('dead pid / zombie => no live update; unknown state fails open', async () => {
   const home = tmpHome('dead')
+  // The mocked foreign identity must never collide with this Vitest worker.
+  const foreignPid = process.pid + 1
   fs.writeFileSync(markerPath(home), `${await deadPid()}\n${minutesAgo(0)}\n`)
   assert.equal(await readLiveUpdateMarker(home), null)
   assert.ok(fs.existsSync(markerPath(home)), 'left in place (A7 rule 3)')
 
-  fs.writeFileSync(markerPath(home), `4242\n${minutesAgo(0)}\n`)
+  fs.writeFileSync(markerPath(home), `${foreignPid}\n${minutesAgo(0)}\n`)
   assert.equal(await readLiveUpdateMarker(home, { kill: () => true, processState: () => 'Z' }), null)
 
-  fs.writeFileSync(markerPath(home), `4242\n${minutesAgo(0)}\n`)
+  fs.writeFileSync(markerPath(home), `${foreignPid}\n${minutesAgo(0)}\n`)
   assert.ok(await readLiveUpdateMarker(home, { kill: () => true, processState: () => null }))
+
+  // A no-creation-time marker naming us remains a rejected old incarnation.
+  fs.writeFileSync(markerPath(home), `${process.pid}\n${minutesAgo(0)}\n`)
+  assert.equal(await readLiveUpdateMarker(home, { kill: () => true, processState: () => null }), null)
 })
 
 test('isPidAlive / posixProcessState basics', () => {

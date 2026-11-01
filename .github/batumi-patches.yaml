@@ -2551,6 +2551,7 @@ patches:
     release-age retirement dates without adding exemptions or changing the threshold.
     Bind the CI installed-tree cache to copied vendored npm source bytes.
   paths:
+  - apps/desktop/electron/update-marker.test.ts
   - .github/workflows/js-tests.yml
   - contributors/emails/codex@openai.com
   - .npmrc
@@ -2558,6 +2559,7 @@ patches:
   - .github/batumi-patches.yaml
   - scripts/ci/npm-security-compat.mjs
   tests:
+  - npm --workspace apps/desktop run test:desktop:platforms -- electron/update-marker.test.ts
   - npm run --workspace tests-js check
   - node scripts/ci/npm-security-compat.mjs
   retirement: Retire when equivalent consumer coverage ships with maintained upstream dependencies.
