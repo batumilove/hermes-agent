@@ -7,15 +7,41 @@ upstream:
 patches:
 - id: modern-glob-minimatch-security-paths
   kind: compatibility
-  rationale: Scope modern glob and minimatch fixes to exercised ASAR4 and cacache18 callers; retain unqualified node-gyp and other minimatch consumers at published dependency families. This partial does not clear OSV or release-age gates.
+  rationale: Resolve the full matcher security graph while preserving legacy callback
+    consumers through custody-recorded API adaptations. Pin modern glob and minimatch,
+    retain the approved exact release-age exceptions, and bind Nix artifacts to lock integrity.
   paths:
   - package.json
   - package-lock.json
-  - tests/test_modern_glob_security.py
-  - tests/fixtures/modern_glob_callers.cjs
+  - .npmrc
+  - website/package.json
+  - website/package-lock.json
+  - website/.npmrc
+  - website/scripts/test-serve-handler.cjs
+  - .github/workflows/docs-site-checks.yml
+  - tests-js/dependency-glob-compatibility.test.mjs
+  - scripts/build/npm-compat-archives.py
+  - scripts/ci/reviewed_npm_archive.py
+  - tests/scripts/test_check_profile_archive_boundary.py
+  - vendor/npm/glob/**
+  - vendor/npm/glob-7.2.3-hermes.1.tgz
+  - vendor/npm/glob-7.2.3-hermes.1.sha256
+  - vendor/npm/serve-handler/**
+  - vendor/npm/serve-handler-6.1.7-hermes.1.tgz
+  - vendor/npm/serve-handler-6.1.7-hermes.1.sha256
+  - nix/node-gyp-11-4-0-package.json
+  - nix/node-gyp-11-4-0-package-lock.json
+  - nix/node-gyp-11-4-0.nix
+  - nix/lib.nix
+  - nix/checks.nix
+  - nix/tests/node-gyp-production.mjs
   tests:
-  - scripts/run_tests.sh tests/test_modern_glob_security.py
-  retirement: Remove scoped overrides when upstream parents resolve fixed compatible releases. Real archive/cache smoke evidence is retained in the task handoff; legacy and Nix paths remain blocked.
+  - npm exec --workspace tests-js -- vitest run dependency-glob-compatibility.test.mjs
+  - node --test website/scripts/test-serve-handler.cjs
+  - nix build .#checks.x86_64-linux.node-gyp-production
+  - nix build .#checks.x86_64-linux.npm-offline-overrides
+  retirement: Remove derivatives and overrides when maintained upstream callers adopt
+    fixed matcher APIs and the archive, cleanup, site-routing and native-build contracts pass.
 - id: tornado-66-security-floor
   kind: operations
   rationale: Raise the optional Telegram webhook Tornado floor to 6.6 for

@@ -1,11 +1,14 @@
 {
   buildNpmPackage,
   fetchFromGitHub,
+  importNpmLock,
   nodejs,
   lib,
 }:
 
 let
+  productionManifest = lib.importJSON ./node-gyp-11-4-0-package.json;
+  productionLock = lib.importJSON ./node-gyp-11-4-0-package-lock.json;
   node-gyp-11_4_0 = buildNpmPackage rec {
     pname = "node-gyp";
     version = "11.4.0";
@@ -18,17 +21,17 @@ let
     };
 
     postPatch = ''
-      # This derivation does not build or run node-gyp's development suite.
-      # Remove its dev-only dependency graph so it is neither fetched nor shipped.
-      substituteInPlace package.json --replace-fail \
-        $'  "devDependencies": {\n    "bindings": "^1.5.0",\n    "cross-env": "^7.0.3",\n    "eslint": "^9.16.0",\n    "mocha": "^11.0.1",\n    "nan": "^2.14.2",\n    "neostandard": "^0.11.9",\n    "require-inject": "^1.4.4"\n  },\n' \
-        ""
+      # Build only the production graph with its reviewed security overrides.
+      cp ${./node-gyp-11-4-0-package.json} package.json
       ln -s ${./node-gyp-11-4-0-package-lock.json} package-lock.json
     '';
 
-    npmDepsHash = "sha256-X2qTgZyr9/Rjg062fXTKdWoSPGVTQL83ajbyL663/ec=";
-
-    npmDepsFetcherVersion = 2;
+    # As in nix/lib.nix, each artifact is bound by its lockfile integrity.
+    npmDeps = importNpmLock {
+      package = productionManifest;
+      packageLock = productionLock;
+    };
+    npmConfigHook = importNpmLock.npmConfigHook;
 
     dontNpmBuild = true;
 

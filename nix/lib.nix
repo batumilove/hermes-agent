@@ -214,6 +214,7 @@ let
     [
       (repoRoot + "/package.json")
       (repoRoot + "/package-lock.json")
+      (repoRoot + "/vendor/npm/glob-7.2.3-hermes.1.tgz")
     ]
     ++ map (d: repoRoot + "/${d}/package.json") workspaceMemberDirs
   );
@@ -256,6 +257,9 @@ let
   # keep in sync with it.
   npmDeps = importNpmLock.importNpmLock {
     npmRoot = npmDepsSrc;
+    packageSourceOverrides = {
+      "node_modules/glob" = repoRoot + "/vendor/npm/glob-7.2.3-hermes.1.tgz";
+    };
     package = rootPackageJson // lib.optionalAttrs (rootPackageJson ? overrides) {
       overrides = offlineOverrides;
     };

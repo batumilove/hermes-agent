@@ -82,14 +82,21 @@
     "zod@^4": "4.6.6",
     "path-scurry@^3": "3.0.0",
     "@isaacs/nonrecursive-glob-match": "1.0.3",
-    "minimatch@^10": "10.2.6",
     "@electron/asar@4.1.1": {
       "glob": "14.0.3",
       "minimatch": "11.0.3"
     },
     "cacache@18.0.4": {
       "glob": "14.0.3"
-    }
+    },
+    "minimatch": "11.0.3",
+    "electron-winstaller@5.4.0": {
+      "@electron/asar": "4.1.1"
+    },
+    "node-gyp@10.3.1": {
+      "glob": "14.0.3"
+    },
+    "glob@^7": "$glob"
   },
   "engines": {
     "node": "^22.22.0 || ^24.11.0 || >=26.0.0",
@@ -108,6 +115,7 @@
   },
   "dependencies": {
     "js-yaml": "4.3.2",
-    "semver": "7.7.4"
+    "semver": "7.7.4",
+    "glob": "file:vendor/npm/glob-7.2.3-hermes.1.tgz"
   }
 }

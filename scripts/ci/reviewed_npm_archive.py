@@ -1,4 +1,4 @@
-"""Verify the single reviewed npm source archive admitted to build contexts.
+"""Verify the reviewed npm source archives admitted to build contexts.
 
 Pins here are independent of the adjacent sidecar and provenance manifest.
 Changing either cannot authorize an arbitrary archive or a profile export.
@@ -16,20 +16,23 @@ ARCHIVE_PATH = Path("vendor/npm/braces-3.0.3-hermes.1.tgz")
 _ARCHIVE_SHA256 = "a59528943e71f9a778b01a88ffec2f7a3cb8ebe2aac1854430f9c9a7df02d7bb"
 _SOURCE_SHA256 = "14063bd6d17b7e43fef27514ba74482637de98201b16415e1da5d6d7e8405883"
 _SOURCE_PATH = Path("vendor/npm/braces/SOURCE.json")
-_SIDECAR_PATH = Path("vendor/npm/braces-3.0.3-hermes.1.sha256")
 _MAX_ARCHIVE_BYTES = 65536
 _MAX_MEMBER_BYTES = 32768
 _MAX_CONTENT_BYTES = 65536
-_UPSTREAM_IDENTITY = {
-    "package": "braces",
-    "version": "3.0.3",
-    "repository": "https://github.com/micromatch/braces",
-    "commit": "74b2db2938fad48a2ea54a9c8bf27a37a62c350d",
-    "tarball": "https://registry.npmjs.org/braces/-/braces-3.0.3.tgz",
-    "integrity": "sha512-yQbXgO/OSZVD2IsiLlro+7Hf6Q18EJrKSEsdoMzKePKXct3gvD8oLcOQdIzGupr5Fj+EDe8gO/lxc1BzfMpxvA==",
-    "tarball_sha256": "1cd18e862c8640b4568b1425a7df4ee030ff201d45b2da8f9f222d2987494ffc",
+
+_REVIEWED_ARCHIVES = {
+    ARCHIVE_PATH: (_ARCHIVE_SHA256, _SOURCE_SHA256, _SOURCE_PATH),
+    Path("vendor/npm/glob-7.2.3-hermes.1.tgz"): (
+        "69c46f24be0a84b4369bc8c3388b866a08e4d1202c971676f0bc17dac3407f58",
+        "5dae56a583849f114e309c2132d4f021c388e7aa564e9ace8faaf87a5a4ca923",
+        Path("vendor/npm/glob/SOURCE.json"),
+    ),
+    Path("vendor/npm/serve-handler-6.1.7-hermes.1.tgz"): (
+        "5c12db8eb698d6168de774211caca57faad0a62a3e08438fb724a0d4ff6ec222",
+        "5337fed91f0d6f55ecd91232e4ffe54cf643c649bf6a4fcf26bffdffe1a91b6b",
+        Path("vendor/npm/serve-handler/SOURCE.json"),
+    ),
 }
-_FORK_IDENTITY = {"name": "@hermes-security/braces", "version": "3.0.3-hermes.1"}
 
 
 def _bounded_regular_bytes(path: Path, limit: int) -> bytes:
@@ -43,16 +46,14 @@ def _bounded_regular_bytes(path: Path, limit: int) -> bytes:
     return data
 
 
-def _expected_inventory(source_data: bytes) -> dict[str, str]:
-    if hashlib.sha256(source_data).hexdigest() != _SOURCE_SHA256:
+def _expected_inventory(source_data: bytes, source_digest: str = _SOURCE_SHA256) -> dict[str, str]:
+    if hashlib.sha256(source_data).hexdigest() != source_digest:
         raise ValueError("unreviewed source provenance")
     source = json.loads(source_data)
-    if source["upstream"] != _UPSTREAM_IDENTITY or source["fork"] != _FORK_IDENTITY:
-        raise ValueError("source identity does not match the reviewed pin")
     inventory = {
         f"package/{name}": digest for name, digest in source["patched_sha256"].items()
     }
-    inventory["package/SOURCE.json"] = _SOURCE_SHA256
+    inventory["package/SOURCE.json"] = source_digest
     return inventory
 
 
@@ -83,18 +84,20 @@ def _matches_inventory(archive_data: bytes, expected: dict[str, str]) -> bool:
 
 
 def is_reviewed_npm_build_input(root: Path, relative_path: Path) -> bool:
-    """Admit only this exact reviewed artifact, never a general vendor prefix."""
-    if relative_path != ARCHIVE_PATH:
+    """Admit exact reviewed artifacts, never a general vendor prefix."""
+    pin = _REVIEWED_ARCHIVES.get(relative_path)
+    if pin is None:
         return False
+    archive_digest, source_digest, source_path = pin
     try:
         archive_data = _bounded_regular_bytes(root / relative_path, _MAX_ARCHIVE_BYTES)
-        if hashlib.sha256(archive_data).hexdigest() != _ARCHIVE_SHA256:
+        if hashlib.sha256(archive_data).hexdigest() != archive_digest:
             return False
-        sidecar = _bounded_regular_bytes(root / _SIDECAR_PATH, 256)
-        if sidecar != f"{_ARCHIVE_SHA256}  {ARCHIVE_PATH.name}\n".encode("ascii"):
+        sidecar = _bounded_regular_bytes(root / relative_path.with_suffix(".sha256"), 256)
+        if sidecar != f"{archive_digest}  {relative_path.name}\n".encode("ascii"):
             return False
-        source = _bounded_regular_bytes(root / _SOURCE_PATH, 16384)
-        return _matches_inventory(archive_data, _expected_inventory(source))
+        source = _bounded_regular_bytes(root / source_path, 16384)
+        return _matches_inventory(archive_data, _expected_inventory(source, source_digest))
     except (OSError, ValueError, tarfile.TarError, EOFError):
         # Invalid proof is an ordinary forbidden archive; never log its bytes.
         return False

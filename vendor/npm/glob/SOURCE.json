@@ -1,0 +1,31 @@
+{
+  "upstream": {
+    "package": "glob",
+    "version": "7.2.3",
+    "repository": "https://github.com/isaacs/node-glob",
+    "commit": "c3cd57ae128faa0e9190492acc743bb779ac4054",
+    "tarball": "https://registry.npmjs.org/glob/-/glob-7.2.3.tgz",
+    "integrity": "sha512-nFR0zLpU2YCaRxwoCJvL6UvCH2JFyFVIvwTLsIf21AuHlMskA1hhTdk+LlYJtOlYt9v6dvszD2BGRqBL+iQK9Q==",
+    "tarball_sha256": "f0a38eb1318c06cb55dc28f3f32d2df7379e155cefc6a1e5ecc7a0ddad194381"
+  },
+  "original_sha256": {
+    "LICENSE": "6236fa0b88a4a0cce3dda0367979491b2052b3c8d6b1c10b3668de083e86a7f0",
+    "common.js": "b867e089ab5d4ab19a83e5b34da3dd7f4018fdf255fcacc681aab87d41dc77e8",
+    "glob.js": "b8f35657ca927593d0f9e1aae3a8cfe9c33c697bf3c5733c2f6727f25ae25be1",
+    "sync.js": "0f61227f4b55297f1ad16798c53e6a6dd55d633856f153133716413b7c5f61ad",
+    "package.json": "b00b6d35eda6d4aa6893baf19e53b7d005019ed840e4fa116c926a532ec577cf",
+    "README.md": "9edcb98721213c0293ac216337f3f97745add296879d9fd571152ec601f45b9e"
+  },
+  "patched_sha256": {
+    "LICENSE": "6236fa0b88a4a0cce3dda0367979491b2052b3c8d6b1c10b3668de083e86a7f0",
+    "common.js": "b867e089ab5d4ab19a83e5b34da3dd7f4018fdf255fcacc681aab87d41dc77e8",
+    "glob.js": "4caeca5af34b662a1598d6975bf6541a478443e6e79765095cf24479c3dbcaa4",
+    "sync.js": "fea0ef6613ef0bcb7d103a37383cecb80f12797539e4c76604d57d5e15bce7a5",
+    "package.json": "59b45e151a448541678f84e0cc539003191b523b57d76aef030e7769c312abb7",
+    "README.md": "9edcb98721213c0293ac216337f3f97745add296879d9fd571152ec601f45b9e"
+  },
+  "fork": {
+    "name": "glob",
+    "version": "7.2.3-hermes.1"
+  }
+}

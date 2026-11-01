@@ -1080,6 +1080,15 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "ok" > $out/result
         '';
 
+        node-gyp-production = pkgs.runCommand "hermes-node-gyp-production" {
+          nativeBuildInputs = [ hermesNpmLib.nodejs pkgs.python3 pkgs.gnumake pkgs.stdenv.cc ];
+          PYTHON = "${pkgs.python3}/bin/python3";
+        } ''
+          node ${./tests/node-gyp-production.mjs} \
+            ${hermesNpmLib.node-gyp}/lib/node_modules/node-gyp ${hermesNpmLib.nodejs}
+          touch $out
+        '';
+
         npm-offline-overrides = pkgs.runCommand "hermes-npm-offline-overrides" {
           nativeBuildInputs = [ hermesNpmLib.nodejs ];
         } ''

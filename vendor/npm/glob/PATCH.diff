@@ -1,0 +1,30 @@
+--- a/glob.js
++++ b/glob.js
+@@ -385 +385 @@
+-  var rawGlob = pn._glob
++  var rawGlob = pn.pattern
+@@ -394 +394 @@
+-        m = !e.match(pn)
++        m = !pn.test(e)
+@@ -396 +396 @@
+-        m = e.match(pn)
++        m = pn.test(e)
+--- a/sync.js
++++ b/sync.js
+@@ -147 +147 @@
+-  var rawGlob = pn._glob
++  var rawGlob = pn.pattern
+@@ -156 +156 @@
+-        m = !e.match(pn)
++        m = !pn.test(e)
+@@ -158 +158 @@
+-        m = e.match(pn)
++        m = pn.test(e)
+--- a/package.json
++++ b/package.json
+@@ -5 +5 @@
+-  "version": "7.2.3",
++  "version": "7.2.3-hermes.1",
+@@ -26 +26 @@
+-    "minimatch": "^3.1.1",
++    "minimatch": "11.0.3",
