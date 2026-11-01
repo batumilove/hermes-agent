@@ -13,6 +13,7 @@ gate gets its own test.
 
 from __future__ import annotations
 
+import base64
 import io
 import json
 import os
@@ -187,17 +188,17 @@ def test_environment_block_reader_counts_utf16_units():
 def _windows_home(tmp_path, monkeypatch) -> Path:
     """The default data root under a temp LOCALAPPDATA, with a store interpreter; new consoles use it.
 
-    distlib is switched off, so publication writes the ``.cmd`` form on every test host."""
+    Publication uses the repository's pinned native supplier beside the fixture interpreter."""
     local = tmp_path / "local"
     monkeypatch.setenv("LOCALAPPDATA", str(local))
     monkeypatch.delenv("HERMES_HOME", raising=False)
     monkeypatch.delenv("HERMES_RUNTIME_DIR", raising=False)
     monkeypatch.setattr(_launchers, "_new_console_environment", lambda: {"LOCALAPPDATA": str(local)})
-    monkeypatch.setattr(_launchers, "_load_script_maker", lambda: None)
-    monkeypatch.setattr(_launchers, "_store_script_maker", lambda python_exe: None)
     home = local / "hermes"
     _store_python(home).parent.mkdir(parents=True)
     _store_python(home).touch()
+    from tests.native_supplier import unpack_supplier
+    unpack_supplier(_store_python(home).parent / "Lib/site-packages")
     (home / "tools" / "facts.json").write_text(
         json.dumps({"schema": 1, "packages": {"python": {"entry": _store_python(home).parent.name}}}),
         encoding="utf-8")
@@ -251,7 +252,14 @@ def test_review_tree_leaves_the_installed_commands_alone(form, path_registration
         for name in _launchers.WINDOWS_BIN_LAUNCHERS:
             _write_exe_launcher(home / "bin" / f"{name}.exe", _store_python(home), installed)
     else:
-        assert _launchers._expose_windows_user_bin(installed, create=True)["path"] == "added"
+        # Legacy commands remain readable even though new publication requires native launchers.
+        (home / "bin").mkdir()
+        for name in _launchers.WINDOWS_BIN_LAUNCHERS:
+            script = _launchers._launcher_script(name, installed, None)
+            encoded = base64.b64encode(script.encode("utf-8")).decode("ascii")
+            code = f"import base64; exec(base64.b64decode('{encoded}'))"
+            (home / "bin" / f"{name}.cmd").write_text(
+                f'@echo off\n"{_store_python(home)}" -I -c "{code}" %*\n', encoding="utf-8")
     before = {path.name: path.read_bytes() for path in (home / "bin").iterdir()}
 
     result = _launchers._expose_windows_user_bin(review, create=True)
@@ -259,7 +267,7 @@ def test_review_tree_leaves_the_installed_commands_alone(form, path_registration
     assert {path.name: path.read_bytes() for path in (home / "bin").iterdir()} == before
     assert result == {"ok": True, "skipped": f"{home / 'bin' / f'hermes.{form}'} starts another checkout"}
     assert _launchers._launcher_checkout(_command(home)) == installed
-    assert path_registrations == ([] if form == "exe" else [home / "bin"])
+    assert path_registrations == []
 
 
 @pytest.mark.platforms("windows")
