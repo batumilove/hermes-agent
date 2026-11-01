@@ -14,6 +14,7 @@ patches:
     tests need the repository test environment, without server credentials.
     Bind the CI installed-tree cache to copied vendored npm source bytes.
   paths:
+  - apps/desktop/electron/update-marker.test.ts
   - tests/gateway/test_native_warning_coverage.py
   - .github/workflows/js-tests.yml
   - contributors/emails/codex@openai.com
@@ -25,6 +26,7 @@ patches:
   - tests/gateway/test_mattermost.py
   - tests/gateway/test_mattermost_delivery_errors.py
   tests:
+  - npm --workspace apps/desktop run test:desktop:platforms -- electron/update-marker.test.ts
   - scripts/run_tests.sh tests/gateway/test_native_warning_coverage.py
   - npm run --workspace tests-js check
   - scripts/run_tests.sh tests/gateway/test_mattermost_delivery_errors.py tests/gateway/test_mattermost.py tests/gateway/test_stale_finalize_suppression.py tests/gateway/test_stream_final_contract.py
