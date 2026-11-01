@@ -2549,12 +2549,15 @@ patches:
     cacache and website HTTP consumers without replacing its shared matcher adapter
     or downgrading the newer accepted dependency floors. Record current locked
     release-age retirement dates without adding exemptions or changing the threshold.
+    Bind the CI installed-tree cache to copied vendored npm source bytes.
   paths:
+  - .github/workflows/js-tests.yml
   - contributors/emails/codex@openai.com
   - .npmrc
   - website/.npmrc
   - .github/batumi-patches.yaml
   - scripts/ci/npm-security-compat.mjs
   tests:
+  - npm run --workspace tests-js check
   - node scripts/ci/npm-security-compat.mjs
   retirement: Retire when equivalent consumer coverage ships with maintained upstream dependencies.
