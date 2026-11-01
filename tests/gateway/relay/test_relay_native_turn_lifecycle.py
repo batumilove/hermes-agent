@@ -246,7 +246,7 @@ async def test_a_follow_up_queued_behind_a_running_turn_is_acknowledged_when_it_
             timeout=20, what='the follow-up committed')
         # Committed behind the running turn, not started: no acknowledgement yet.
         assert _reacts(outgoing, '1700000000.000401') == []
-        assert executed == ['first']
+        await async_wait_until(lambda: executed == ['first'], timeout=20, what='the first model turn started')
         release.set()
         await async_wait_until(_settled(outgoing, '1700000000.000401', (OK, False)), timeout=20,
                                what='the follow-up settled')

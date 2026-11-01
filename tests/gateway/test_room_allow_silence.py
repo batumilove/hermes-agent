@@ -64,7 +64,7 @@ async def test_room_config_controls_delivery(monkeypatch, tmp_path, lane, settin
     source = _configure(runner, tmp_path, setting=setting, other_profile=other_profile)
     event = _event(internal=internal, reply_expected=reply_expected)
     event.source = source
-    result = {"final_response": "NO_REPLY", "failed": False, "api_calls": 1,
+    result = {"final_response": "NO_REPLY", "failed": False, "api_calls": 1, "agent_persisted": False,
               "messages": [{"role": "user", "content": "question",
                             "display_kind": "internal_notification" if internal else None,
                             "display_metadata": {"reply_expected": reply_expected}},
@@ -81,6 +81,9 @@ async def test_room_config_controls_delivery(monkeypatch, tmp_path, lane, settin
         assert bool(response) is not silent
         assert all(call.args[1] != "usage footer" for call in adapter.send.await_args_list)
         rows = [c.args[1] for c in runner.session_store.append_to_transcript.call_args_list]
+        # Visible finals carry transcript writes to delivery settlement; silence persists directly.
+        rows.extend(action["payload"]["message"] for action in getattr(response, "gateway_actions", [])
+                    if action["action_kind"] == "append_to_transcript")
         assert any(r.get("content") == "NO_REPLY" for r in rows)
     elif lane == "queued":
         runner._deliver_queued_first_response = AsyncMock(return_value=True)
@@ -95,8 +98,14 @@ async def test_room_config_controls_delivery(monkeypatch, tmp_path, lane, settin
         from gateway.delivery_ledger import sweep_recoverable
         _, store = _db_runner(tmp_path)
         runner.session_store = store
-        result["agent_persisted"] = False
-        runner._run_agent = AsyncMock(return_value=result)
+        async def persisted_turn(*_args, **_kwargs):
+            # The real agent flushes its rows before returning; visible finalization may be deferred.
+            entry = store.get_or_create_session(source)
+            for message in result["messages"]:
+                store.append_to_transcript(entry.session_id, {**message, "timestamp": time.time()})
+            return {**result, "agent_persisted": True}
+
+        runner._run_agent = persisted_turn
         try:
             # Finish the real normal turn, then crash before the adapter sends or clears its token.
             await runner._handle_message_with_agent(event, source, store._generate_session_key(source), 1)
@@ -120,7 +129,7 @@ async def test_room_config_controls_delivery(monkeypatch, tmp_path, lane, settin
 async def test_opt_in_does_not_hide_unhealthy_or_empty_results(monkeypatch, tmp_path, lane, changes):
     runner = _runner(monkeypatch, tmp_path)
     source = _configure(runner, tmp_path)
-    result = {"final_response": "NO_REPLY", "failed": False, "api_calls": 1, "messages": [], **changes}
+    result = {"final_response": "NO_REPLY", "failed": False, "api_calls": 1, "agent_persisted": False, "messages": [], **changes}
     if lane == "normal":
         runner._run_agent = AsyncMock(return_value=result)
         assert await runner._handle_message_with_agent(_event(reply_expected=True), source, "lane", 1)

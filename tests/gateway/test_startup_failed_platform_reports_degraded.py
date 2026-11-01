@@ -216,11 +216,15 @@ async def test_last_platform_parked_during_an_external_drain_keeps_draining_unti
         await _drain_watcher_settles(True)
         await adapter.fail("telegram_auth_error")
         assert await flush_runtime_status_async()
-        assert read_runtime_status()["gateway_state"] == "draining"
+        await async_wait_until(
+            lambda: read_runtime_status()["gateway_state"] == "draining", what="drain status persisted"
+        )
         drain["requested"] = False
         await _drain_watcher_settles(False)
         assert await flush_runtime_status_async()
-        assert read_runtime_status()["gateway_state"] == "degraded"
+        await async_wait_until(
+            lambda: read_runtime_status()["gateway_state"] == "degraded", what="serving status persisted"
+        )
     finally:
         await runner.stop()
 

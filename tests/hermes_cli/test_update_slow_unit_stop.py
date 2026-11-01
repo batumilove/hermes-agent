@@ -52,7 +52,7 @@ class _SlowUnit:
         if prop == "--property=MainPID":
             return subprocess.CompletedProcess(cmd, 0, str(main_pid), "")
         return subprocess.CompletedProcess(
-            cmd, 0, f"ActiveState={active}\nSubState=x\nMainPID={main_pid}\nJob={job}", "")
+            cmd, 0, f"ActiveState={active}\nSubState={'failed' if active == 'failed' else 'running'}\nMainPID={main_pid}\nJob={job}", "")
 
 
 @pytest.mark.parametrize("serving", [False, True], ids=["gateway-gone", "gateway-serving"])

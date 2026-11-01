@@ -12,7 +12,7 @@ import json
 import os
 import asyncio
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 
 from tests.tools.conftest import register_all_web_providers
 
@@ -187,7 +187,9 @@ class TestWebExtractCacheAttribution:
                          "metadata": {"sourceURL": urls[1]}}]
 
         urls = ["https://example.com/failed", "https://example.com/old"]
-        with patch("tools.web_result_cache.extract_cache_put") as cache_put:
+        with patch("tools.web_result_cache.extract_cache_put") as cache_put, \
+             patch("tools.url_safety.async_is_safe_url", new=AsyncMock(return_value=True)), \
+             patch("tools.website_policy.check_website_access", return_value=None):
             asyncio.run(wte._dispatch_extract(_RedirectProvider(), urls, None))
 
         cache_put.assert_called_once_with(

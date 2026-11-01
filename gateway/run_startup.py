@@ -1610,7 +1610,8 @@ class GatewayStartupMixin(GatewayRecoveryMixin):
         # A boot that could not start every configured platform is not a normal run: stamp ``degraded``
         # so ``gateway status`` / /api/status / the health snapshot surface it, instead of only a log
         # line next to "Gateway running with N platform(s)".
-        self._update_runtime_status(self._serving_state())
+        from gateway.run import _publish_authoritative_startup_status_async
+        await _publish_authoritative_startup_status_async(self, default_state=self._serving_state())
         await self._start_finish_wiring(connected_count)
         self._start_spawn_background_watchers()
         from hermes_cli.observability.shared_metrics_startup import record_process_ready

@@ -10,6 +10,7 @@ import psutil
 import pytest
 
 from hermes_cli.windows_ssh_runtime import process_state
+from tests.waiting import wait_until
 
 
 @pytest.mark.platforms("posix")
@@ -17,7 +18,10 @@ def test_isolated_bootstrap_is_owned_without_accepting_foreign_source(tmp_path):
     package = tmp_path / "hermes_cli"
     package.mkdir()
     (package / "__init__.py").write_text("")
-    (package / "main.py").write_text("import time; time.sleep(30)\n")
+    ready = tmp_path / "ready"
+    (package / "main.py").write_text(
+        f"from pathlib import Path; import time; Path({str(ready)!r}).touch(); time.sleep(30)\n"
+    )
     source = ("import os, sys, runpy; "
               f"sys.path.insert(0, {str(tmp_path)!r}); "
               "runpy.run_module('hermes_cli.main', run_name='__main__', alter_sys=True)")
@@ -25,6 +29,7 @@ def test_isolated_bootstrap_is_owned_without_accepting_foreign_source(tmp_path):
     env = {"PATH": os.defpath, "HOME": str(tmp_path)}
     child = subprocess.Popen([sys.executable, "-I", "-c", source, "serve", "--isolated", "--ssh-owner-nonce", nonce], env=env)
     try:
+        wait_until(ready.exists, timeout=10, what="isolated child module loaded")
         created = int(psutil.Process(child.pid).create_time() * 1_000_000_000)
         launcher = str(tmp_path / "hermes.exe")
         state = process_state(child.pid, created, launcher, nonce)

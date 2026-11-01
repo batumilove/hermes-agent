@@ -1081,8 +1081,17 @@ patches:
   rationale: 'Correct defects found during exact-head review of the imported upstream reconciliation:
     MCP stdio child liveness, reconnect-cycle state, suspect connection health checks, and watchdog coroutine
     handling; desktop preview, HUD, and focus-chord compatibility; plus the associated regression coverage
-    and stale test/documentation cleanup. Support the Git for Windows UCRT64 recovery layout.'
+    and stale test/documentation cleanup, including imported admission, persistence, launcher, compression and readiness fixtures. Support the Git for Windows UCRT64 recovery layout.'
   paths:
+  - tests/gateway/relay/test_relay_native_turn_lifecycle.py
+  - tests/gateway/test_active_session_refusal_completion.py
+  - tests/gateway/test_journey_compress_restart_fifo.py
+  - tests/gateway/test_room_allow_silence.py
+  - tests/gateway/test_startup_failed_platform_reports_degraded.py
+  - tests/hermes_cli/test_update_slow_unit_stop.py
+  - tests/hermes_cli/test_windows_ssh_runtime_ownership.py
+  - tests/pm/test_pm_core.py
+  - tests/tools/test_web_tools_tavily.py
   - scripts/ci/reviewed_supply_chain_fixtures.py
   - tests/scripts/test_reviewed_supply_chain_fixtures.py
   - tests/hermes_cli/test_post_update_expose_cli.py

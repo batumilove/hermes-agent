@@ -20,4 +20,6 @@ def test_refused_turn_publishes_completion_with_its_reason():
     payload = frame['params']['payload']
     assert frame['params']['type'] == 'message.complete'
     assert payload['text'] == 'Too many active sessions.'
-    assert payload['text'].reason == MAX_CONCURRENT_SESSIONS
+    assert type(payload['text']) is str
+    assert payload['status'] == 'error'
+    assert refusal.reason == MAX_CONCURRENT_SESSIONS
