@@ -1057,6 +1057,7 @@ patches:
     handling; desktop preview, HUD, and focus-chord compatibility; plus the associated regression coverage
     and stale test/documentation cleanup. Support the Git for Windows UCRT64 recovery layout.'
   paths:
+  - tests/hermes_cli/test_launch_relaunch_loop.py
   - apps/desktop/electron/updater/checkout-source.test.ts
   - tests/gateway/test_startup_recovery_parks_profile.py
   - tests/hermes_cli/test_worktree_snapshot_prune.py
@@ -1091,6 +1092,7 @@ patches:
   - tests/e2e/conftest.py
   - tests/tools/test_mcp_dispatch_recovery.py
   tests:
+  - scripts/run_tests.sh tests/hermes_cli/test_launch_relaunch_loop.py
   - scripts/run_tests.sh tests/hermes_cli/test_plugins_module_eviction.py
   - scripts/run_tests.sh tests/e2e/core/parity/test_entrypoint_parity.py
   - scripts/run_tests.sh tests/tools/test_mcp_stability.py tests/tools/test_mcp_tool.py tests/tools/test_local_setsid_descendant_sweep.py

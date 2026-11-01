@@ -96,11 +96,8 @@ def test_backed_off_failed_sync_boots_on_the_previous_dependencies(tmp_path, mon
     remedy every backed-off launch names) still tries the repair; its report-only `--check` does not."""
     from hermes_cli import venv_sync
 
-    root = tmp_path / "checkout"
-    root.mkdir()
-    (root / ".git").mkdir()
-    (root / "pyproject.toml").write_text("[project]\nname='example'\n", encoding="utf-8")
-    (root / "install-stamp.json").write_text(json.dumps({"updateMechanism": "self"}), encoding="utf-8")
+    # Lifecycle ownership binds repairs to the checkout's real source identity.
+    root = _committed_checkout(tmp_path, completed=False)
 
     for launch in range(1, 5):
         result, generations = _launch(tmp_path, root, "fail", launch, argv)
@@ -121,7 +118,7 @@ def test_backed_off_failed_sync_boots_on_the_previous_dependencies(tmp_path, mon
         assert result.stderr.count("could not be finished automatically") == 1
 
 
-def _committed_checkout(tmp_path: Path) -> Path:
+def _committed_checkout(tmp_path: Path, *, completed: bool = True) -> Path:
     from hermes_cli.source_stamp import write_source_stamp
 
     root = tmp_path / "checkout"
@@ -133,7 +130,8 @@ def _committed_checkout(tmp_path: Path) -> Path:
     for args in (["init"], ["config", "user.email", "test@example.com"], ["config", "user.name", "test"],
                  ["add", "-A"], ["commit", "-m", "init"]):
         subprocess.run(["git", *args], cwd=root, env=git_env, check=True, capture_output=True, timeout=30)
-    assert write_source_stamp(root)["dirty"] is False
+    if completed:
+        assert write_source_stamp(root)["dirty"] is False
     return root
 
 
