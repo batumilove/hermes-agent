@@ -22,16 +22,15 @@ function fixture(t) {
 
 test('legacy glob callers retain callbacks, synchronous matching, dot policy and exclusions', async t => {
   const cwd = fixture(t)
-  const glob = requireRoot('glob-legacy')
+  const requireRimraf = createRequire(requireRoot.resolve('rimraf/package.json'))
+  const glob = requireRimraf('glob')
   assert.deepEqual(glob.sync('**/*.txt', {cwd}).sort(), ['a.txt', 'nested/c.txt'])
   assert.deepEqual(glob.sync('*.txt', {cwd, dot: true}).sort(), ['.hidden.txt', 'a.txt'])
   assert.deepEqual(glob.sync('**/*.txt', {cwd, ignore: 'nested/**'}), ['a.txt'])
   assert.deepEqual(glob.sync('@(a|b).*', {cwd}).sort(), ['a.txt', 'b.js'])
   const result = await new Promise((resolveResult, reject) => glob('*.txt', {cwd}, (error, files) => error ? reject(error) : resolveResult(files)))
   assert.deepEqual(result, ['a.txt'])
-  // Exercise the real nested legacy consumer, rather than just the direct alias.
-  const requireRimraf = createRequire(requireRoot.resolve('rimraf/package.json'))
-  assert.deepEqual(requireRimraf('glob').sync('*.txt', {cwd}), ['a.txt'])
+  assert.equal(typeof requireRoot('minimatch'), 'function')
 })
 
 test('cacache resolves glob 14 and can enumerate and verify its production cache', async t => {

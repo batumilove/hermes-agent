@@ -311,14 +311,13 @@ RUN /opt/hermes/.venv/bin/python -I scripts/generate_icons.py --source /opt/herm
 
 # Frontend dependencies never enter the runtime layers.
 FROM runtime_base AS frontend_build
-COPY package.json package-lock.json ./
-COPY vendor/npm/glob-7.2.3-hermes.1.tgz vendor/npm/
+COPY package.json package-lock.json .npmrc ./
+COPY vendor/npm/minimatch-compat/ vendor/npm/minimatch-compat/
 COPY web/package.json web/
 COPY ui-tui/package.json ui-tui/
 COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/
 COPY apps/shared/ apps/shared/
 COPY scripts/build/node-deps.mjs scripts/build/electron-runtime.mjs scripts/build/
-ENV npm_config_install_links=false
 RUN node scripts/build/node-deps.mjs --source /opt/hermes --workspace ui-tui --workspace web
 
 COPY pyproject.toml uv.lock ./

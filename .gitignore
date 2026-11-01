@@ -325,9 +325,3 @@ native/fts5_cjk/*.so
 /pm/.lock.json.lock
 
 apps/desktop/.dist-build*
-
-# Reproducible source dependency; upstream/output hashes are recorded beside it.
-!website/vendor/serve-handler-6.1.7-hermes.1.tgz
-
-# Reproducible glob 7 compatibility adapter for the fixed minimatch API.
-!vendor/npm/glob-7.2.3-hermes.1.tgz

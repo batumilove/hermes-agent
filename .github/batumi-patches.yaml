@@ -5,6 +5,56 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: channel-smoke-cli-test-budget
+  kind: compatibility
+  rationale: Allow ten real CLI/Python round trips on loaded CI runners while
+    bounding each child and requiring an actual process exit for negative cases.
+  paths:
+  - tests-js/bundle-smoke-metadata.test.mjs
+  tests:
+  - npm exec --workspace tests-js -- vitest run bundle-smoke-metadata.test.mjs
+  retirement: Remove when upstream channel smoke tests have equivalent child-process
+    bounds and a suite budget that accommodates concurrent integration work.
+- id: legacy-matcher-segment-and-google-repair
+  kind: compatibility
+  rationale: Preserve legacy glob segment matching through the patched matcher engine
+    and require the fixed ASN.1 decoder during Google Chat environment repair.
+  paths:
+  - vendor/npm/minimatch-compat/index.cjs
+  - vendor/npm/minimatch-compat/README.md
+  - tests-js/dependency-glob-compatibility.test.mjs
+  - plugins/platforms/google_chat/oauth.py
+  - tests/gateway/test_google_chat_pyasn1_security.py
+  tests:
+  - npm exec --workspace tests-js -- vitest run dependency-glob-compatibility.test.mjs patched-glob-consumers.test.mjs
+  - scripts/run_tests.sh tests/gateway/test_google_chat_pyasn1_security.py
+  retirement: Remove when upstream legacy callers use the current matcher interface
+    and Google Chat repair selects the patched decoder with equivalent regression coverage.
+- id: cron-bounded-worker-adoption-ownership
+  kind: core
+  rationale: Preserve scoped cron ownership regression coverage for nullable fingerprint
+    and handoff compare-and-swap, shared adoption deadline admission under SQLite
+    contention, and worker ownership readback before acknowledgement and execution.
+    The config-hook and secret-source tests retain their existing assertions while
+    supplying complete durable ownership rows required by the scoped worker fix.
+    Pytest commands require the repository test dependencies in a disposable guest
+    with private HOME, HERMES_HOME and TMPDIR, no host credentials or supervisor
+    sockets; the native managed-gateway restart test is explicitly excluded.
+    The standalone contention harness needs only Python stdlib and temporary SQLite
+    databases; it stubs unrelated imports and is not full runtime acceptance.
+  paths:
+  - cron/scheduler_worker_ack.py
+  - tests/cron/adoption_contention_contract.py
+  - tests/cron/test_adoption_remediation.py
+  - tests/cron/test_external_worker_config_hooks.py
+  - tests/cron/test_external_worker_secret_sources.py
+  tests:
+  - scripts/run_tests.sh tests/cron/test_execution_ledger.py tests/cron/test_restart_safe_worker.py tests/cron/test_adoption_remediation.py -k 'not test_managed_gateway_restart_preserves_active_worker_and_single_side_effect'
+  - scripts/run_tests.sh tests/cron/test_external_worker_config_hooks.py tests/cron/test_external_worker_secret_sources.py
+  - python3 tests/cron/adoption_contention_contract.py .
+  retirement: Remove when the accepted upstream baseline supplies equivalent bounded
+    cron adoption ownership, contention and acknowledgement regression coverage,
+    including complete durable ownership fixtures for config hooks and secret sources.
 - id: tornado-66-security-floor
   kind: operations
   rationale: Raise the optional Telegram webhook Tornado floor to 6.6 for
@@ -391,10 +441,12 @@ patches:
   kind: operations
   rationale: Require the installation's included updater for application updates and remove
     custom activation controllers as an ordinary update prerequisite while preserving runtime
-    identity, authorization and enforced lifecycle controls.
+    identity, authorization and enforced lifecycle controls. Document shared-gateway
+    acceptance, isolated restore checks and separately scoped optional reboot drills.
   paths:
   - AGENTS.md
   - website/docs/getting-started/updating.md
+  - website/docs/user-guide/multi-profile-gateways.md
   - skills/autonomous-ai-agents/hermes-agent/SKILL.md
   - website/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent.md
   tests:
@@ -582,7 +634,10 @@ patches:
     addressed by the September 2026 repository-wide lockfile remediation, while preserving an exact Electron
     runtime/build pin and a production-only Nix node-gyp dependency closure. October scanning updates
     exact desktop/docs floors and uses a hash-verified licensed braces derivative for the unpatched nesting
-    advisory. Pin MCP 2.2.0 to close GHSA-84m7-p3x7-pcfv session resource exhaustion.
+    advisory. Pin MCP 2.2.0 to close GHSA-84m7-p3x7-pcfv session resource exhaustion. November fixes
+    pyasn1, joi, follow-redirects, glob and minimatch advisories, retaining legacy callable consumers
+    through a first-party adapter to the patched minimatch engine and validating the Nix offline closure.
+    Docker frontend stages include the local adapter and the matching npm install configuration.
   paths:
   - pm/AGENTS.md
   - tests/test_packaging_metadata.py
@@ -593,6 +648,7 @@ patches:
   - nix/checks.nix
   - nix/python.nix
   - nix/node-gyp-11-4-0-package-lock.json
+  - nix/node-gyp-overrides.json
   - nix/node-gyp-11-4-0.nix
   - nix/tests/node-gyp-production.mjs
   - nix/tests/npm-offline-overrides.mjs
@@ -619,6 +675,7 @@ patches:
   - scripts/ci/check_profile_archive_boundary.py
   - tests/scripts/test_check_profile_archive_boundary.py
   - tests-js/braces-depth-guard.test.mjs
+  - tests-js/patched-glob-consumers.test.mjs
   - plugins/platforms/photon/sidecar/package.json
   - plugins/platforms/photon/sidecar/package-lock.json
   - website/tests/braces-security.test.*
@@ -2476,49 +2533,27 @@ patches:
     tests/scripts/test_catalog_upstream_import.py tests/scripts/test_supply_chain_import_scan.py
     tests/ci/test_plugin_catalog_ci_confinement.py
   retirement: Remove when upstream runtime identity admits verified tree-import ancestry.
-
-- id: november-fixed-dependency-graph
+- id: cron-profile-offset-at-scheduled-instant
   kind: compatibility
-  rationale: Pin reviewed November vulnerability fixes while preserving the global
-    release-age threshold and vulnerability gate. Five npm exceptions were explicitly
-    user-approved, with November 8–11 retirement dates. Keep legacy glob callbacks
-    and serve-handler rewrites compatible with the nonrecursive minimatch API.
-    Source archives remain independently digest- and inventory-bound.
+  rationale: Compare a persisted cron occurrence against its owning timezone at the scheduled instant,
+    rather than the test clock's offset, across both DST transitions.
   paths:
-  - .github/batumi-patches.yaml
-  - .dockerignore
-  - .gitignore
-  - .npmrc
-  - Dockerfile
-  - nix/lib.nix
-  - nix/node-gyp-11-4-0-overrides.json
-  - nix/node-gyp-11-4-0-package-lock.json
-  - nix/node-gyp-11-4-0.nix
-  - nix/tests/node-gyp-production.mjs
-  - package-lock.json
-  - package.json
-  - pyproject.toml
-  - scripts/build-glob-compat.py
-  - scripts/ci/npm-security-compat.mjs
-  - scripts/ci/reviewed_npm_archive.py
-  - tests/scripts/test_reviewed_compat_archives.py
-  - uv.lock
-  - vendor/npm/glob-7.2.3-hermes.1.tgz
-  - vendor/npm/glob-compat.json
-  - vendor/npm/glob-compat.md
-  - website/.npmrc
-  - website/package-lock.json
-  - website/package.json
-  - website/scripts/build-serve-handler-compat.py
-  - website/vendor/README.md
-  - website/vendor/serve-handler-6.1.7-hermes.1.tgz
-  - website/vendor/serve-handler-compat.json
+  - tests/cron/test_cron_next_run_profile_timezone.py
   tests:
-  - python -m pm.build_env --source . --check-lock --offline
-  - scripts/run_tests.sh tests/scripts/test_check_profile_archive_boundary.py tests/scripts/test_reviewed_compat_archives.py tests/test_npm_security_policy.py
+  - scripts/run_tests.sh tests/cron/test_cron_next_run_profile_timezone.py
+  retirement: Remove when upstream tests the owning profile offset at the scheduled occurrence.
+
+- id: installed-npm-consumer-compatibility
+  kind: compatibility
+  rationale: Exercise the merged fixed dependency graph through actual legacy glob,
+    cacache and website HTTP consumers without replacing its shared matcher adapter
+    or downgrading the newer accepted dependency floors. Record current locked
+    release-age retirement dates without adding exemptions or changing the threshold.
+  paths:
+  - .npmrc
+  - website/.npmrc
+  - .github/batumi-patches.yaml
+  - scripts/ci/npm-security-compat.mjs
+  tests:
   - node scripts/ci/npm-security-compat.mjs
-  - node nix/tests/node-gyp-production.mjs /path/to/node-gyp /path/to/node-headers
-  - nix build .#node-gyp
-  retirement: Remove age exceptions at their dated thresholds; retire compatibility
-    archives and their exact guard pins when maintained upstream consumers support
-    the fixed matcher API. Retain equivalent archive rejection and security coverage.
+  retirement: Retire when equivalent consumer coverage ships with maintained upstream dependencies.
