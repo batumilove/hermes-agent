@@ -869,6 +869,26 @@ they need a separate location-only route. The routed profile does not need its
 own `platforms.<platform>` block for this: the shared bot's authorization comes
 from the route, not from the satellite's config.
 
+## Maintaining one shared gateway
+
+A DevOps or operations profile can be served by the same gateway as personal,
+research and other profiles. It does not need a separate process merely because
+of its role. Sharing the process preserves each profile's own configuration,
+credentials, sessions and memory; it does not merge their state.
+
+For an existing per-profile service fleet, use the supported
+[multiplex migration](#migrating-from-per-profile-gateways) and verify its result.
+Do not leave a redundant standalone service enabled to repeatedly attach to a
+shared gateway. Verify the intended served set with `hermes status --full` and
+check named profiles with `hermes -p <name> gateway status`.
+
+Before an update or shared process restart, account for active work across every
+served profile. Afterward, verify the shared process, expected profiles, adapter
+connections, scheduler and session store. Treat the shared process restart and a
+host reboot drill as separate operations; skipping a reboot drill does not require
+creating another gateway or leaving the rollout open. See
+[update verification](../getting-started/updating.md#verifying-a-shared-gateway-update).
+
 ## Start, stop, or restart all gateways at once
 
 The CLI ships with single-profile lifecycle commands. To act across every

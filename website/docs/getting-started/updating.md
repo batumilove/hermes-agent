@@ -39,6 +39,34 @@ the incompatibility. After an update, verify its receipt and warnings, the loade
 runtime identity, service health and the changed behavior. The updater's recovery
 coverage is version-specific; do not promise complete automatic rollback.
 
+### Verifying a shared gateway update
+
+Identify the installation used by the running service before updating it. The
+computer used to prepare a change may not host the gateway. On a multiplexing
+installation, a process restart affects every served profile, including an
+operations or DevOps profile; see [shared gateway maintenance](../user-guide/multi-profile-gateways.md#maintaining-one-shared-gateway).
+
+Before a maintenance transition, inspect current work across foreground agents,
+cron runs, API runs and detached workers using the installed runtime's status
+interface. A quiet cron list alone does not prove the gateway is idle. Preserve
+explicit active-work constraints and use the included updater's supported
+lifecycle controls.
+
+After updating, check the update receipt and dependency outcome, then verify the
+loaded runtime, served profiles, current adapter connections, scheduler and
+session store. Verify any dashboard or recovery services included in the update
+scope, and confirm that local changes intended to survive the update remain.
+
+If restore validation is in scope, exercise the included restore path against an
+isolated home and validate its restored state without replacing the live home.
+For an observability plugin, verify an authorized synthetic event through export
+and readback; endpoint health and authentication alone do not prove delivery.
+
+A host reboot drill is a separate check. Record it as passed, failed, deferred or
+skipped, independently of update and restore results. If the operator skips the
+drill and the agreed update checks pass, close the rollout without scheduling a
+reboot. Runtime health and an isolated restore do not prove recovery after boot.
+
 ### Migrating an exported release
 
 An exported directory without supported update metadata needs a one-time migration before ordinary source updates. Prepare the intended revision with the included installer in a separate source, home and runtime. Verify imports and changed behavior there, then use the included package manager to prepare dependencies for the production home. Do not copy or hand-edit dependency facts between homes.

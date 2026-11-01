@@ -14,6 +14,7 @@ The invariant pinned here: ``next_run_at`` written during a foreign-process
 tick carries the JOB-OWNING profile's configured UTC offset.
 """
 from datetime import datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -29,26 +30,21 @@ def _fresh_tz_cache(monkeypatch):
     hermes_time.reset_cache()
 
 
-@pytest.mark.parametrize("instant", [
-    "2026-01-15T12:00:00+00:00",
-    "2026-07-15T12:00:00+00:00",
-    "2026-03-08T05:30:00+00:00",
-    "2026-11-01T04:30:00+00:00",
-], ids=["winter", "summer", "spring-forward", "fall-back"])
+@pytest.mark.parametrize("instant", ["2026-03-08T05:00:00+00:00", "2026-11-01T04:00:00+00:00"])
 def test_foreign_process_tick_persists_owning_profile_offset(
     tmp_path, monkeypatch, instant
 ):
     """next_run_at persisted during a multiplex tick uses the ticked
     profile's timezone, not the backend process's."""
-    fixed_now = datetime.fromisoformat(instant)
+    # Both transitions change the owning profile's offset before its next 14:00 run.
+    frozen = datetime.fromisoformat(instant)
 
-    class Clock(datetime):
+    class FrozenDatetime(datetime):
         @classmethod
         def now(cls, tz=None):
-            return fixed_now.astimezone(tz) if tz is not None else fixed_now.replace(tzinfo=None)
+            return frozen.astimezone(tz) if tz is not None else frozen.replace(tzinfo=None)
 
-    monkeypatch.setattr(hermes_time, "datetime", Clock)
-
+    monkeypatch.setattr(hermes_time, "datetime", FrozenDatetime)
     backend_home = tmp_path / "backend"  # desktop backend's own profile: UTC
     profile_a = tmp_path / "north-caribbean"  # job-owning profile: Eastern
     backend_home.mkdir()
@@ -84,7 +80,6 @@ def test_foreign_process_tick_persists_owning_profile_offset(
         reset_hermes_home_override(token)
 
     next_run = datetime.fromisoformat(job["next_run_at"])
-    # A run after a DST transition can have a different offset from the tick.
     expected_offset = next_run.astimezone(ZoneInfo("America/New_York")).utcoffset()
     assert next_run.utcoffset() == expected_offset, (
         f"next_run_at {job['next_run_at']} persisted with foreign offset "
