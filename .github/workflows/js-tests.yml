@@ -64,6 +64,8 @@ jobs:
       # The ~/.cache/electron download cache stays out of the key on purpose.
       # ``npm ci`` is skipped on a hit, so nothing reads that cache. It only
       # makes the archive larger.
+      # file: vendor dependencies are copied into node_modules with install-links.
+      # Their source bytes must invalidate the installed-tree cache too.
       - name: Restore node_modules
         id: node-modules-cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -75,7 +77,7 @@ jobs:
             ui-tui/packages/*/node_modules
             tests-js/node_modules
             web/node_modules
-          key: node-modules-scripts-v2-${{ runner.os }}-${{ runner.arch }}-node${{ steps.node.outputs.node-version }}-npm${{ steps.node.outputs.npm-version }}-${{ hashFiles('package-lock.json', 'package.json', '.npmrc', 'pm/lock.json') }}
+          key: node-modules-scripts-v2-${{ runner.os }}-${{ runner.arch }}-node${{ steps.node.outputs.node-version }}-npm${{ steps.node.outputs.npm-version }}-${{ hashFiles('package-lock.json', 'package.json', '.npmrc', 'pm/lock.json', 'vendor/npm/**') }}
 
       - uses: ./.github/actions/retry
         if: steps.node-modules-cache.outputs.cache-hit != 'true'
