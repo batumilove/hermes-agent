@@ -32,6 +32,7 @@ patches:
   - website/scripts/test-serve-handler.cjs
   - .github/workflows/docs-site-checks.yml
   - tests-js/dependency-glob-compatibility.test.mjs
+  - tests/test_npm_security_policy.py
   - scripts/build/npm-compat-archives.py
   - scripts/ci/reviewed_npm_archive.py
   - tests/scripts/test_check_profile_archive_boundary.py

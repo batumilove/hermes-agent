@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -6,6 +6,17 @@ import { promisify } from 'node:util'
 import { expect, test } from 'vitest'
 
 const requireRoot = createRequire(new URL('../package.json', import.meta.url))
+
+test('the node-gyp build manifest and locked graph contain only production dependencies', () => {
+  const manifest = JSON.parse(readFileSync(new URL('../nix/node-gyp-11-4-0-package.json', import.meta.url), 'utf8'))
+  const lock = JSON.parse(readFileSync(new URL('../nix/node-gyp-11-4-0-package-lock.json', import.meta.url), 'utf8'))
+  expect(manifest).not.toHaveProperty('devDependencies')
+  expect(lock.packages['']).not.toHaveProperty('devDependencies')
+  expect(lock.packages[''].name).toBe(manifest.name)
+  expect(lock.packages[''].version).toBe(manifest.version)
+  expect(lock.packages[''].dependencies).toEqual(manifest.dependencies)
+  expect(Object.values(lock.packages).every(metadata => !metadata.dev)).toBe(true)
+})
 
 function fixture() {
   const directory = mkdtempSync(path.join(tmpdir(), 'hermes-glob-consumer-'))
