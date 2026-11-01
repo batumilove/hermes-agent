@@ -214,6 +214,7 @@ let
     [
       (repoRoot + "/package.json")
       (repoRoot + "/package-lock.json")
+      (repoRoot + "/vendor/npm/glob-7.2.3-hermes.1.tgz")
     ]
     ++ map (d: repoRoot + "/${d}/package.json") workspaceMemberDirs
   );

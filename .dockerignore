@@ -126,3 +126,6 @@ plans/
 /*.png.bak
 *.tar.gz
 *.tgz
+
+# Exact reviewed npm input; archive boundary also verifies digest and full inventory.
+!vendor/npm/glob-7.2.3-hermes.1.tgz

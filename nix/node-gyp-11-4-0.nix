@@ -23,10 +23,13 @@ let
       substituteInPlace package.json --replace-fail \
         $'  "devDependencies": {\n    "bindings": "^1.5.0",\n    "cross-env": "^7.0.3",\n    "eslint": "^9.16.0",\n    "mocha": "^11.0.1",\n    "nan": "^2.14.2",\n    "neostandard": "^0.11.9",\n    "require-inject": "^1.4.4"\n  },\n' \
         ""
+      # Keep the exact reviewed security graph reproducible from the manifest.
+      ${nodejs}/bin/node -e 'const fs = require("fs"); const p = JSON.parse(fs.readFileSync("package.json")); p.overrides = JSON.parse(fs.readFileSync(process.argv[1])); p.dependencies.tar = p.overrides.tar; fs.writeFileSync("package.json", JSON.stringify(p, null, 2) + "\n");' \
+        ${./node-gyp-11-4-0-overrides.json}
       ln -s ${./node-gyp-11-4-0-package-lock.json} package-lock.json
     '';
 
-    npmDepsHash = "sha256-X2qTgZyr9/Rjg062fXTKdWoSPGVTQL83ajbyL663/ec=";
+    npmDepsHash = "sha256-KC10gIzQtWGofCwWN+5x+y/eUzg0u7sOAH1Jdru06ZE=";
 
     npmDepsFetcherVersion = 2;
 

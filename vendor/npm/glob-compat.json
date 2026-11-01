@@ -1,0 +1,9 @@
+{
+  "source_url": "https://registry.npmjs.org/glob/-/glob-7.2.3.tgz",
+  "source_integrity": "sha512-nFR0zLpU2YCaRxwoCJvL6UvCH2JFyFVIvwTLsIf21AuHlMskA1hhTdk+LlYJtOlYt9v6dvszD2BGRqBL+iQK9Q==",
+  "output_sha256": "804ada69dd8774e534af99b7d56701d427d119f13110c86110496c16d50f56d1",
+  "changes": [
+    "glob.js and sync.js read Matcher.pattern and call Matcher.test",
+    "package version and exact minimatch dependency"
+  ]
+}

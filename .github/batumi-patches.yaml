@@ -2476,3 +2476,49 @@ patches:
     tests/scripts/test_catalog_upstream_import.py tests/scripts/test_supply_chain_import_scan.py
     tests/ci/test_plugin_catalog_ci_confinement.py
   retirement: Remove when upstream runtime identity admits verified tree-import ancestry.
+
+- id: november-fixed-dependency-graph
+  kind: compatibility
+  rationale: Pin reviewed November vulnerability fixes while preserving the global
+    release-age threshold and vulnerability gate. Five npm exceptions were explicitly
+    user-approved, with November 8–11 retirement dates. Keep legacy glob callbacks
+    and serve-handler rewrites compatible with the nonrecursive minimatch API.
+    Source archives remain independently digest- and inventory-bound.
+  paths:
+  - .github/batumi-patches.yaml
+  - .dockerignore
+  - .gitignore
+  - .npmrc
+  - Dockerfile
+  - nix/lib.nix
+  - nix/node-gyp-11-4-0-overrides.json
+  - nix/node-gyp-11-4-0-package-lock.json
+  - nix/node-gyp-11-4-0.nix
+  - nix/tests/node-gyp-production.mjs
+  - package-lock.json
+  - package.json
+  - pyproject.toml
+  - scripts/build-glob-compat.py
+  - scripts/ci/npm-security-compat.mjs
+  - scripts/ci/reviewed_npm_archive.py
+  - tests/scripts/test_reviewed_compat_archives.py
+  - uv.lock
+  - vendor/npm/glob-7.2.3-hermes.1.tgz
+  - vendor/npm/glob-compat.json
+  - vendor/npm/glob-compat.md
+  - website/.npmrc
+  - website/package-lock.json
+  - website/package.json
+  - website/scripts/build-serve-handler-compat.py
+  - website/vendor/README.md
+  - website/vendor/serve-handler-6.1.7-hermes.1.tgz
+  - website/vendor/serve-handler-compat.json
+  tests:
+  - python -m pm.build_env --source . --check-lock --offline
+  - scripts/run_tests.sh tests/scripts/test_check_profile_archive_boundary.py tests/scripts/test_reviewed_compat_archives.py tests/test_npm_security_policy.py
+  - node scripts/ci/npm-security-compat.mjs
+  - node nix/tests/node-gyp-production.mjs /path/to/node-gyp /path/to/node-headers
+  - nix build .#node-gyp
+  retirement: Remove age exceptions at their dated thresholds; retire compatibility
+    archives and their exact guard pins when maintained upstream consumers support
+    the fixed matcher API. Retain equivalent archive rejection and security coverage.

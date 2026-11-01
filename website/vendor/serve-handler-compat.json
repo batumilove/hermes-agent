@@ -1,0 +1,11 @@
+{
+  "source_version": "6.1.7",
+  "source_url": "https://registry.npmjs.org/serve-handler/-/serve-handler-6.1.7.tgz",
+  "source_integrity": "sha512-CinAq1xWb0vR3twAv9evEU8cNWkXCb9kd5ePAHUKJBkOsUpR1wt/CvGdeca7vqumL1U5cSaeVQ6zZMxiJ3yWsg==",
+  "changes": [
+    "Use minimatch named CommonJS export",
+    "Pin minimatch 11.0.1",
+    "Version the local compatibility build 6.1.7-hermes.1"
+  ],
+  "output_sha256": "0868f9fa1dfa9ca59670387d936d8267dc3c7a1331174be7daa7cc153f4275e4"
+}
