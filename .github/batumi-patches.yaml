@@ -5,6 +5,16 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: channel-smoke-cli-test-budget
+  kind: compatibility
+  rationale: Allow ten real CLI/Python round trips on loaded CI runners while
+    bounding each child and requiring an actual process exit for negative cases.
+  paths:
+  - tests-js/bundle-smoke-metadata.test.mjs
+  tests:
+  - npm exec --workspace tests-js -- vitest run bundle-smoke-metadata.test.mjs
+  retirement: Remove when upstream channel smoke tests have equivalent child-process
+    bounds and a suite budget that accommodates concurrent integration work.
 - id: legacy-matcher-segment-and-google-repair
   kind: compatibility
   rationale: Preserve legacy glob segment matching through the patched matcher engine
