@@ -582,7 +582,9 @@ patches:
     addressed by the September 2026 repository-wide lockfile remediation, while preserving an exact Electron
     runtime/build pin and a production-only Nix node-gyp dependency closure. October scanning updates
     exact desktop/docs floors and uses a hash-verified licensed braces derivative for the unpatched nesting
-    advisory. Pin MCP 2.2.0 to close GHSA-84m7-p3x7-pcfv session resource exhaustion.
+    advisory. Pin MCP 2.2.0 to close GHSA-84m7-p3x7-pcfv session resource exhaustion. November fixes
+    pyasn1, joi, follow-redirects, glob and minimatch advisories, retaining legacy callable consumers
+    through a first-party adapter to the patched minimatch engine and validating the Nix offline closure.
   paths:
   - pm/AGENTS.md
   - tests/test_packaging_metadata.py
@@ -593,6 +595,7 @@ patches:
   - nix/checks.nix
   - nix/python.nix
   - nix/node-gyp-11-4-0-package-lock.json
+  - nix/node-gyp-overrides.json
   - nix/node-gyp-11-4-0.nix
   - nix/tests/node-gyp-production.mjs
   - nix/tests/npm-offline-overrides.mjs
@@ -619,6 +622,7 @@ patches:
   - scripts/ci/check_profile_archive_boundary.py
   - tests/scripts/test_check_profile_archive_boundary.py
   - tests-js/braces-depth-guard.test.mjs
+  - tests-js/patched-glob-consumers.test.mjs
   - plugins/platforms/photon/sidecar/package.json
   - plugins/platforms/photon/sidecar/package-lock.json
   - website/tests/braces-security.test.*
@@ -2476,3 +2480,12 @@ patches:
     tests/scripts/test_catalog_upstream_import.py tests/scripts/test_supply_chain_import_scan.py
     tests/ci/test_plugin_catalog_ci_confinement.py
   retirement: Remove when upstream runtime identity admits verified tree-import ancestry.
+- id: cron-profile-offset-at-scheduled-instant
+  kind: compatibility
+  rationale: Compare a persisted cron occurrence against its owning timezone at the scheduled instant,
+    rather than the test clock's offset, across both DST transitions.
+  paths:
+  - tests/cron/test_cron_next_run_profile_timezone.py
+  tests:
+  - scripts/run_tests.sh tests/cron/test_cron_next_run_profile_timezone.py
+  retirement: Remove when upstream tests the owning profile offset at the scheduled occurrence.

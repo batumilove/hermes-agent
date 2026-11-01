@@ -23,10 +23,11 @@ let
       substituteInPlace package.json --replace-fail \
         $'  "devDependencies": {\n    "bindings": "^1.5.0",\n    "cross-env": "^7.0.3",\n    "eslint": "^9.16.0",\n    "mocha": "^11.0.1",\n    "nan": "^2.14.2",\n    "neostandard": "^0.11.9",\n    "require-inject": "^1.4.4"\n  },\n' \
         ""
+      substituteInPlace package.json --replace-fail '"name": "node-gyp",' '"name": "node-gyp", "overrides": ${builtins.toJSON (builtins.fromJSON (builtins.readFile ./node-gyp-overrides.json))},'
       ln -s ${./node-gyp-11-4-0-package-lock.json} package-lock.json
     '';
 
-    npmDepsHash = "sha256-X2qTgZyr9/Rjg062fXTKdWoSPGVTQL83ajbyL663/ec=";
+    npmDepsHash = "sha256-bR05j6o95Wzndv9s3XQWf8AfZyB+qjeSPQayInFuJCA=";
 
     npmDepsFetcherVersion = 2;
 
