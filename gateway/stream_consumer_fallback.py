@@ -257,6 +257,8 @@ class StreamFallbackMixin:
             logger.debug("Empty fallback final send failed: %s", exc)
             return "ambiguous" if self._send_failure_may_have_delivered(exc) else "failed"
         if not getattr(result, "success", False):
+            if _BasePlatformAdapter._is_partial_delivery(result):
+                return "ambiguous"
             if self._is_flood_error(result):
                 return "preview"
             return "ambiguous" if self._send_failure_may_have_delivered(result) else "failed"
@@ -282,7 +284,10 @@ class StreamFallbackMixin:
 
     @staticmethod
     def _send_failure_may_have_delivered(result_or_exc: Any) -> bool:
-        """Return True for timeout failures where retrying may duplicate."""
+        """Return True when the adapter or transport cannot rule out delivery."""
+        raw = getattr(result_or_exc, "raw_response", None)
+        if isinstance(raw, dict) and raw.get("delivery_uncertain") is True:
+            return True
         if getattr(result_or_exc, "retryable", None) is True:
             return False
         error = str(getattr(result_or_exc, "error", None) or result_or_exc).lower()
@@ -306,7 +311,8 @@ class StreamFallbackMixin:
     def _is_flood_error(self, result) -> bool:
         """Check if a SendResult failure is due to flood control / rate limiting."""
         err_lower = (getattr(result, "error", "") or "").lower()
-        return "flood" in err_lower or "retry after" in err_lower or "rate" in err_lower
+        return (getattr(result, "error_kind", None) == "rate_limited"
+                or "flood" in err_lower or "retry after" in err_lower or "rate" in err_lower)
 
     async def _flush_segment_tail_on_edit_failure(self) -> None:
         """Before a segment reset, send the unseen tail as a new message (and best-effort

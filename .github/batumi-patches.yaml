@@ -5,6 +5,32 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: mattermost-delivery-failure-semantics
+  kind: compatibility
+  rationale: Preserve per-request Mattermost POST refusal and delivery uncertainty,
+    avoid misleading formatting resends and duplicate split heads, and propagate
+    typed failures through streaming finalization. Keep notify-only invalid-root
+    recovery independent of concurrent typing requests. Offline fake-transport
+    tests need the repository test environment, without server credentials.
+  paths:
+  - apps/desktop/electron/update-marker.test.ts
+  - tests/gateway/test_native_warning_coverage.py
+  - contributors/emails/codex@openai.com
+  - .github/batumi-patches.yaml
+  - gateway/platforms/base.py
+  - gateway/stream_consumer_fallback.py
+  - plugins/platforms/mattermost/adapter.py
+  - plugins/platforms/mattermost/delivery.py
+  - tests/gateway/test_mattermost.py
+  - tests/gateway/test_mattermost_delivery_errors.py
+  tests:
+  - npm --workspace apps/desktop run test:desktop:platforms -- electron/update-marker.test.ts
+  - scripts/run_tests.sh tests/gateway/test_native_warning_coverage.py
+  - npm run --workspace tests-js check
+  - scripts/run_tests.sh tests/gateway/test_mattermost_delivery_errors.py tests/gateway/test_mattermost.py tests/gateway/test_stale_finalize_suppression.py tests/gateway/test_stream_final_contract.py
+  retirement: Remove when upstream preserves equivalent per-request failure,
+    uncertainty, partial-delivery and rate-limit contracts with adapter and
+    streaming-consumer regression coverage.
 - id: local-npm-source-cache-identity
   kind: compatibility
   rationale: Invalidate installed workspace caches when vendored npm file dependency
