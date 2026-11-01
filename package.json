@@ -80,15 +80,30 @@
     "sanitize-html": "2.18.1",
     "vite": "8.2.4",
     "zod@^4": "4.6.6",
-    "minimatch@^3": "$minimatch",
-    "minimatch@^5": "$minimatch",
-    "minimatch@^9": "11.0.3",
-    "minimatch@^10": "11.0.3",
-    "serve-handler": {
-      "minimatch": "$minimatch"
+    "glob@^10": {
+      ".": "14.0.3",
+      "minimatch": "11.0.3"
     },
-    "glob@^10": "14.0.3",
-    "glob@^13": "14.0.3"
+    "glob@^13": {
+      ".": "14.0.3",
+      "minimatch": "11.0.3"
+    },
+    "minimatch": "$minimatch",
+    "@electron/asar@>=4": {
+      "minimatch": "11.0.3"
+    },
+    "@eslint/config-array": {
+      "minimatch": "11.0.3"
+    },
+    "@typescript-eslint/typescript-estree": {
+      "minimatch": "11.0.3"
+    },
+    "app-builder-lib": {
+      "minimatch": "11.0.3"
+    },
+    "eslint": {
+      "minimatch": "11.0.3"
+    }
   },
   "engines": {
     "node": "^22.22.0 || ^24.11.0 || >=26.0.0",
