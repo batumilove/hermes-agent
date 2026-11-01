@@ -175,12 +175,6 @@ def filter_names_for_version(names: list[str], version: str) -> list[str]:
 
 # A row needs a unique receipt-listed artifact and its uploaded object.
 _COMMIT_EXPECTED = [
-    ("Windows x64 (MSIX)", "win32-x64",
-     r"^HermesBundled-[^-]+-win-x64\.msix$"),
-    ("Windows ARM64 (MSIX)", "win32-arm64",
-     r"^HermesBundled-[^-]+-win-arm64\.msix$"),
-    ("Windows universal bundle (MSIXBUNDLE)", "windows-universal",
-     r"^HermesBundled-[^-]+-win\.msixbundle$"),
     ("macOS Apple Silicon (DMG)", "darwin-arm64",
      r"^HermesBundled-[^-]+-mac-arm64\.dmg$"),
     ("macOS Intel (DMG)", "darwin-x64",
@@ -189,7 +183,6 @@ _COMMIT_EXPECTED = [
      r"^HermesBundled-[^-]+-mac-arm64\.zip$"),
     ("macOS Intel (ZIP)", "darwin-x64",
      r"^HermesBundled-[^-]+-mac-x64\.zip$"),
-    ("Termux aarch64 (.deb)", "termux", r"^.*\.deb$"),
 ]
 
 # Linux release legs are disabled; they still get a row so a reader can see
@@ -574,7 +567,7 @@ def splice(body: str, block: str) -> str:
 def render_channel_summary(manifest: dict) -> str:
     request = manifest["request"]
     rows = []
-    for platform in ("darwin", "win32"):
+    for platform in ("darwin",):
         for arch in ("arm64", "x64"):
             selected = [row for row in manifest["packages"] if row["platform"] == platform
                         and row["arch"] == arch and row["variant"] == "bundled"]

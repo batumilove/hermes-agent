@@ -110,7 +110,9 @@ def updater_publishers(jobs: dict) -> dict[str, str]:
     for platform in PLATFORMS:
         own = {smokes[f"{platform}-{arch}"] for arch in ARCHES}
         publishers[platform] = _only(
-            [name for name, job in jobs.items() if set(needs_of(job)) & set(smokes.values()) == own],
+            [name for name, job in jobs.items() if set(needs_of(job)) & set(smokes.values()) == own
+             and any(token in step.get("run", "") for step in job.get("steps", [])
+                     for token in ("scripts.releases.r2 finalize", "publish-appinstaller"))],
             f"{platform} updater publisher")
     return publishers
 

@@ -5,8 +5,8 @@ A stable release is a set of lanes. A build lane produces something users get
 claim records the set, ``admit`` turns it into one flag per lane and one run
 flag per workflow job, and every gate judges each job against that same set.
 
-``release.py release`` starts from DEFAULT (every lane except macOS Intel and
-Termux) and edits it with ``--only``, ``--with`` and ``--without``.
+``release.py release`` starts from DEFAULT (standard Linux and both macOS
+architectures) and edits it with ``--only``, ``--with`` and ``--without``.
 
 Lanes are independent switches, but a job runs only when every lane it needs
 is on (JOB_LANES), so a test lane for something that is not built is inert:
@@ -27,19 +27,19 @@ class Lane:
 
 LANES = (
     Lane("docker", True, "build and publish the Docker image"),
-    Lane("windows", True, "signed Windows x64 + arm64 MSIX and the universal bundle (the update channel's package)"),
-    Lane("windows-store", True, "unsigned Microsoft Store bundle, submitted to Partner Center (needs no signing)"),
+    Lane("windows", False, "signed Windows x64 + arm64 MSIX and the universal bundle (the update channel's package)"),
+    Lane("windows-store", False, "unsigned Microsoft Store bundle, submitted to Partner Center (needs no signing)"),
     Lane("macos-arm64", True, "macOS Apple Silicon DMG + ZIP"),
-    Lane("macos-intel", False, "macOS Intel DMG + ZIP (unsupported on main; its runner adds over an hour)"),
+    Lane("macos-intel", True, "macOS Intel DMG + ZIP"),
     Lane("termux", False, "Termux (Android aarch64) APT package"),
     Lane("ci", True, "the full CI pipeline"),
     Lane("nix", True, "Nix checks"),
     Lane("docker-tests", True, "tests of the Docker image before it is published"),
     Lane("pm-bundle", True, "PM bundle acceptance"),
-    Lane("windows-live", True, "Windows live venv E2E"),
+    Lane("windows-live", False, "Windows live venv E2E"),
     Lane("install-e2e", True, "install and update E2E"),
     Lane("bootstrap-version", True, "bootstrap installer release identity check"),
-    Lane("termux-checks", True, "Termux verification (runs only with termux)"),
+    Lane("termux-checks", False, "Termux verification (runs only with termux)"),
     Lane("smoke", True, "native install + chat smoke of each built desktop package"),
     Lane("upgrade", True, "signed-package upgrade acceptance (OLD to NEW) of each built desktop package"),
 )
@@ -49,10 +49,10 @@ DEFAULT = frozenset(lane.name for lane in LANES if lane.default)
 DESKTOP = ("windows", "macos-arm64", "macos-intel")
 WINDOWS = ("windows", "windows-store")
 BUNDLES = (*DESKTOP, "windows-store", "termux")
-# The protected desktop channel, the update feeds and the Termux index move only for a release that
-# built every desktop package the channel serves. A partial set still stages, verifies and (for
-# Windows) submits its packages, but leaves the channels on the previous release.
-CHANNEL_DESKTOP = ("windows", "macos-arm64")
+# The protected desktop channel and macOS update feed move only for a release that
+# built every macOS package the channel serves. A partial set still stages and verifies
+# its packages, but leaves the channels on the previous release.
+CHANNEL_DESKTOP = ("macos-arm64", "macos-intel")
 DERIVED = ("bundles", "desktop-channel", "windows-build")
 
 # Each stable-release.yml job and the lanes that must all be on for it to run. A job named here
@@ -234,3 +234,13 @@ def describe(lanes: Iterable[str]) -> str:
     on = frozenset(lanes)
     off = [name for name in NAMES if name not in on]
     return f"on: {', '.join(name for name in NAMES if name in on) or 'none'}; off: {', '.join(off) or 'none'}"
+
+
+UNSUPPORTED_LANES = frozenset({"windows", "windows-store", "windows-live", "termux", "termux-checks"})
+
+
+def require_supported_lanes(lanes: Iterable[str]) -> None:
+    """Historical claims remain readable; new builds support Linux and macOS only."""
+    unsupported = frozenset(lanes) & UNSUPPORTED_LANES
+    if unsupported:
+        raise ValueError("Unsupported release lanes in this fork: " + ", ".join(sorted(unsupported)))

@@ -40,6 +40,8 @@ env:
 
 jobs:
   windows-x64:
+    # This fork supports standard Linux and macOS only.
+    if: ${{ false }}
     name: Hermes-Setup.exe (windows x64, signed)
     runs-on: windows-latest
     environment: release-signing

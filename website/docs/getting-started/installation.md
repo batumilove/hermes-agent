@@ -1,7 +1,7 @@
 ---
 sidebar_position: 2
 title: "Installation"
-description: "Install Hermes Agent with desktop bundles, source installers, Docker, Nix, or the Termux APT package"
+description: "Install Hermes Agent with Linux and macOS source installers, macOS desktop bundles, Docker, or Nix"
 ---
 
 <head>
@@ -19,14 +19,11 @@ platform-gated features are supported), see **[Platform Support](./platform-supp
 :::
 
 ## Quick Install
-### Desktop packages on macOS or Windows
+### Desktop packages on macOS
 
-Download the package for your platform from the
-[Hermes website](https://hermes-agent.nousresearch.com/).
+Use a macOS desktop bundle built by this fork. Upstream website downloads follow
+upstream's separate support policy.
 
-- **Windows:** open the `.appinstaller` download with Windows App Installer.
-  It installs the signed MSIX bundle and records its update source.
-  Microsoft Store packages have separate Store ownership.
 - **macOS:** open the DMG, then copy `Hermes.app` to Applications. The ZIP
   artifact carries the signed app used by the automatic updater.
 
@@ -43,7 +40,8 @@ from **Settings → Gateways**; see
 [Connecting to a remote backend](../user-guide/desktop.md#connecting-to-a-remote-backend).
 
 :::note
-The macOS installer is **Apple Silicon only**. macOS on x86 (Intel) processors is [not a supported platform](./platform-support.md#unsupported).
+The `Hermes-Setup.dmg` bootstrap is Apple Silicon only. Intel Macs use the source
+installer or a `darwin-x64` desktop bundle. Both architectures are supported.
 :::
 
 ### Without Hermes Desktop:
@@ -51,26 +49,16 @@ For a command-line only install without Hermes Desktop, run:
 
 #### Linux / macOS / WSL2
 ```bash
-curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/batumilove/hermes-agent/batumi/live/scripts/install.sh | HERMES_REPO_URL=https://github.com/batumilove/hermes-agent.git bash -s -- --branch batumi/live --channel main
 ```
 
-#### Windows (native)
-
-Run in powershell:
-```powershell
-iex (irm https://hermes-agent.nousresearch.com/install.ps1) 
-```
+Native Windows and Android/Termux are unsupported. On Windows, run the Linux
+installer inside WSL2. See [Platform Support](./platform-support.md).
 
 If you want to install & run Hermes Desktop after a command-line only install, simply run
 ```bash
 hermes desktop
 ```
-
-### Android / Termux
-
-Use the [Termux APT package](./termux.md) on aarch64 Android devices.
-Configure its signed repository before running `pkg install hermes-agent`.
-The desktop/server scripts are not the Termux installation path.
 
 ### What the source installer does
 
@@ -79,34 +67,31 @@ to PM. PM provides pinned Python, Node.js, npm, ripgrep, and FFmpeg. The source
 installation selects the `all` Python extra, not every optional extra.
 PM also installs the browser and computer-use tools by default: a pinned
 Chromium (Chrome for Testing) that Hermes launches for local browsing, and
-`cua-driver` (the computer-use driver, on macOS, Windows and glibc Linux). If a
+`cua-driver` (the computer-use driver, on macOS and glibc Linux). If a
 download fails, the install still completes and prints the command to retry.
 The browser driver behind `browser_exec` (browser-harness, the engine of the
 Browser Use CLI) is a regular Python dependency, so every install, the Desktop
-app included, already has it. Where PM has no Chromium build (Android/Termux,
-musl Linux), Hermes uses a system `chromium` on `PATH` instead.
+app included, already has it. Where PM has no Chromium build (musl Linux), Hermes uses a system `chromium` on `PATH` instead.
 Other optional tools use their feature-specific installation paths.
 
-A new install lands on the latest stable release, the channel `hermes update`
-follows from then on (see [Updating](./updating.md)). To install the tip of
-`main` instead, pass `--channel main` on POSIX or `-Channel main` on Windows
-(or set `HERMES_INSTALL_CHANNEL=main` first, for the one-liners).
+The fork command above selects `batumi/live` and the `main` update channel.
+Use the included `hermes update` command for subsequent source updates
+(see [Updating](./updating.md)). The installer also accepts `--channel stable`
+for installations following published releases.
 
-To leave the browser tools out, pass `--skip-browser` on POSIX or `-SkipBrowser`
-on Windows; for the computer-use driver, `--skip-computer-use` /
-`-SkipComputerUse`. Hermes remembers these choices: later installs and
+To leave the browser tools out, pass `--skip-browser`; for the computer-use driver,
+`--skip-computer-use`. Hermes remembers these choices: later installs and
 `hermes update` do not add them back. Run `hermes pm install chromium` or
 `hermes pm install cua-driver` to install them and undo the choice.
 
 The scripts create a launcher and prepare the data directory. Interactive runs
-also invoke setup and gateway configuration. `--non-interactive` on POSIX, or
-`-NonInteractive` on Windows, skips stages that need input. The optional
-`--include-desktop` / `-IncludeDesktop` stage builds the desktop from source.
+also invoke setup and gateway configuration. `--non-interactive` skips stages that need input. The optional
+`--include-desktop` stage builds the desktop from source.
 
 On a terminal the scripts show one status line per step and write the output
 of git, uv and the builds to `logs/install.log` under the Hermes data
 directory; a failed step prints its last lines and the log path. CI (`CI` or
-`GITHUB_ACTIONS` set), redirected output, `--verbose` / `-Verbose` or
+`GITHUB_ACTIONS` set), redirected output, `--verbose` or
 `HERMES_INSTALL_VERBOSE=1` stream everything instead.
 
 #### Install layout
@@ -114,13 +99,11 @@ directory; a failed step prints its last lines and the log path. CI (`CI` or
 | Method | Code | CLI entry point | Default user data |
 |---|---|---|---|
 | POSIX source script | `~/.hermes/hermes-agent/` | `~/.local/bin/hermes` wrapper | `~/.hermes/` |
-| Windows source script | `%LOCALAPPDATA%\hermes\hermes-agent\` | `%LOCALAPPDATA%\hermes\bin\` | `%LOCALAPPDATA%\hermes\` |
-| Desktop bundle | Inside the installed app package | Packaged launchers; Windows execution aliases | Platform default Hermes data directory |
+| Desktop bundle | Inside the installed app package | Packaged launchers | Platform default Hermes data directory |
 | Docker | `/opt/hermes/` | Image entrypoint and `hermes` shim | Mounted `/opt/data/` |
-| Termux APT | `$PREFIX/lib/hermes-agent/` | Symlinks in `$PREFIX/bin/` | `~/.hermes/` |
 
 `HERMES_HOME` selects user data. The POSIX script's `--dir` selects its source
-checkout independently. Windows provides `-HermesHome` and `-InstallDir`.
+checkout independently.
 Running the POSIX script as root does not select an automatic FHS layout:
 it uses root's home unless you provide an explicit source path.
 
@@ -167,7 +150,6 @@ You don't need to rebuild your setup from scratch. Restore a full backup with `h
 ## Prerequisites
 
 For the POSIX source script, provide Git, curl, tar, and SHA-256 utilities.
-Windows can bootstrap its pinned Git for Windows archive when Git is absent.
 The script always downloads its verified uv pin; a uv already on your PATH is never used.
 
 Current first-party installations run on **Python 3.14**. The broader
@@ -217,7 +199,7 @@ configuration, and launcher must belong to that user.
 2. As the service user, run the regular installer:
 
    ```bash
-   curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+   curl -fsSL https://raw.githubusercontent.com/batumilove/hermes-agent/batumi/live/scripts/install.sh | HERMES_REPO_URL=https://github.com/batumilove/hermes-agent.git bash -s -- --branch batumi/live --channel main
    ```
 
 3. Add the actual launcher directory to the service user's shell environment:
@@ -278,6 +260,6 @@ an existing directory cannot establish that the intended volume is mounted.
 
 The update owner depends on the running installation, not only its data home.
 Source checkouts use the managed Git update path. Desktop bundles, Docker,
-Nix, and Termux packages retain their package owner's update mechanism.
+and Nix packages retain their package owner's update mechanism.
 `hermes doctor` reports installation provenance. See
 [Updating & Uninstalling](./updating.md) before changing package-owned files.

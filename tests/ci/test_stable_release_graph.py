@@ -106,15 +106,15 @@ def test_release_reuses_whole_ci_and_docker_before_publication():
 
 LANE_SETS = {
     "default": lane_set.DEFAULT,
-    "everything": frozenset(lane_set.NAMES),
-    "windows and docker, untested": lane_set.select(only=["windows", "docker"]),
+    "everything": frozenset(lane_set.NAMES) - lane_set.UNSUPPORTED_LANES,
+    "macos and docker, untested": lane_set.select(only=["macos-arm64", "macos-intel", "docker"]),
     "docker only": lane_set.select(only=["docker"]),
     "no mac": lane_set.select(without=["macos-arm64"]),
     "no tests": lane_set.select(without=lane_set.NAMES[5:]),
     "nothing": frozenset(),
     # Each lane alone and each lane missing, so no job's condition can borrow another lane's flag.
-    **{f"only {name}": frozenset({name}) for name in lane_set.NAMES},
-    **{f"everything but {name}": frozenset(lane_set.NAMES) - {name} for name in lane_set.NAMES},
+    **{f"only {name}": frozenset({name}) for name in lane_set.NAMES if name not in lane_set.UNSUPPORTED_LANES},
+    **{f"everything but {name}": frozenset(lane_set.NAMES) - lane_set.UNSUPPORTED_LANES - {name} for name in lane_set.NAMES if name not in lane_set.UNSUPPORTED_LANES},
 }
 
 
@@ -160,7 +160,7 @@ def test_lane_inputs_reach_the_workflows_they_configure():
         assert jobs[name]["with"]["windows-smokes-with-bundle"] == "true", name
     assert jobs["publish-bundles"]["with"]["skip-store"] == store_off
     desktop = workflow("desktop-bundled-release.yml")["jobs"]
-    assert "inputs.skip-store" in desktop["stable-store"]["if"]
+    assert not gate(desktop["stable-store"]["if"], {}, {})
     assert {"lanes", "jobs"} <= set(jobs["admit"]["outputs"])
     for name in ("acceptance", "publication", "complete"):
         gate_step = next(step for step in jobs[name]["steps"]
@@ -190,7 +190,7 @@ def test_admit_emits_the_same_lanes_and_jobs_the_gate_reads(tmp_path):
     summary = tmp_path / "summary"
     admitted = {"claim_tag": "rc.1-v1.2.3", "claim_object": "a" * 40, "tag": "v1.2.3", "commit": "b" * 40,
                 "version": "1.2.3", "attempt": 1, "claim_epoch": 1, "autopublish": False,
-                "lanes": lane_set.select(only=["windows", "docker"])}
+                "lanes": lane_set.select(only=["macos-arm64", "docker"])}
     env = {"GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary), "GITHUB_REPOSITORY": "o/r"}
     from unittest import mock
     with mock.patch.object(stable, "check_claim", return_value=admitted), \
@@ -200,7 +200,7 @@ def test_admit_emits_the_same_lanes_and_jobs_the_gate_reads(tmp_path):
     emitted = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
     assert lane_set.from_flags(json.loads(emitted["lanes"])) == admitted["lanes"]
     assert json.loads(emitted["jobs"]) == lane_set.jobs_to_run(admitted["lanes"])
-    assert "on: docker, windows" in summary.read_text(encoding="utf-8")
+    assert "on: docker, macos-arm64" in summary.read_text(encoding="utf-8")
 
 
 def test_a_skipped_upgrade_arm_never_skips_a_gated_publish_job():

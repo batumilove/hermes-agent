@@ -1561,6 +1561,9 @@ def main(
     Toolset Examples:
         - "research": Web search, extract, crawl + vision tools
     """
+    from hermes_platform.support import require_supported_host
+
+    require_supported_host()
     print("🤖 AI Agent with Tool Calling")
     print("=" * 50)
     if list_tools:

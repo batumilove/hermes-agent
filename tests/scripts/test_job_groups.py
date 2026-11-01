@@ -1,7 +1,7 @@
 """Behavior contract for the `jobs` input parser (no workflow YAML is read)."""
 import pytest
 
-from scripts.releases.job_groups import ALL_JOBS, JOB_GROUPS, parse_jobs, phase_jobs, selects_all
+from scripts.releases.job_groups import ALL_JOBS, DEFAULT_JOBS, JOB_GROUPS, parse_jobs, phase_jobs, selects_all
 
 
 def test_the_default_selects_every_group():
@@ -35,9 +35,9 @@ def test_duplicates_unknown_names_and_empty_are_refused():
 
 def test_selects_all_refuses_partial_selections():
     assert selects_all(None) is True
-    assert selects_all(ALL_JOBS) is True
-    assert selects_all("termux") is False
-    assert selects_all("darwin-arm64,darwin-x64,win32-arm64,win32-x64") is False
+    assert selects_all(DEFAULT_JOBS) is True
+    assert selects_all("darwin-arm64") is False
+    assert selects_all("darwin-arm64,darwin-x64") is False
     with pytest.raises(ValueError):
         selects_all("bogus")
 
@@ -85,7 +85,7 @@ def test_windows_smokes_with_bundle_move_the_msix_smokes_to_the_bundle_call():
     assert phase_jobs(bundle, "candidate") == ["validate", "assemble-win32-bundle"]
 
 
-@pytest.mark.parametrize("jobs, expected", [(None, "true"), ("termux", "false"),
+@pytest.mark.parametrize("jobs, expected", [(None, "true"), ("darwin-arm64", "false"),
                                             ("darwin-arm64,darwin-x64", "false")])
 def test_admission_emits_all_jobs_only_for_a_full_selection(monkeypatch, capsys, jobs, expected):
     from scripts.releases import job_groups

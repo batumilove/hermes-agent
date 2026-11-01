@@ -2733,3 +2733,68 @@ patches:
   - npm run --workspace tests-js check
   - node scripts/ci/npm-security-compat.mjs
   retirement: Retire when equivalent consumer coverage ships with maintained upstream dependencies.
+- id: linux-macos-host-support
+  kind: compatibility
+  rationale: Limit this fork's install, startup, CI and release admission to standard
+    Linux and macOS on x86_64 and ARM64, retaining historical platform readers.
+  paths:
+  - .github/workflows/bootstrap-installer-build.yml
+  - .github/workflows/bootstrap-installer.yml
+  - .github/workflows/desktop-bundle-smoke.yml
+  - .github/workflows/desktop-bundled-release.yml
+  - .github/workflows/install-e2e-windows-run.yml
+  - .github/workflows/install-e2e.yml
+  - .github/workflows/pm-bundle.yml
+  - .github/workflows/stable-release.yml
+  - .github/workflows/termux-verify.yml
+  - .github/workflows/tests-os.yml
+  - .github/workflows/windows-bundle-sdk.yml
+  - .github/workflows/windows-desktop-attach-e2e.yml
+  - .github/workflows/windows-install-update-e2e.yml
+  - .github/workflows/windows-venv-e2e.yml
+  - README.es.md
+  - README.md
+  - README.zh-CN.md
+  - acp_adapter/entry.py
+  - agent/legacy_cli.py
+  - cli.py
+  - gateway/run.py
+  - hermes_cli/main.py
+  - hermes_platform/AGENTS.md
+  - hermes_platform/support.py
+  - run_agent.py
+  - scripts/bundles/channel_artifacts.py
+  - scripts/install.cmd
+  - scripts/install.ps1
+  - scripts/install.sh
+  - scripts/releases/channel_publish.py
+  - scripts/releases/channel_releases.py
+  - scripts/releases/entrypoint.py
+  - scripts/releases/job_groups.py
+  - scripts/releases/lanes.py
+  - scripts/releases/stable.py
+  - scripts/render-builds-table.py
+  - setup-hermes.ps1
+  - setup-hermes.sh
+  - tests/ci/desktop_release_roles.py
+  - tests/ci/test_channel_build_publication.py
+  - tests/ci/test_protected_canary_publication.py
+  - tests/ci/test_stable_release_graph.py
+  - tests/ci/test_tag_builds_summary.py
+  - tests/hermes_platform/test_support.py
+  - tests/scripts/install/test_install_sh_termux_refusal.py
+  - tests/scripts/test_job_groups.py
+  - tests/scripts/test_release_channels.py
+  - tests/scripts/test_release_entrypoint.py
+  - tests/scripts/test_release_lanes.py
+  - tests/scripts/test_stable_release.py
+  - tests/scripts/test_supported_release_platforms.py
+  - tui_gateway/entry.py
+  - website/docs/getting-started/installation.md
+  - website/docs/getting-started/platform-support.md
+  tests:
+  - scripts/run_tests.sh tests/hermes_platform tests/scripts/test_supported_release_platforms.py tests/scripts/install/test_install_sh_termux_refusal.py
+  - scripts/run_tests.sh tests/scripts/test_job_groups.py tests/scripts/test_release_lanes.py tests/scripts/test_release_entrypoint.py tests/scripts/test_release_channels.py tests/scripts/test_stable_release.py
+  - scripts/run_tests.sh tests/ci/test_stable_release_graph.py tests/ci/test_protected_canary_publication.py tests/ci/test_channel_build_publication.py tests/ci/test_tag_builds_summary.py tests/ci/test_workflow_job_graph.py tests/ci/test_desktop_bundle_smoke.py
+  retirement: Remove if the fork adopts upstream host support policy or upstream
+    provides equivalent Linux and macOS admission across installation and releases.

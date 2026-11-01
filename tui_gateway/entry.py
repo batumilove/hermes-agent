@@ -319,6 +319,10 @@ def _claim_launch_home():
 
 
 def main():
+    from hermes_platform.support import require_supported_host
+
+    require_supported_host()
+
     home = _claim_launch_home()
     if home is None:
         _log_exit(f"refused: {server._launch_home()} is owned by a running gateway; attach to it instead")

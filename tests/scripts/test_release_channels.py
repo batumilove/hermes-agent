@@ -516,7 +516,7 @@ def test_accepted_release_receipts_feed_the_protected_head_without_rebuilding(tm
         def no_intel(rows, key):
             return [row for row in rows if (row[key], row["arch"]) not in (("darwin", "x64"), ("macos", "x64"))]
         lean = dict(accepted, packages=no_intel(accepted["packages"], "platform"))
-        assert channel_releases.native_legs(lean) == ("darwin-arm64", "win32-arm64", "win32-x64", "windows-universal")
+        assert channel_releases.native_legs(lean) == ("darwin-arm64",)
         assert channel_releases.native_legs(accepted) == channel_releases.NATIVE_LEGS
         channel_releases.match_accepted_packages(dict(manifest, packages=no_intel(manifest["packages"], "platform")), lean)
         with pytest.raises(ChannelError, match="every native"):
@@ -556,7 +556,7 @@ def test_accepted_release_receipts_feed_the_protected_head_without_rebuilding(tm
         before = dict(objects)
         assert channel_releases.publish_release("stable-release", {"GITHUB_REPOSITORY": pub.repository}, tmp_path / "retry") == result
         assert objects == before
-        (tmp_path / bundle_name).write_bytes(b"corrupt")
+        (tmp_path / native["packages"][0]["filename"]).write_bytes(b"corrupt")
         with pytest.raises(ChannelError, match="receipt"):
             channel_releases.read_native_receipts(tmp_path, tag, commit)
 

@@ -63,27 +63,22 @@ mirror_url_for() { # $1 = lowercase sha256
   printf '%s/%s%s' "$mirror_origin" "$mirror_prefix" "$1"
 }
 
+# Bootstrap runs before Python is available.
+if [ -n "${TERMUX_VERSION:-}" ] || [ -d /system/app ] || [ -d /system/priv-app ] ||
+   case "${PREFIX:-}:$(uname -r)" in *com.termux/files/usr*|*android*|*Android*) true ;; *) false ;; esac; then
+  echo "This fork supports standard Linux and macOS only; Android/Termux is unsupported." >&2
+  exit 1
+fi
 case "$(uname -s)" in
   Linux) os=linux ;;
   Darwin) os=darwin ;;
-  MINGW*|MSYS*|CYGWIN*) os=win32 ;;
-  *) echo -e "${RED}✗${NC} unsupported OS $(uname -s)" >&2; exit 1 ;;
+  *) echo "This fork supports standard Linux and macOS only. Use Linux under WSL2 instead of native Windows." >&2; exit 1 ;;
 esac
-if [ "$os" = win32 ]; then
-  # PROCESSOR_ARCHITECTURE lies under an emulated shell (x64 msys on a
-  # WoA box reports AMD64); the registry carries the machine's truth.
-  winarch="$(MSYS2_ARG_CONV_EXCL='*' reg.exe query 'HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' /v PROCESSOR_ARCHITECTURE 2>/dev/null | tr -d '\r' | awk '/PROCESSOR_ARCHITECTURE/ {print $NF}')"
-  case "${winarch:-${PROCESSOR_ARCHITECTURE:-}}" in
-    ARM64) arch=arm64 ;;
-    *) arch=x64 ;;
-  esac
-else
-  case "$(uname -m)" in
-    arm64|aarch64) arch=arm64 ;;
-    x86_64|amd64) arch=x64 ;;
-    *) echo -e "${RED}✗${NC} unsupported arch $(uname -m)" >&2; exit 1 ;;
-  esac
-fi
+case "$(uname -m)" in
+  arm64|aarch64) arch=arm64 ;;
+  x86_64|amd64) arch=x64 ;;
+  *) echo "This fork requires x86_64 or ARM64." >&2; exit 1 ;;
+esac
 target="$os-$arch"
 
 # The machine-written lock has one member per line. Follow object names and
