@@ -248,6 +248,7 @@ async def test_google_chat_revoked_oauth_fallback_uses_same_policy(policy, tmp_p
 @pytest.mark.asyncio
 async def test_mattermost_thread_fallback_keeps_requested_result(policy, caplog):
     from plugins.platforms.mattermost.adapter import MattermostAdapter
+    from plugins.platforms.mattermost.delivery import ApiFailure
 
     adapter = MattermostAdapter(PlatformConfig(extra={"reply_mode": "thread"}))
     frames = []
@@ -255,9 +256,7 @@ async def test_mattermost_thread_fallback_keeps_requested_result(policy, caplog)
     async def api(method, path, payload=None):
         frames.append(dict(payload))
         if "root_id" in payload:
-            adapter._last_post_status = 404
-            adapter._last_post_error = "root_id not found"
-            return {}
+            return ApiFailure(404, "root_id not found")
         return {"id": "sent"}
 
     adapter._api = api
