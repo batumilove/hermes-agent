@@ -3895,7 +3895,7 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
         set_multiplex_active,
         set_secret_scope,
     )
-    from cron.executions import adopt_claimed_execution, get_execution
+    from cron.executions import adopt_claimed_execution
     from hermes_cli.env_loader import hydrate_profile_secret_sources
     from hermes_constants import (
         reset_hermes_home_override,
@@ -3942,41 +3942,15 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
                     execution_id,
                 )
                 return False
+            from cron.scheduler_worker_ack import worker_still_owned
+
             def still_owned():
-                current = get_execution(execution_id)
-                return (current is not None and current['status'] == 'running'
-                        and all(current[k] == adopted[k] for k in
-                                ('process_id', 'pid', 'process_started_at'))
-                        and (endpoint is None or time.monotonic() < endpoint))
+                return worker_still_owned(execution_id, adopted, endpoint)
             if not still_owned():
                 return False
-            try:
-                ack_path.parent.mkdir(parents=True, exist_ok=True)
-                # Publish via write-to-temp + atomic rename. Writing ack_path in place
-                # (the old approach) let O_CREAT make the empty file visible to the
-                # scheduler's exists()-then-read polling loop before the JSON body was
-                # written, occasionally handing it a 0-byte file and a JSONDecodeError.
-                # os.replace() is a single atomic syscall on the same filesystem, so
-                # readers only ever see the file fully absent or fully written.
-                ack_tmp_path = ack_path.with_name(f"{ack_path.name}.tmp{os.getpid()}")
-                fd = os.open(ack_tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                try:
-                    with os.fdopen(fd, "w", encoding="utf-8") as ack_file:
-                        json.dump({"pid": os.getpid(), "execution_id": execution_id}, ack_file)
-                        ack_file.flush()
-                        os.fsync(ack_file.fileno())
-                    if not still_owned():
-                        ack_tmp_path.unlink(missing_ok=True)
-                        return False
-                    os.replace(ack_tmp_path, ack_path)
-                except BaseException:
-                    ack_tmp_path.unlink(missing_ok=True)
-                    raise
-            except Exception:
-                logger.exception(
-                    "Cron external worker could not publish ready acknowledgement for %s",
-                    execution_id,
-                )
+            from cron.scheduler_worker_ack import publish_worker_ack
+
+            if not publish_worker_ack(ack_path, execution_id, still_owned):
                 return False
             if not still_owned():
                 return False

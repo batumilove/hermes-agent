@@ -18,6 +18,7 @@ patches:
     The standalone contention harness needs only Python stdlib and temporary SQLite
     databases; it stubs unrelated imports and is not full runtime acceptance.
   paths:
+  - cron/scheduler_worker_ack.py
   - tests/cron/adoption_contention_contract.py
   - tests/cron/test_adoption_remediation.py
   - tests/cron/test_external_worker_config_hooks.py

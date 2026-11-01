@@ -13,7 +13,7 @@ import threading
 import time
 import types
 import unittest
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from typing import Any
 
@@ -27,7 +27,7 @@ def stub(name, **attrs):
 
 stub('cron', __path__=[str(ROOT / 'cron')])
 stub('hermes_constants', get_hermes_home=lambda: pathlib.Path('/nonexistent-test-home'))
-stub('hermes_time', now=lambda: datetime.now(timezone.utc))
+stub('hermes_time', now=lambda: datetime.now(UTC))
 stub('cron.constants', CLAIM_TTL_INACTIVITY_HEADROOM=3)
 stub('hermes_cli.observability.shared_metrics_gateway', record_cron_finish=lambda **kw: None)
 stub('cron.jobs', _ensure_cron_dir=lambda p: p.mkdir(parents=True, exist_ok=True))

@@ -23,7 +23,7 @@ def worker(tmp_path, monkeypatch):
     return e, s, r, p, a, calls
 
 def test_fingerprint_change_between_select_and_update_refused(worker, monkeypatch):
-    e, s, r, p, a, calls = worker
+    e, _s, r, _p, _a, _calls = worker
     old = e._hermes_now
     def now():
         with sqlite3.connect(e.EXECUTIONS_FILE) as c:
@@ -34,13 +34,15 @@ def test_fingerprint_change_between_select_and_update_refused(worker, monkeypatc
     assert e.get_execution(r['id'])['process_started_at'] == 999
 
 def test_pause_before_mutation_cannot_spend_expired_deadline(worker, monkeypatch):
-    e, s, r, p, a, calls = worker
+    e, _s, r, _p, _a, _calls = worker
+    clock = [100.0]
+    monkeypatch.setattr(time, 'monotonic', lambda: clock[0])
     old = e._hermes_now
     def now():
-        time.sleep(.05)
+        clock[0] = 101.0
         return old()
     monkeypatch.setattr(e, '_hermes_now', now)
-    assert e.adopt_claimed_execution(r['id'], deadline=time.monotonic() + .02) is None
+    assert e.adopt_claimed_execution(r['id'], deadline=100.5) is None
     assert e.get_execution(r['id'])['status'] == 'claimed'
 
 @pytest.mark.parametrize('phase', ['post_commit', 'pre_ack_replace', 'post_ack_replace'])
@@ -79,7 +81,7 @@ def test_concurrent_invalidation_without_exception_never_executes(worker, monkey
     assert e.get_execution(r['id'])['status'] == 'failed'
 
 def test_worker_expired_shared_ack_budget_refuses(worker):
-    e, s, r, p, a, calls = worker
+    _e, s, _r, p, a, calls = worker
     payload = json.loads(p.read_text())
     payload['handoff_deadline'] = time.monotonic() - 1
     p.write_text(json.dumps(payload))
@@ -88,13 +90,15 @@ def test_worker_expired_shared_ack_budget_refuses(worker):
 
 
 def test_ack_fsync_crossing_endpoint_never_publishes_or_executes(worker, monkeypatch):
-    e, s, r, p, a, calls = worker
+    _e, s, _r, p, a, calls = worker
     payload = json.loads(p.read_text())
-    payload['handoff_deadline'] = time.monotonic() + .4
+    clock = [100.0]
+    monkeypatch.setattr(time, 'monotonic', lambda: clock[0])
+    payload['handoff_deadline'] = 101.0
     p.write_text(json.dumps(payload))
     old = os.fsync
     def slow(fd):
-        time.sleep(.45)
+        clock[0] = 102.0
         return old(fd)
     monkeypatch.setattr(os, 'fsync', slow)
     assert s._run_external_worker_payload(p, a) is False
