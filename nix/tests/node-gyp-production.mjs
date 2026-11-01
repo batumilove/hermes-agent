@@ -16,7 +16,7 @@ const requireInstalled = createRequire(join(source, 'package.json'))
 const requireGlob = createRequire(requireInstalled.resolve('glob'))
 
 test('glob expands ordinary ranges and bounds adversarial nested/rewrite patterns', () => {
-  const expand = requireGlob('brace-expansion')
+  const {braceExpand: expand} = requireGlob('minimatch')
   assert.deepEqual(expand('src/{a,b}/{1..2}.cc'), ['src/a/1.cc', 'src/a/2.cc', 'src/b/1.cc', 'src/b/2.cc'])
   const nested = expand('{'.repeat(4000) + 'a,b' + '}'.repeat(4000))
   assert.ok(nested.length <= 2)
