@@ -5,6 +5,16 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: desktop-gateway-notification-test-cleanup
+  kind: compatibility
+  rationale: Release notification dismissal timers through the store cleanup API
+    before the gateway-settings test environment is destroyed.
+  paths:
+  - apps/desktop/src/app/settings/gateway-settings.test.tsx
+  tests:
+  - npm exec --workspace apps/desktop -- vitest run --project ui src/app/settings/gateway-settings.test.tsx src/store/notifications.test.ts
+  retirement: Remove when upstream gateway settings tests cancel their notification
+    timers during teardown instead of only replacing the visible list.
 
 - id: upstream-release-plugin-admission
   kind: compatibility
