@@ -1,0 +1,17 @@
+{
+  "repository": "NousResearch/hermes-agent",
+  "release_id": 412226006,
+  "release_tag": "v0.22.0",
+  "release_commit": "e06df9c2eae6901f4c88f464e0ae6e753c0428b8",
+  "tag_object": "84094bd903791c35867605e28e25075baa293adc",
+  "published_at": "2026-10-14T03:21:46Z",
+  "schema": 1,
+  "proof": {
+    "version": 2,
+    "upstream_base": "5894e750c3dba980d43b25aa29e3958149ba2c61",
+    "fetch_depth": 8,
+    "source_head": "f56462c97de0132de212de421b8333d096c784b0",
+    "import_tree": "c96349d26b638fe0cf9da03f49ff814e745a26fc"
+  },
+  "squash_commit": "1faa83c35715cc01cd70d83649860a3c30c88837"
+}
