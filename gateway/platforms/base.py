@@ -3628,7 +3628,7 @@ class BasePlatformAdapter(ABC):
         # truncate content.  Gate on the platform-neutral classifier as well so
         # platforms that surface a rate limit without a retry_after field
         # (e.g. Weixin raising a bare RuntimeError) get the same treatment.
-        is_rate_limited = self._is_rate_limited_error(error_str)
+        is_rate_limited = (getattr(result, "error_kind", None) == "rate_limited" or self._is_rate_limited_error(error_str))
         is_network = (
             result.retryable
             or is_rate_limited
@@ -3680,7 +3680,7 @@ class BasePlatformAdapter(ABC):
                 # way to a permanent formatting error). Reclassify from the refreshed
                 # error_str on every attempt so the break/continue decision below
                 # reflects the current attempt, not a stale first-send classification.
-                is_rate_limited = self._is_rate_limited_error(error_str)
+                is_rate_limited = (getattr(result, "error_kind", None) == "rate_limited" or self._is_rate_limited_error(error_str))
                 if not (
                     result.retryable
                     or is_rate_limited
@@ -3696,7 +3696,7 @@ class BasePlatformAdapter(ABC):
                 # (a fourth send at t=378 in an [0, 189, 378, 378] sequence). Return
                 # the typed failure so the delivery ledger owns redelivery after the
                 # cooldown instead — no extra sleep or request needed.
-                if self._is_rate_limited_error(error_str) or result.retry_after is not None:
+                if (getattr(result, "error_kind", None) == "rate_limited" or self._is_rate_limited_error(error_str)) or result.retry_after is not None:
                     logger.error(
                         "[%s] Rate-limited send exhausted retries; returning typed failure "
                         "for redelivery (no notice sent inside active flood penalty): %s",

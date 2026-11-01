@@ -114,3 +114,19 @@ async def test_stream_final_honors_long_rate_limit_without_another_post():
     assert await consumer._send_empty_fallback_final('answer') == 'preview'
     assert client._session.post.call_count == 1
     assert not consumer._final_content_delivered
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retry_after", [None, "0", "not-a-delay"])
+async def test_exhausted_rate_limit_never_posts_failure_notice(monkeypatch, retry_after):
+    from gateway.platforms import base
+    replies = [response(429, {"id": "api.context.rate_limit.app_error"}) for _ in range(3)]
+    if retry_after is not None:
+        for reply in replies:
+            reply.headers = {"Retry-After": retry_after}
+    client = adapter(*replies, response(201, {"id": "unexpected-notice"}))
+    monkeypatch.setattr(base.asyncio, "sleep", AsyncMock())
+    result = await client._send_with_retry("channel", "answer", max_retries=2, base_delay=0)
+    assert not result.success
+    assert result.error_kind == "rate_limited"
+    assert client._session.post.call_count == 3
