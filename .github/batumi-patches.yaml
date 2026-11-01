@@ -13,6 +13,7 @@ patches:
     recovery independent of concurrent typing requests. Offline fake-transport
     tests need the repository test environment, without server credentials.
   paths:
+  - contributors/emails/codex@openai.com
   - .github/batumi-patches.yaml
   - gateway/platforms/base.py
   - gateway/stream_consumer_fallback.py
