@@ -66,8 +66,10 @@ def test_worker_registers_owning_profile_config_hooks(homes, tmp_path, monkeypat
     )
     monkeypatch.setattr(
         "cron.executions.adopt_claimed_execution",
-        lambda execution_id: {"id": execution_id, "status": "running"},
+        lambda execution_id: {"id": execution_id, "status": "running", "process_id": "worker", "pid": 42, "process_started_at": 123},
     )
+    monkeypatch.setattr("cron.executions.get_execution", lambda execution_id: {
+        "id": execution_id, "status": "running", "process_id": "worker", "pid": 42, "process_started_at": 123})
     monkeypatch.setattr(scheduler, "run_one_job", lambda *a, **k: True)
 
     assert scheduler._run_external_worker_payload(payload, tmp_path / "exec-1.ready") is True

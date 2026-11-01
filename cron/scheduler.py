@@ -9,6 +9,7 @@ import contextvars
 import errno
 import json
 import logging
+import math
 import os
 import re
 import subprocess
@@ -3682,6 +3683,9 @@ def _launch_external_cron_worker(job: dict) -> bool:
     if dispatch.mode == "in_process":
         return False
 
+    # One host-monotonic endpoint includes payload fsync, spawn, cold boot,
+    # adoption and acknowledgement. Parent and child share the host clock.
+    deadline = time.monotonic() + HANDOFF_ADOPTION_GRACE_SECONDS
     if mark_execution_handoff_pending(execution_id) is None:
         raise RuntimeError(
             "cron execution claim changed before external worker handoff"
@@ -3700,6 +3704,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
                     "job": job,
                     "profile_home": str(_get_hermes_home().resolve()),
                     "multiplex_active": multiplex_active,
+                    "handoff_deadline": deadline,
                 },
                 payload_file,
             )
@@ -3766,7 +3771,6 @@ def _launch_external_cron_worker(job: dict) -> bool:
     # worker start (imports + secret hydration) measures ~10-12s in the field, and
     # a dispatch deadline shorter than the adoption grace made the two guards
     # around one handoff disagree.
-    deadline = time.monotonic() + HANDOFF_ADOPTION_GRACE_SECONDS
     while time.monotonic() < deadline:
         if ack_path.exists():
             try:
@@ -3922,37 +3926,33 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
         GatewayStartupMixin._register_config_hooks(
             "Cron external worker: config hook registration failed", level=logging.WARNING)
         with use_cron_store(profile_home):
-            if adopt_claimed_execution(execution_id) is None:
+            endpoint = payload.get("handoff_deadline")
+            # Legacy payloads retain their existing adoption API/contract.
+            if endpoint is None:
+                adopted = adopt_claimed_execution(execution_id)
+            else:
+                endpoint = float(endpoint)
+                if not math.isfinite(endpoint) or time.monotonic() >= endpoint - 0.25:
+                    return False
+                adopted = adopt_claimed_execution(execution_id, deadline=endpoint - 0.25)
+            if adopted is None:
                 logger.error(
                     "Cron external worker refused execution %s: durable ownership "
                     "could not be established",
                     execution_id,
                 )
                 return False
-            try:
-                ack_path.parent.mkdir(parents=True, exist_ok=True)
-                # Publish via write-to-temp + atomic rename. Writing ack_path in place
-                # (the old approach) let O_CREAT make the empty file visible to the
-                # scheduler's exists()-then-read polling loop before the JSON body was
-                # written, occasionally handing it a 0-byte file and a JSONDecodeError.
-                # os.replace() is a single atomic syscall on the same filesystem, so
-                # readers only ever see the file fully absent or fully written.
-                ack_tmp_path = ack_path.with_name(f"{ack_path.name}.tmp{os.getpid()}")
-                fd = os.open(ack_tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                try:
-                    with os.fdopen(fd, "w", encoding="utf-8") as ack_file:
-                        json.dump({"pid": os.getpid(), "execution_id": execution_id}, ack_file)
-                        ack_file.flush()
-                        os.fsync(ack_file.fileno())
-                    os.replace(ack_tmp_path, ack_path)
-                except BaseException:
-                    ack_tmp_path.unlink(missing_ok=True)
-                    raise
-            except Exception:
-                logger.exception(
-                    "Cron external worker could not publish ready acknowledgement for %s",
-                    execution_id,
-                )
+            from cron.scheduler_worker_ack import worker_still_owned
+
+            def still_owned():
+                return worker_still_owned(execution_id, adopted, endpoint)
+            if not still_owned():
+                return False
+            from cron.scheduler_worker_ack import publish_worker_ack
+
+            if not publish_worker_ack(ack_path, execution_id, still_owned):
+                return False
+            if not still_owned():
                 return False
             old_external_execution = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER")
             os.environ["_HERMES_CRON_EXTERNAL_WORKER"] = execution_id

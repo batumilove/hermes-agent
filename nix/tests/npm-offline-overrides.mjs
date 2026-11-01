@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { createRequire } from 'node:module';
 import { join } from 'node:path';
 
 const [imports, sourceManifest] = process.argv.slice(2);
@@ -32,6 +33,9 @@ function checkOverrides(source, projected) {
 }
 checkOverrides(original.overrides, imported.overrides);
 assert.ok(references.size > 0, 'Exercise the direct dependency override repair');
+for (const [name, spec] of Object.entries(original.dependencies || {})) {
+  if (spec.startsWith('file:')) references.add(name);
+}
 // Keep the conflict independent of workspace upgrades that may align with the pin.
 const consumerVersion = '0.0.0-offline-fixture';
 assert.notEqual(consumerVersion, locked.packages['node_modules/katex'].version);
@@ -84,7 +88,7 @@ try {
       await writeFile(join(directory, name), `${JSON.stringify(data, null, 2)}\n`);
     }
     const result = spawnSync('npm', [
-      'install', '--offline', '--ignore-scripts', '--no-audit', '--no-fund',
+      'install', '--offline', '--ignore-scripts', '--no-audit', '--no-fund', '--install-links',
       '--cache', join(directory, 'empty-cache'),
     ], { cwd: directory, encoding: 'utf8', env: process.env, timeout: 60_000 });
     if (!retain) {
@@ -97,6 +101,10 @@ try {
       assert.equal(installed.version, locked.packages['node_modules/katex'].version);
       const yaml = JSON.parse(await readFile(join(directory, 'node_modules/js-yaml/package.json'), 'utf8'));
       assert.equal(yaml.version, locked.packages['node_modules/js-yaml'].version);
+      const requireInstalled = createRequire(join(directory, 'package.json'));
+      const minimatch = requireInstalled('minimatch');
+      assert.equal(minimatch('docs/guide.md', '**/*.{md,mdx}'), true);
+      assert.deepEqual(minimatch.match(['a.md', 'b.txt'], '*.md'), ['a.md']);
     }
   }
   console.log('Offline security overrides and direct imported references passed');

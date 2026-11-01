@@ -42,7 +42,7 @@ _PROCESS_ID = uuid.uuid4().hex
 
 # --- executions ledger --------------------------------------------------------------------------
 
-def _connect() -> sqlite3.Connection:
+def _connect(*, busy_timeout_ms: int = 5000) -> sqlite3.Connection:
     # Late imports: a scheduler daemon that outlives an on-disk upgrade already has the OLD
     # ``hermes_cli.sqlite_util`` / ``cron.jobs`` cached, so new names must be resolved at call time,
     # not at import time (the guarantee cron/ledger.py used to carry, see e24c8499).
@@ -51,7 +51,8 @@ def _connect() -> sqlite3.Connection:
 
     path = EXECUTIONS_FILE or (get_hermes_home().resolve() / "cron" / "executions.db")
     _ensure_cron_dir(path.parent)
-    return open_db(path, db_label="cron/executions.db", synchronous_full=True, initialize=_initialize_schema)
+    return open_db(path, db_label="cron/executions.db", synchronous_full=True,
+                   busy_timeout_ms=busy_timeout_ms, initialize=_initialize_schema)
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:
@@ -276,28 +277,79 @@ def mark_execution_handoff_pending(execution_id: str) -> Optional[dict[str, Any]
     return record
 
 
-def adopt_claimed_execution(execution_id: str) -> Optional[dict[str, Any]]:
-    """Atomically transfer and start an attempt in its worker process.
+def adopt_claimed_execution(
+    execution_id: str, *, deadline: Optional[float] = None,
+) -> Optional[dict[str, Any]]:
+    """Transfer ownership before ack, retrying only transient SQLite contention.
 
-    The dispatching gateway creates the row before spawning a restart-safe
-    worker.  Adoption is the single ``claimed`` → ``running`` gate: only the
-    winner may acknowledge ownership or run side effects.
+    Each attempt uses a fresh, non-waiting connection and transaction. The caller
+    can supply the shared worker acknowledgement endpoint. Handoff age is a
+    recovery grace, not revocation: recovery and adoption retain their CAS race.
+    BaseException rolls back before commit only; after commit recovery owns any
+    abandoned running receipt. Deadlines cannot interrupt native commit/fsync.
     """
+    from hermes_cli.sqlite_util import transaction
+
+    if deadline is None:
+        deadline = time.monotonic() + HANDOFF_ADOPTION_GRACE_SECONDS
     pid = os.getpid()
     process_started_at = _process_start_time(pid)
-    now = _hermes_now().isoformat()
-    with _transaction() as conn:
-        cur = conn.execute(
-            """UPDATE executions
-               SET process_id=?, pid=?, process_started_at=?,
-                   status='running', started_at=?, handoff_pending=0,
-                   handoff_started_at=NULL
-               WHERE id=? AND status='claimed' AND handoff_pending=1""",
-            (_PROCESS_ID, pid, process_started_at, now, execution_id),
-        )
-        if cur.rowcount != 1:
+    delay = 0.01
+    expected_owner = None
+    while time.monotonic() < deadline:
+        remaining = deadline - time.monotonic()
+        if not _lock.acquire(timeout=max(0.0, remaining)):
             return None
-        record = _fetch(conn, execution_id)
+        try:
+            with transaction(_connect(busy_timeout_ms=0)) as conn:
+                previous = _fetch(conn, execution_id)
+                if (previous is None or previous['status'] != 'claimed'
+                        or previous['handoff_pending'] != 1):
+                    return None
+                handoff_started = previous['handoff_started_at']
+                owner = (previous['process_id'], previous['pid'],
+                         previous['process_started_at'], handoff_started)
+                if expected_owner is None:
+                    expected_owner = owner
+                elif expected_owner != owner:
+                    return None
+                if handoff_started is None:
+                    return None
+                now = _hermes_now().isoformat()
+                # Check inside the statement, after timestamp work and SQLite
+                # write admission. Native commit remains non-interruptible.
+                conn.create_function('_adoption_in_budget', 0,
+                                     lambda: int(time.monotonic() < deadline))
+                cur = conn.execute(
+                    """UPDATE executions
+                       SET process_id=?, pid=?, process_started_at=?,
+                           status='running', started_at=?, handoff_pending=0,
+                           handoff_started_at=NULL
+                       WHERE id=? AND status='claimed' AND handoff_pending=1
+                         AND process_id=? AND pid=? AND process_started_at IS ?
+                         AND handoff_started_at=? AND _adoption_in_budget()=1""",
+                    (_PROCESS_ID, pid, process_started_at, now, execution_id,
+                     previous['process_id'], previous['pid'],
+                     previous['process_started_at'], handoff_started),
+                )
+                if cur.rowcount != 1:
+                    return None
+                record = _fetch(conn, execution_id)
+            break
+        except sqlite3.OperationalError as exc:
+            code = getattr(exc, 'sqlite_errorcode', None)
+            if code is None or (code & 0xff) not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+                raise
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+        finally:
+            _lock.release()
+        # No connection, transaction, or process-local lock survives backoff.
+        time.sleep(min(delay, remaining))
+        delay = min(delay * 2, 0.1)
+    else:
+        return None
     _emit_execution_state(record)
     return record
 
