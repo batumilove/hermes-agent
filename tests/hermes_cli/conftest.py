@@ -188,6 +188,10 @@ def release_repo(tmp_path, monkeypatch, request):
 
     repo = tmp_path
     git(repo, "init", "-q")
+    # Setup commits must not leave background Git maintenance changing the object
+    # directory while the admission tests verify that validation is read-only.
+    git(repo, "config", "maintenance.auto", "false")
+    git(repo, "config", "gc.auto", "0")
     git(repo, "config", "user.name", "Fixture")
     git(repo, "config", "user.email", "fixture@example.invalid")
     folder = repo / ".github"
