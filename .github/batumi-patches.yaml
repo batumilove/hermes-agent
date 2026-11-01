@@ -5,6 +5,16 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: local-npm-source-cache-identity
+  kind: compatibility
+  rationale: Invalidate installed workspace caches when vendored npm file dependency
+    sources change, so copied adapters cannot retain superseded implementations.
+  paths:
+  - .github/workflows/js-tests.yml
+  tests:
+  - npm exec --workspace tests-js -- vitest run dependency-glob-compatibility.test.mjs patched-glob-consumers.test.mjs
+  retirement: Remove when upstream installed dependency caching includes local package
+    source bytes or always recreates copied file dependencies from the checkout.
 - id: desktop-gateway-notification-test-cleanup
   kind: compatibility
   rationale: Release notification dismissal timers through the store cleanup API
