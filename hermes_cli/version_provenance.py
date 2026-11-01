@@ -15,7 +15,7 @@ def imported_release_version(repo: Path) -> tuple[str, int] | None:
     """Admit a pinned release only with its tag object and complete local proof."""
     if not (repo / ".github/upstream-sync-provenance.json").is_file():
         return None
-    from scripts import fork_provenance as provenance
+    from hermes_cli import fork_provenance as provenance
 
     version, tag_object, release = IMPORTED_RELEASE
     try:

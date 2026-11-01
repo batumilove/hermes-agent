@@ -68,7 +68,8 @@ def test_real_delivery_launcher_imports_new_generation(tmp_path, monkeypatch):
     from hermes_cli import _launchers
     from pm.environments import runtime_facts_path, site_packages
 
-    real_python = Path(sys.executable)
+    from tests.native_supplier import provision_windows_python
+    real_python = provision_windows_python(tmp_path / 'selected-python')
     real_root = Path(bot_relay.__file__).resolve().parents[1]
     root = tmp_path / "install with spaces"
     package = root / "hermes_cli"
