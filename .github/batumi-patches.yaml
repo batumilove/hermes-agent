@@ -5,6 +5,31 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: channel-smoke-cli-test-budget
+  kind: compatibility
+  rationale: Allow ten real CLI/Python round trips on loaded CI runners while
+    bounding each child and requiring an actual process exit for negative cases.
+  paths:
+  - tests-js/bundle-smoke-metadata.test.mjs
+  tests:
+  - npm exec --workspace tests-js -- vitest run bundle-smoke-metadata.test.mjs
+  retirement: Remove when upstream channel smoke tests have equivalent child-process
+    bounds and a suite budget that accommodates concurrent integration work.
+- id: legacy-matcher-segment-and-google-repair
+  kind: compatibility
+  rationale: Preserve legacy glob segment matching through the patched matcher engine
+    and require the fixed ASN.1 decoder during Google Chat environment repair.
+  paths:
+  - vendor/npm/minimatch-compat/index.cjs
+  - vendor/npm/minimatch-compat/README.md
+  - tests-js/dependency-glob-compatibility.test.mjs
+  - plugins/platforms/google_chat/oauth.py
+  - tests/gateway/test_google_chat_pyasn1_security.py
+  tests:
+  - npm exec --workspace tests-js -- vitest run dependency-glob-compatibility.test.mjs patched-glob-consumers.test.mjs
+  - scripts/run_tests.sh tests/gateway/test_google_chat_pyasn1_security.py
+  retirement: Remove when upstream legacy callers use the current matcher interface
+    and Google Chat repair selects the patched decoder with equivalent regression coverage.
 - id: cron-bounded-worker-adoption-ownership
   kind: core
   rationale: Preserve scoped cron ownership regression coverage for nullable fingerprint
