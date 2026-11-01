@@ -83,8 +83,8 @@ patches:
   rationale: Preserve scoped cron ownership regression coverage for nullable fingerprint
     and handoff compare-and-swap, shared adoption deadline admission under SQLite
     contention, and worker ownership readback before acknowledgement and execution.
-    The config-hook and secret-source tests retain their existing assertions while
-    supplying complete durable ownership rows required by the scoped worker fix.
+    The config-hook, secret-source and warning/outcome tests retain their existing
+    assertions while supplying complete durable ownership rows required by the scoped worker fix.
     Pytest commands require the repository test dependencies in a disposable guest
     with private HOME, HERMES_HOME and TMPDIR, no host credentials or supervisor
     sockets; the native managed-gateway restart test is explicitly excluded.
@@ -94,11 +94,16 @@ patches:
   - cron/scheduler_worker_ack.py
   - tests/cron/adoption_contention_contract.py
   - tests/cron/test_adoption_remediation.py
+  - tests/cron/test_worker_entry_ownership.py
+  - tests/cron/test_warning_execution_outcome.py
+  - tests/cron/test_worker_contention_entry.py
   - tests/cron/test_external_worker_config_hooks.py
   - tests/cron/test_external_worker_secret_sources.py
   tests:
   - scripts/run_tests.sh tests/cron/test_execution_ledger.py tests/cron/test_restart_safe_worker.py tests/cron/test_adoption_remediation.py -k 'not test_managed_gateway_restart_preserves_active_worker_and_single_side_effect'
   - scripts/run_tests.sh tests/cron/test_external_worker_config_hooks.py tests/cron/test_external_worker_secret_sources.py
+  - scripts/run_tests.sh tests/cron/test_worker_entry_ownership.py tests/cron/test_worker_contention_entry.py
+  - scripts/run_tests.sh tests/cron/test_warning_execution_outcome.py tests/cron/test_warning_delivery_policy.py tests/cron/test_warning_transport_contract.py tests/cron/test_oneshot_guard_warning.py tests/cron/test_delivery_outcome_writeback.py
   - python3 tests/cron/adoption_contention_contract.py .
   retirement: Remove when the accepted upstream baseline supplies equivalent bounded
     cron adoption ownership, contention and acknowledgement regression coverage,
