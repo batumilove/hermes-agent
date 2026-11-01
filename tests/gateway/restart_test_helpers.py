@@ -162,6 +162,8 @@ def make_restart_runner(
     runner.pairing_store = MagicMock()
     runner.session_store = MagicMock()
     runner.session_store._entries = {}
+    # Restart-only runners have no durable session DB; keep admission on that fallback.
+    runner._session_db_pinned = None
     runner.delivery_router = MagicMock()
 
     platform_adapter = adapter or RestartTestAdapter()

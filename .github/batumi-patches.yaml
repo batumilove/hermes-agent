@@ -1567,6 +1567,7 @@ patches:
   - tests/gateway/test_session_model_reset.py
   - tests/hermes_cli/test_lifecycle.py
   - tests/hermes_cli/test_relay_shared_metrics_runtime.py
+  - tests/hermes_cli/test_shared_metrics_closed_turn_marks.py
   - tests/agent/test_relay_scope_isolation.py
   - tests/agent/test_relay_llm.py
   - tests/hermes_cli/test_relay_shared_metrics_async.py
@@ -1894,6 +1895,7 @@ patches:
   - tests/gateway/test_api_server_active_work_drain.py
   - tests/gateway/test_gateway_shutdown.py
   - tests/gateway/test_restart_drain.py
+  - tests/gateway/restart_test_helpers.py
   - tests/gateway/test_session_hygiene.py
   - tests/gateway/test_shutdown_aggregate_budget_contract.py
   - tests/gateway/test_telegram_send_path_degraded_retry.py

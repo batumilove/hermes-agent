@@ -3,7 +3,7 @@
 A thread started with the turn's contextvars (a turn-end compaction pass, title generation) still
 holds that turn in ``relay_runtime._CURRENT_TURN`` after the turn closes. A process mark has no
 owning task and opens no scope, so the closed turn must not swallow it; a turn Relay skipped
-(a concurrent turn on the same session) keeps gating.
+keeps gating when explicitly disabled.
 """
 
 from __future__ import annotations
@@ -99,14 +99,17 @@ def test_marks_from_a_thread_that_outlives_its_turn_are_recorded(relay_home):
     assert _recorded(relay_home) == {"slash": 1, "aux_input": 1000}
 
 
-def test_a_turn_relay_skipped_still_gates_marks(relay_home):
+@pytest.mark.parametrize("relay_enabled", [False, True])
+def test_inherited_marks_follow_turn_admission_after_close(relay_home, relay_enabled):
     coordinator = relay_runtime.SESSION_COORDINATOR
     lease = coordinator.acquire_conversation(
         profile_key=relay_runtime.current_profile_key(), session_id="s1", platform="cli",
     )
     first = coordinator.begin_turn(lease, turn_id="turn-1", task_id="t1")
     second = coordinator.begin_turn(lease, turn_id="turn-2", task_id="t2")
-    assert second.relay_enabled is False
+    assert first.relay_enabled and second.relay_enabled
+    # Concurrent turns are admitted independently; explicitly disabled Relay work still gates marks.
+    second.relay_enabled = relay_enabled
     inside_skipped = contextvars.copy_context()
 
     def close_turns() -> None:
@@ -116,4 +119,6 @@ def test_a_turn_relay_skipped_still_gates_marks(relay_home):
 
     _run_after(inside_skipped, close_turns)
 
-    assert _recorded(relay_home) == {"slash": 0, "aux_input": 0}
+    assert _recorded(relay_home) == {
+        "slash": int(relay_enabled), "aux_input": 1000 if relay_enabled else 0,
+    }
