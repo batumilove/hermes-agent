@@ -1,5 +1,13 @@
 import { availableParallelism } from 'node:os'
 
+// Vitest 4.1.12 --filesOnly --json returns {file, projectName} records.
+export function parseUiInventory(records) {
+  if (!Array.isArray(records) || !records.length || records.some(r => !r || typeof r !== 'object' || Array.isArray(r) || r.projectName !== 'ui' || typeof r.file !== 'string' || !r.file.trim())) throw Error('invalid UI file inventory')
+  const files = records.map(r => r.file)
+  if (new Set(files).size !== files.length) throw Error('duplicate UI file inventory')
+  return files.sort()
+}
+
 const key = u => `${u.pkg} :: ${u.script}`
 export function planUnits(units) {
   if (!units.length || new Set(units.map(key)).size !== units.length) throw Error('empty or duplicate workspace checks')

@@ -105,7 +105,7 @@ jobs:
         run: node --test scripts/whatsapp-bridge/*.test.mjs
 
       - name: Protected sharding contracts
-        run: node --test .github/scripts/ui-sharding.test.mjs
+        run: node --test .github/scripts/ui-sharding.test.mjs .github/scripts/ui-discovery.test.mjs
       - name: Run discovered lane
         run: node .github/scripts/run-ui-lane.mjs '${{ matrix.lane }}'
       - name: Upload lane receipt
@@ -142,3 +142,5 @@ jobs:
           merge-multiple: true
       - name: Validate exact-once receipts
         run: node .github/scripts/run-ui-lane.mjs aggregate /var/tmp/js-lane-aggregate
+      - name: Check the checkout is clean
+        uses: ./.github/actions/check-clean-worktree

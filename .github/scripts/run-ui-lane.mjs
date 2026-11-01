@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { discoverUnits } from './run-workspace-checks.mjs'
-import { planUnits, validatePartitions, workerBudget, validateReceipts } from './ui-sharding.mjs'
+import { planUnits, validatePartitions, workerBudget, validateReceipts, parseUiInventory } from './ui-sharding.mjs'
 
 const lane = process.argv[2]
 const sha = execFileSync('git', ['rev-parse','HEAD'], {encoding:'utf8'}).trim()
@@ -22,8 +22,7 @@ if (lane === 'aggregate') {
     } else {
       const cwd = path.resolve('apps/desktop')
       const vitest = path.resolve('node_modules/vitest/vitest.mjs')
-      const inventory = JSON.parse(execFileSync(process.execPath,[vitest,'list','--project','ui','--filesOnly','--json'],{cwd,encoding:'utf8',maxBuffer:16*1024*1024})).sort()
-      if (inventory.some(f => typeof f !== 'string')) throw Error('invalid file inventory')
+      const inventory = parseUiInventory(JSON.parse(execFileSync(process.execPath,[vitest,'list','--project','ui','--filesOnly','--json'],{cwd,encoding:'utf8',maxBuffer:16*1024*1024})))
       const partitions = [[],[],[],[]]
       inventory.forEach((f,i) => partitions[i%4].push(f))
       validatePartitions(inventory, partitions)
