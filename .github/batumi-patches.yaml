@@ -585,6 +585,7 @@ patches:
     advisory. Pin MCP 2.2.0 to close GHSA-84m7-p3x7-pcfv session resource exhaustion. November fixes
     pyasn1, joi, follow-redirects, glob and minimatch advisories, retaining legacy callable consumers
     through a first-party adapter to the patched minimatch engine and validating the Nix offline closure.
+    Docker frontend stages include the local adapter and the matching npm install configuration.
   paths:
   - pm/AGENTS.md
   - tests/test_packaging_metadata.py
