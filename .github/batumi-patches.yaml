@@ -416,10 +416,12 @@ patches:
   kind: operations
   rationale: Require the installation's included updater for application updates and remove
     custom activation controllers as an ordinary update prerequisite while preserving runtime
-    identity, authorization and enforced lifecycle controls.
+    identity, authorization and enforced lifecycle controls. Document shared-gateway
+    acceptance, isolated restore checks and separately scoped optional reboot drills.
   paths:
   - AGENTS.md
   - website/docs/getting-started/updating.md
+  - website/docs/user-guide/multi-profile-gateways.md
   - skills/autonomous-ai-agents/hermes-agent/SKILL.md
   - website/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent.md
   tests:
