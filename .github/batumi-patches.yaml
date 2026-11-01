@@ -5,56 +5,21 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
-- id: cron-profile-offset-transition-test
+- id: legacy-matcher-segment-and-google-repair
   kind: compatibility
-  rationale: Check the owning profile offset at the scheduled instant across DST
-    transitions rather than comparing it with the offset when the tick runs.
+  rationale: Preserve legacy glob segment matching through the patched matcher engine
+    and require the fixed ASN.1 decoder during Google Chat environment repair.
   paths:
-  - tests/cron/test_cron_next_run_profile_timezone.py
-  tests:
-  - scripts/run_tests.sh tests/cron/test_cron_next_run_profile_timezone.py
-  retirement: Remove when upstream profile cron tests use the scheduled instant
-    for timezone offset assertions and cover both daylight-saving transitions.
-- id: modern-glob-minimatch-security-paths
-  kind: compatibility
-  rationale: Resolve the full matcher security graph while preserving legacy callback
-    consumers through custody-recorded API adaptations. Pin modern glob and minimatch,
-    retain the approved exact release-age exceptions, and bind Nix artifacts to lock integrity.
-  paths:
-  - Dockerfile
-  - .dockerignore
-  - package.json
-  - package-lock.json
-  - .npmrc
-  - website/package.json
-  - website/package-lock.json
-  - website/.npmrc
-  - website/scripts/test-serve-handler.cjs
-  - .github/workflows/docs-site-checks.yml
+  - vendor/npm/minimatch-compat/index.cjs
+  - vendor/npm/minimatch-compat/README.md
   - tests-js/dependency-glob-compatibility.test.mjs
-  - tests/test_npm_security_policy.py
-  - scripts/build/npm-compat-archives.py
-  - scripts/ci/reviewed_npm_archive.py
-  - tests/scripts/test_check_profile_archive_boundary.py
-  - vendor/npm/glob/**
-  - vendor/npm/glob-7.2.3-hermes.1.tgz
-  - vendor/npm/glob-7.2.3-hermes.1.sha256
-  - vendor/npm/serve-handler/**
-  - vendor/npm/serve-handler-6.1.7-hermes.1.tgz
-  - vendor/npm/serve-handler-6.1.7-hermes.1.sha256
-  - nix/node-gyp-11-4-0-package.json
-  - nix/node-gyp-11-4-0-package-lock.json
-  - nix/node-gyp-11-4-0.nix
-  - nix/lib.nix
-  - nix/checks.nix
-  - nix/tests/node-gyp-production.mjs
+  - plugins/platforms/google_chat/oauth.py
+  - tests/gateway/test_google_chat_pyasn1_security.py
   tests:
-  - npm exec --workspace tests-js -- vitest run dependency-glob-compatibility.test.mjs
-  - node --test website/scripts/test-serve-handler.cjs
-  - nix build .#checks.x86_64-linux.node-gyp-production
-  - nix build .#checks.x86_64-linux.npm-offline-overrides
-  retirement: Remove derivatives and overrides when maintained upstream callers adopt
-    fixed matcher APIs and the archive, cleanup, site-routing and native-build contracts pass.
+  - npm exec --workspace tests-js -- vitest run dependency-glob-compatibility.test.mjs patched-glob-consumers.test.mjs
+  - scripts/run_tests.sh tests/gateway/test_google_chat_pyasn1_security.py
+  retirement: Remove when upstream legacy callers use the current matcher interface
+    and Google Chat repair selects the patched decoder with equivalent regression coverage.
 - id: tornado-66-security-floor
   kind: operations
   rationale: Raise the optional Telegram webhook Tornado floor to 6.6 for
@@ -632,7 +597,10 @@ patches:
     addressed by the September 2026 repository-wide lockfile remediation, while preserving an exact Electron
     runtime/build pin and a production-only Nix node-gyp dependency closure. October scanning updates
     exact desktop/docs floors and uses a hash-verified licensed braces derivative for the unpatched nesting
-    advisory. Pin MCP 2.2.0 to close GHSA-84m7-p3x7-pcfv session resource exhaustion.
+    advisory. Pin MCP 2.2.0 to close GHSA-84m7-p3x7-pcfv session resource exhaustion. November fixes
+    pyasn1, joi, follow-redirects, glob and minimatch advisories, retaining legacy callable consumers
+    through a first-party adapter to the patched minimatch engine and validating the Nix offline closure.
+    Docker frontend stages include the local adapter and the matching npm install configuration.
   paths:
   - pm/AGENTS.md
   - tests/test_packaging_metadata.py
@@ -643,6 +611,7 @@ patches:
   - nix/checks.nix
   - nix/python.nix
   - nix/node-gyp-11-4-0-package-lock.json
+  - nix/node-gyp-overrides.json
   - nix/node-gyp-11-4-0.nix
   - nix/tests/node-gyp-production.mjs
   - nix/tests/npm-offline-overrides.mjs
@@ -669,6 +638,7 @@ patches:
   - scripts/ci/check_profile_archive_boundary.py
   - tests/scripts/test_check_profile_archive_boundary.py
   - tests-js/braces-depth-guard.test.mjs
+  - tests-js/patched-glob-consumers.test.mjs
   - plugins/platforms/photon/sidecar/package.json
   - plugins/platforms/photon/sidecar/package-lock.json
   - website/tests/braces-security.test.*
@@ -2454,8 +2424,6 @@ patches:
   - apps/desktop/package.json
   - ui-tui/package.json
   - tests-js/package.json
-  - tests/gateway/test_google_chat_pyasn1_security.py
-  - plugins/platforms/google_chat/oauth.py
   - tests-js/security-lock-floors.test.ts
   - website/package.json
   - website/package-lock.json
@@ -2528,3 +2496,12 @@ patches:
     tests/scripts/test_catalog_upstream_import.py tests/scripts/test_supply_chain_import_scan.py
     tests/ci/test_plugin_catalog_ci_confinement.py
   retirement: Remove when upstream runtime identity admits verified tree-import ancestry.
+- id: cron-profile-offset-at-scheduled-instant
+  kind: compatibility
+  rationale: Compare a persisted cron occurrence against its owning timezone at the scheduled instant,
+    rather than the test clock's offset, across both DST transitions.
+  paths:
+  - tests/cron/test_cron_next_run_profile_timezone.py
+  tests:
+  - scripts/run_tests.sh tests/cron/test_cron_next_run_profile_timezone.py
+  retirement: Remove when upstream tests the owning profile offset at the scheduled occurrence.

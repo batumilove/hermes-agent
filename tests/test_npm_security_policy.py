@@ -37,3 +37,16 @@ def test_nanoid_v3_resolutions_are_outside_ghsa_2v37_7h3g_55p8() -> None:
         and not _is_at_least_stable(metadata["version"], NANOID_V3_SAFE_FLOOR)
     }
     assert vulnerable == {}
+
+
+def test_nix_node_gyp_lock_omits_unused_development_dependencies() -> None:
+    lock = json.loads((ROOT / "nix/node-gyp-11-4-0-package-lock.json").read_text())
+    root_package = lock["packages"][""]
+
+    assert "devDependencies" not in root_package
+    assert all(not metadata.get("dev") for metadata in lock["packages"].values())
+
+    derivation = (ROOT / "nix/node-gyp-11-4-0.nix").read_text()
+    assert "substituteInPlace package.json --replace-fail" in derivation
+    assert '"devDependencies"' in derivation
+    assert "delete pkg.devDependencies" not in derivation

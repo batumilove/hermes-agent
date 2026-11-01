@@ -32,10 +32,6 @@ jobs:
           command: npm ci
           working-directory: website
 
-      - name: Verify site serving matcher compatibility
-        run: node --test scripts/test-serve-handler.cjs
-        working-directory: website
-
       - name: Install ascii-guard
         uses: ./.github/actions/retry
         with:

@@ -126,4 +126,3 @@ plans/
 /*.png.bak
 *.tar.gz
 *.tgz
-!vendor/npm/glob-7.2.3-hermes.1.tgz

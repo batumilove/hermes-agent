@@ -181,26 +181,3 @@ def test_complete_regular_member_inventory_is_required(mutation):
                 member.size = 6
                 output.addfile(member, io.BytesIO(b"secret"))
     assert not reviewed._matches_inventory(result.getvalue(), inventory)
-
-
-@pytest.mark.parametrize("name,version", [("glob", "7.2.3"), ("serve-handler", "6.1.7")])
-def test_matcher_archives_require_independent_pins_and_complete_proof(tmp_path, name, version):
-    source = SCRIPT.parents[2] / "vendor/npm"
-    destination = tmp_path / "vendor/npm"
-    destination.mkdir(parents=True)
-    filename = f"{name}-{version}-hermes.1.tgz"
-    archive = destination / filename
-    shutil.copyfile(source / filename, archive)
-    shutil.copyfile(source / filename.replace(".tgz", ".sha256"), archive.with_suffix(".sha256"))
-    shutil.copytree(source / name, destination / name)
-    relative = archive.relative_to(tmp_path)
-    assert reviewed.is_reviewed_npm_build_input(tmp_path, relative)
-    archive.write_bytes(b"profile secret")
-    archive.with_suffix(".sha256").write_text(
-        f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {filename}\n"
-    )
-    manifest = destination / name / "SOURCE.json"
-    metadata = json.loads(manifest.read_text())
-    metadata["patched_sha256"] = {"config.yaml": hashlib.sha256(b"profile secret").hexdigest()}
-    manifest.write_text(json.dumps(metadata))
-    assert not reviewed.is_reviewed_npm_build_input(tmp_path, relative)
