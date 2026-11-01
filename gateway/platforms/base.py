@@ -1645,8 +1645,8 @@ class SendResult:
     success: bool
     message_id: Optional[str] = None
     error: Optional[str] = None
-    # Adapter-specific metadata. Contract: Telegram edit-overflow partials set
-    # raw_response["partial_overflow"] so the stream consumer sends the missing tail.
+    # Adapter metadata: delivery_uncertain marks ambiguous sends; partial_overflow
+    # marks split deliveries (streaming fallback preserves delivered content).
     raw_response: Any = None
     retryable: bool = False  # transient connection error — base retries automatically
     retry_after: Optional[float] = None  # server-requested delay (Telegram FloodWait) beats our backoff
