@@ -21,6 +21,8 @@ patches:
     consumers through custody-recorded API adaptations. Pin modern glob and minimatch,
     retain the approved exact release-age exceptions, and bind Nix artifacts to lock integrity.
   paths:
+  - Dockerfile
+  - .dockerignore
   - package.json
   - package-lock.json
   - .npmrc

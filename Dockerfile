@@ -312,6 +312,7 @@ RUN /opt/hermes/.venv/bin/python -I scripts/generate_icons.py --source /opt/herm
 # Frontend dependencies never enter the runtime layers.
 FROM runtime_base AS frontend_build
 COPY package.json package-lock.json ./
+COPY vendor/npm/glob-7.2.3-hermes.1.tgz vendor/npm/
 COPY web/package.json web/
 COPY ui-tui/package.json ui-tui/
 COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/
