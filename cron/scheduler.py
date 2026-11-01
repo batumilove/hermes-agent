@@ -9,6 +9,7 @@ import contextvars
 import errno
 import json
 import logging
+import math
 import os
 import re
 import subprocess
@@ -3682,6 +3683,9 @@ def _launch_external_cron_worker(job: dict) -> bool:
     if dispatch.mode == "in_process":
         return False
 
+    # One host-monotonic endpoint includes payload fsync, spawn, cold boot,
+    # adoption and acknowledgement. Parent and child share the host clock.
+    deadline = time.monotonic() + HANDOFF_ADOPTION_GRACE_SECONDS
     if mark_execution_handoff_pending(execution_id) is None:
         raise RuntimeError(
             "cron execution claim changed before external worker handoff"
@@ -3700,6 +3704,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
                     "job": job,
                     "profile_home": str(_get_hermes_home().resolve()),
                     "multiplex_active": multiplex_active,
+                    "handoff_deadline": deadline,
                 },
                 payload_file,
             )
@@ -3766,7 +3771,6 @@ def _launch_external_cron_worker(job: dict) -> bool:
     # worker start (imports + secret hydration) measures ~10-12s in the field, and
     # a dispatch deadline shorter than the adoption grace made the two guards
     # around one handoff disagree.
-    deadline = time.monotonic() + HANDOFF_ADOPTION_GRACE_SECONDS
     while time.monotonic() < deadline:
         if ack_path.exists():
             try:
@@ -3891,7 +3895,7 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
         set_multiplex_active,
         set_secret_scope,
     )
-    from cron.executions import adopt_claimed_execution
+    from cron.executions import adopt_claimed_execution, get_execution
     from hermes_cli.env_loader import hydrate_profile_secret_sources
     from hermes_constants import (
         reset_hermes_home_override,
@@ -3922,12 +3926,29 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
         GatewayStartupMixin._register_config_hooks(
             "Cron external worker: config hook registration failed", level=logging.WARNING)
         with use_cron_store(profile_home):
-            if adopt_claimed_execution(execution_id) is None:
+            endpoint = payload.get("handoff_deadline")
+            # Legacy payloads retain their existing adoption API/contract.
+            if endpoint is None:
+                adopted = adopt_claimed_execution(execution_id)
+            else:
+                endpoint = float(endpoint)
+                if not math.isfinite(endpoint) or time.monotonic() >= endpoint - 0.25:
+                    return False
+                adopted = adopt_claimed_execution(execution_id, deadline=endpoint - 0.25)
+            if adopted is None:
                 logger.error(
                     "Cron external worker refused execution %s: durable ownership "
                     "could not be established",
                     execution_id,
                 )
+                return False
+            def still_owned():
+                current = get_execution(execution_id)
+                return (current is not None and current['status'] == 'running'
+                        and all(current[k] == adopted[k] for k in
+                                ('process_id', 'pid', 'process_started_at'))
+                        and (endpoint is None or time.monotonic() < endpoint))
+            if not still_owned():
                 return False
             try:
                 ack_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3944,6 +3965,9 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
                         json.dump({"pid": os.getpid(), "execution_id": execution_id}, ack_file)
                         ack_file.flush()
                         os.fsync(ack_file.fileno())
+                    if not still_owned():
+                        ack_tmp_path.unlink(missing_ok=True)
+                        return False
                     os.replace(ack_tmp_path, ack_path)
                 except BaseException:
                     ack_tmp_path.unlink(missing_ok=True)
@@ -3953,6 +3977,8 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
                     "Cron external worker could not publish ready acknowledgement for %s",
                     execution_id,
                 )
+                return False
+            if not still_owned():
                 return False
             old_external_execution = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER")
             os.environ["_HERMES_CRON_EXTERNAL_WORKER"] = execution_id
