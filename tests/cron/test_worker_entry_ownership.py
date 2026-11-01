@@ -25,16 +25,15 @@ def test_real_worker_entry_revalidates_before_dispatch(tmp_path, monkeypatch, re
         # Real run_one_job has begun, after the wrapper's last ownership read.
         assert ack.exists()
         with sqlite3.connect(e.EXECUTIONS_FILE) as conn:
-            if revocation == "missing":
-                conn.execute("DELETE FROM executions WHERE id=?", (row["id"],))
-            elif revocation == "terminal":
-                conn.execute("UPDATE executions SET status='failed' WHERE id=?", (row["id"],))
-            elif revocation == "process_id":
-                conn.execute("UPDATE executions SET process_id='replacement' WHERE id=?", (row["id"],))
-            elif revocation == "pid":
-                conn.execute("UPDATE executions SET pid=-1 WHERE id=?", (row["id"],))
-            elif revocation == "fingerprint":
-                conn.execute("UPDATE executions SET process_started_at=-1 WHERE id=?", (row["id"],))
+            statements = {
+                "missing": "DELETE FROM executions WHERE id=?",
+                "terminal": "UPDATE executions SET status='failed' WHERE id=?",
+                "process_id": "UPDATE executions SET process_id='replacement' WHERE id=?",
+                "pid": "UPDATE executions SET pid=-1 WHERE id=?",
+                "fingerprint": "UPDATE executions SET process_started_at=-1 WHERE id=?",
+            }
+            if statement := statements.get(revocation):
+                conn.execute(statement, (row["id"],))
         return original_scope()
 
     monkeypatch.setattr(s, "_install_fire_secret_scope", revoke_during_setup)
