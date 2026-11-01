@@ -5,6 +5,16 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: cron-profile-offset-transition-test
+  kind: compatibility
+  rationale: Check the owning profile offset at the scheduled instant across DST
+    transitions rather than comparing it with the offset when the tick runs.
+  paths:
+  - tests/cron/test_cron_next_run_profile_timezone.py
+  tests:
+  - scripts/run_tests.sh tests/cron/test_cron_next_run_profile_timezone.py
+  retirement: Remove when upstream profile cron tests use the scheduled instant
+    for timezone offset assertions and cover both daylight-saving transitions.
 - id: modern-glob-minimatch-security-paths
   kind: compatibility
   rationale: Resolve the full matcher security graph while preserving legacy callback
