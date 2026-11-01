@@ -10,8 +10,13 @@ patches:
   rationale: Invalidate installed workspace caches when vendored npm file dependency
     sources change, so copied adapters cannot retain superseded implementations.
   paths:
+  - Dockerfile
+  - scripts/build/freshness.mjs
+  - scripts/build/README.md
+  - tests-js/webapp-local-dependency.test.mjs
   - .github/workflows/js-tests.yml
   tests:
+  - npm exec --workspace tests-js -- vitest run webapp-local-dependency.test.mjs product-builders.test.mjs
   - npm exec --workspace tests-js -- vitest run dependency-glob-compatibility.test.mjs patched-glob-consumers.test.mjs
   retirement: Remove when upstream installed dependency caching includes local package
     source bytes or always recreates copied file dependencies from the checkout.
