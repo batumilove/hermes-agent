@@ -5,6 +5,30 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: cron-bounded-worker-adoption-ownership
+  kind: core
+  rationale: Preserve scoped cron ownership regression coverage for nullable fingerprint
+    and handoff compare-and-swap, shared adoption deadline admission under SQLite
+    contention, and worker ownership readback before acknowledgement and execution.
+    The config-hook and secret-source tests retain their existing assertions while
+    supplying complete durable ownership rows required by the scoped worker fix.
+    Pytest commands require the repository test dependencies in a disposable guest
+    with private HOME, HERMES_HOME and TMPDIR, no host credentials or supervisor
+    sockets; the native managed-gateway restart test is explicitly excluded.
+    The standalone contention harness needs only Python stdlib and temporary SQLite
+    databases; it stubs unrelated imports and is not full runtime acceptance.
+  paths:
+  - tests/cron/adoption_contention_contract.py
+  - tests/cron/test_adoption_remediation.py
+  - tests/cron/test_external_worker_config_hooks.py
+  - tests/cron/test_external_worker_secret_sources.py
+  tests:
+  - scripts/run_tests.sh tests/cron/test_execution_ledger.py tests/cron/test_restart_safe_worker.py tests/cron/test_adoption_remediation.py -k 'not test_managed_gateway_restart_preserves_active_worker_and_single_side_effect'
+  - scripts/run_tests.sh tests/cron/test_external_worker_config_hooks.py tests/cron/test_external_worker_secret_sources.py
+  - python3 tests/cron/adoption_contention_contract.py .
+  retirement: Remove when the accepted upstream baseline supplies equivalent bounded
+    cron adoption ownership, contention and acknowledgement regression coverage,
+    including complete durable ownership fixtures for config hooks and secret sources.
 - id: tornado-66-security-floor
   kind: operations
   rationale: Raise the optional Telegram webhook Tornado floor to 6.6 for
