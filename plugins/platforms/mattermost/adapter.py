@@ -31,6 +31,7 @@ from gateway.platforms._shared import (
 )
 
 from .reply_context import MattermostReplyContextMixin
+from .delivery import ApiFailure
 
 logger = logging.getLogger(__name__)
 
@@ -99,8 +100,10 @@ def _channel_id_set(raw: Any) -> set:
 
 
 def _post_result(data: dict[str, Any], error: str) -> SendResult:
+    if isinstance(data, ApiFailure):
+        return data.send_result(error)
     if not data or "id" not in data:
-        return SendResult(success=False, error=error)
+        return ApiFailure().send_result(error)
     return SendResult(success=True, message_id=data["id"])
 
 
@@ -156,8 +159,6 @@ class MattermostAdapter(MattermostReplyContextMixin, BasePlatformAdapter):
         # Reply mode: "thread" to nest replies, "off" for flat messages.
         self._reply_mode: str = (
             config.extra.get("reply_mode", "") or _get_scoped_secret("MATTERMOST_REPLY_MODE", "off")).lower()
-        self._last_post_status: Optional[int] = None  # POST-only, read by the broken-thread-root fallback
-        self._last_post_error: str = ""
         self._dedup = MessageDeduplicator()
 
     # --- HTTP helpers ---
@@ -170,15 +171,12 @@ class MattermostAdapter(MattermostReplyContextMixin, BasePlatformAdapter):
 
     async def _api(self, method: str, path: str, payload: Optional[dict[str, Any]] = None,
                    *, max_bytes: Optional[int] = None) -> dict[str, Any]:
-        """{method} /api/v4/{path}; POST also records _last_post_status/_last_post_error."""
+        """{method} /api/v4/{path}; failures carry metadata local to this request."""
         import aiohttp
         if ".." in path:
             logger.error("MM API path traversal blocked: %s", path)
             return {}
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
-        is_post = method == "POST"
-        if is_post:
-            self._last_post_status, self._last_post_error = None, ""
         kwargs: dict[str, Any] = {"headers": self._headers()}
         if payload is not None:
             kwargs["json"] = payload
@@ -186,8 +184,6 @@ class MattermostAdapter(MattermostReplyContextMixin, BasePlatformAdapter):
             kwargs["timeout"] = aiohttp.ClientTimeout(total=30)
         try:
             async with getattr(self._session, method.lower())(url, **kwargs) as resp:
-                if is_post:
-                    self._last_post_status = resp.status
                 if max_bytes is not None:
                     if resp.status >= 400:
                         return {}
@@ -200,16 +196,12 @@ class MattermostAdapter(MattermostReplyContextMixin, BasePlatformAdapter):
                     return result if isinstance(result, dict) else {}
                 if resp.status >= 400:
                     body = await resp.text()
-                    if is_post:
-                        self._last_post_error = body or ""
                     logger.error("MM API %s %s → %s: %s", method, path, resp.status, body[:200])
-                    return {}
+                    return ApiFailure(resp.status, body, resp.headers.get("Retry-After"))
                 return await resp.json()
-        except aiohttp.ClientError as exc:
-            if is_post:
-                self._last_post_error = str(exc)
+        except (aiohttp.ClientError, TimeoutError) as exc:
             logger.error("MM API %s %s network error: %s", method, path, exc)
-            return {}
+            return ApiFailure()
 
     async def _api_get(self, path: str, *, max_bytes: Optional[int] = None) -> dict[str, Any]:
         if max_bytes is not None:
@@ -219,20 +211,12 @@ class MattermostAdapter(MattermostReplyContextMixin, BasePlatformAdapter):
     async def _api_post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         return await self._api("POST", path, payload)
 
-    def _last_post_failure_is_broken_thread_root(self) -> bool:
-        """Return True only for clear invalid/missing Mattermost thread roots."""
-        body = (self._last_post_error or "").lower()
-        if self._last_post_status not in {400, 404} or not body:
-            return False
-        return (any(marker in body for marker in ("root_id", "rootid", "root id", "thread", "post"))
-                and any(marker in body for marker in ("invalid", "not found", "does not exist", "missing")))
-
     async def _post_preserving_thread(
         self, chat_id: str, payload: dict[str, Any], metadata: _Metadata) -> dict[str, Any]:
         """Post once, optionally falling back flat for final notify content."""
         data = await self._api_post("posts", payload)
         if (data or "root_id" not in payload or not (isinstance(metadata, dict) and metadata.get("notify"))
-                or not self._last_post_failure_is_broken_thread_root()):
+                or not isinstance(data, ApiFailure) or not data.broken_thread_root()):
             return data
         flat_payload = {k: v for k, v in payload.items() if k != "root_id"}
         body = str(flat_payload.get("message") or "")
@@ -325,11 +309,28 @@ class MattermostAdapter(MattermostReplyContextMixin, BasePlatformAdapter):
         if not content:
             return SendResult(success=True)
         result = SendResult(success=True)
+        delivered = []
         for chunk in self.truncate_message(self.format_message(content), MAX_POST_LENGTH):
             result = _post_result(await self._post_message(chat_id, chunk, reply_to, metadata), "Failed to create post")
             if not result.success:
+                if delivered:
+                    result.raw_response = {**(result.raw_response or {}), "partial_overflow": True}
+                    result.message_id = delivered[-1]
+                    result.continuation_message_ids = tuple(delivered)
                 break
+            if result.message_id:
+                delivered.append(result.message_id)
         return result
+
+    def _send_retry_is_final(self, result: SendResult) -> bool:
+        """Mattermost accepts Markdown as content: HTTP failures are not markup failures.
+
+        An ambiguous POST must not be replayed. A partial split cannot be restarted
+        safely even when the remaining chunk was refused by the rate limiter.
+        """
+        raw = result.raw_response
+        return bool(isinstance(raw, dict) and raw.get("mattermost_failure")
+                    and (raw.get("partial_overflow") or result.error_kind != "rate_limited"))
 
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         data = await self._api_get(f"channels/{chat_id}")
