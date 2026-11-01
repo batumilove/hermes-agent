@@ -5,6 +5,18 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: desktop-confirmation-async-lifetime
+  kind: core
+  rationale: Prevent an asynchronous confirmation from closing its former owner or arming a timer after
+    the dialog unmounts, including the immediate-dismiss path and rejected operations.
+  paths:
+  - apps/desktop/src/components/ui/confirm-dialog.tsx
+  - apps/desktop/src/components/ui/confirm-dialog.test.tsx
+  tests:
+  - npm exec --workspace apps/desktop -- vitest run --project ui src/components/ui/confirm-dialog.test.tsx
+    src/plugins/hermes-bots/canonical-group-workspace.test.tsx
+  retirement: Remove when upstream guards confirmation settlement by component lifetime and passes the
+    delayed-resolution unmount contracts for both dismissal modes.
 - id: mattermost-delivery-failure-semantics
   kind: compatibility
   rationale: Preserve per-request Mattermost POST refusal and delivery uncertainty,
@@ -36,8 +48,13 @@ patches:
   rationale: Invalidate installed workspace caches when vendored npm file dependency
     sources change, so copied adapters cannot retain superseded implementations.
   paths:
+  - Dockerfile
+  - scripts/build/freshness.mjs
+  - scripts/build/README.md
+  - tests-js/webapp-local-dependency.test.mjs
   - .github/workflows/js-tests.yml
   tests:
+  - npm exec --workspace tests-js -- vitest run webapp-local-dependency.test.mjs product-builders.test.mjs
   - npm exec --workspace tests-js -- vitest run dependency-glob-compatibility.test.mjs patched-glob-consumers.test.mjs
   retirement: Remove when upstream installed dependency caching includes local package
     source bytes or always recreates copied file dependencies from the checkout.
@@ -900,6 +917,7 @@ patches:
     and retirement condition. Verify immutable import provenance before selecting an upstream comparison
     for blob and critical-pattern gates; later PRs retain their target-branch gates.
   paths:
+  - hermes_cli/AGENTS.md
   - scripts/ci/catalog_upstream_import.py
   - tests/scripts/test_catalog_upstream_import.py
   - tests/ci/test_plugin_catalog_ci_confinement.py
@@ -1075,8 +1093,21 @@ patches:
   rationale: 'Correct defects found during exact-head review of the imported upstream reconciliation:
     MCP stdio child liveness, reconnect-cycle state, suspect connection health checks, and watchdog coroutine
     handling; desktop preview, HUD, and focus-chord compatibility; plus the associated regression coverage
-    and stale test/documentation cleanup. Support the Git for Windows UCRT64 recovery layout.'
+    and stale test/documentation cleanup, including imported admission, persistence, launcher, compression and readiness fixtures. Support the Git for Windows UCRT64 recovery layout.'
   paths:
+  - tests/gateway/relay/test_relay_native_turn_lifecycle.py
+  - tests/gateway/test_active_session_refusal_completion.py
+  - tests/gateway/test_journey_compress_restart_fifo.py
+  - tests/gateway/test_room_allow_silence.py
+  - tests/gateway/test_startup_failed_platform_reports_degraded.py
+  - tests/hermes_cli/test_update_slow_unit_stop.py
+  - tests/hermes_cli/test_windows_ssh_runtime_ownership.py
+  - tests/pm/test_pm_core.py
+  - tests/tools/test_web_tools_tavily.py
+  - scripts/ci/reviewed_supply_chain_fixtures.py
+  - tests/scripts/test_reviewed_supply_chain_fixtures.py
+  - tests/hermes_cli/test_post_update_expose_cli.py
+  - tests/hermes_cli/test_launch_relaunch_loop.py
   - apps/desktop/electron/updater/checkout-source.test.ts
   - tests/gateway/test_startup_recovery_parks_profile.py
   - tests/hermes_cli/test_worktree_snapshot_prune.py
@@ -1111,6 +1142,9 @@ patches:
   - tests/e2e/conftest.py
   - tests/tools/test_mcp_dispatch_recovery.py
   tests:
+  - scripts/run_tests.sh tests/scripts/test_reviewed_supply_chain_fixtures.py
+  - scripts/run_tests.sh tests/hermes_cli/test_post_update_expose_cli.py
+  - scripts/run_tests.sh tests/hermes_cli/test_launch_relaunch_loop.py
   - scripts/run_tests.sh tests/hermes_cli/test_plugins_module_eviction.py
   - scripts/run_tests.sh tests/e2e/core/parity/test_entrypoint_parity.py
   - scripts/run_tests.sh tests/tools/test_mcp_stability.py tests/tools/test_mcp_tool.py tests/tools/test_local_setsid_descendant_sweep.py
@@ -1554,6 +1588,7 @@ patches:
   - tests/gateway/test_session_model_reset.py
   - tests/hermes_cli/test_lifecycle.py
   - tests/hermes_cli/test_relay_shared_metrics_runtime.py
+  - tests/hermes_cli/test_shared_metrics_closed_turn_marks.py
   - tests/agent/test_relay_scope_isolation.py
   - tests/agent/test_relay_llm.py
   - tests/hermes_cli/test_relay_shared_metrics_async.py
@@ -1881,6 +1916,7 @@ patches:
   - tests/gateway/test_api_server_active_work_drain.py
   - tests/gateway/test_gateway_shutdown.py
   - tests/gateway/test_restart_drain.py
+  - tests/gateway/restart_test_helpers.py
   - tests/gateway/test_session_hygiene.py
   - tests/gateway/test_shutdown_aggregate_budget_contract.py
   - tests/gateway/test_telegram_send_path_degraded_retry.py
@@ -1889,6 +1925,7 @@ patches:
   - gateway/run_fork_contracts.py
   - gateway/run_inbound.py
   - gateway/run_turn.py
+  - gateway/run_turn_prepare.py
   - gateway/run_turn_runner.py
   - tests/gateway/test_duplicate_user_message.py
   - tests/gateway/test_internal_notification_marker.py
@@ -2435,8 +2472,10 @@ patches:
   rationale: 'De-flake test-only timing contracts under saturated CI event loops: the telegram updater-stop
     timeout test must simulate an unbounded CLOSE-WAIT hang (never-set Event) so loop scheduling delay
     cannot let the fake stop() complete before the wall-clock deadline resolves, and shutdown aggregate-budget
-    tests must give phase-completion assertions watchdog leash room proportional to CI scheduling delay.'
+    tests must give phase-completion assertions watchdog leash room proportional to CI scheduling delay.
+    API-worker cleanup waits for concurrent module initialization before retiring its executor.'
   paths:
+  - tests/gateway/conftest.py
   - tests/gateway/test_telegram_network_reconnect.py
   - tests/gateway/test_shutdown_aggregate_budget_contract.py
   tests:

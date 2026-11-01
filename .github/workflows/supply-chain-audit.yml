@@ -96,6 +96,10 @@ jobs:
           fi
           DIFF=$(git diff "${diff_revisions[@]}" -- . ':!uv.lock' ':!*.lock' ':!package-lock.json' ':!yarn.lock')
 
+          # One exact, inert legacy .cmd specimen is reviewed test data.
+          # Every other line (including altered specimens) remains scanned.
+          DIFF=$(printf '%s\n' "$DIFF" | python3 scripts/ci/reviewed_supply_chain_fixtures.py)
+
           FINDINGS=""
 
           # --- base64 decode + exec/eval on the same line (the litellm attack pattern) ---

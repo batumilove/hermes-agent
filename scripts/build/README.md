@@ -74,6 +74,8 @@ The prepared source needs these inputs:
 
 - Root `package.json` and `package-lock.json`.
 - Selected workspace manifests and their required `file:` dependency sources.
+  Product receipts include `vendor/npm`; the Webapp mirrors it into its private
+  workspace, and Docker dependency stages copy it before running npm.
 - Source files and configuration for the selected product.
 - Resolved dependencies in workspace-local or root `node_modules`.
 

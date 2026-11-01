@@ -37,6 +37,8 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+# ``_resolve_turn_agent_config``'s default tier: the runner's per-turn ``_service_tier``.
+_TIER_FROM_RUNNER = object()
 
 
 def _resolve_policy_agent_runtime(runner, policy, *, fallback=True) -> tuple[str, dict]:
@@ -91,6 +93,17 @@ def _recover_or_remember_model(runner, skey, model):
 
 
 class GatewayTurnPrepareMixin:
+    async def _hmwa_stop_typing_for_turn(self, event, source):
+        """Stop the typing indicator (never raises). Slack AI status is scoped to a thread/
+        workspace, so preserve the routing metadata used by the response delivery path."""
+        with suppress(Exception):
+            _typing_adapter = self._delivery_adapter_for(source)
+            _kind = type(_typing_adapter)
+            if _typing_adapter and callable(getattr(_kind, "_stop_typing_with_metadata", None)):
+                await _typing_adapter._stop_typing_with_metadata(source.chat_id, self._event_thread_metadata(event, source))
+            elif _typing_adapter and callable(getattr(_kind, "stop_typing", None)):
+                await _typing_adapter.stop_typing(source.chat_id)
+
     def _resolve_session_agent_runtime(
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
         user_config: Optional[dict] = None, fallback: bool = True,
@@ -210,9 +223,12 @@ class GatewayTurnPrepareMixin:
 
         return _recover_or_remember_model(self, skey, model), runtime_kwargs
 
-    def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
+    def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict, *,
+                                   tier: Any = _TIER_FROM_RUNNER) -> dict:
         """Effective model/runtime config for one turn. With `/fast` priority on, fast-mode
-        ``request_overrides`` are deep-merged OVER the per-provider ones so both reach the model."""
+        ``request_overrides`` are deep-merged OVER the per-provider ones so both reach the model.
+        ``tier`` defaults to the runner's per-turn ``_service_tier``; an off-turn builder (a cold
+        ``/review``) passes the session's own instead of writing that shared slot."""
         from gateway.run import _deep_merge_request_overrides
         from agent.fast_mode import STATIC_TIERS
         from hermes_cli.models import resolve_fast_mode_overrides
@@ -234,7 +250,8 @@ class GatewayTurnPrepareMixin:
                 runtime["api_mode"], runtime["command"], tuple(runtime["args"]),
             ),
         }
-        tier = getattr(self, "_service_tier", None)
+        if tier is _TIER_FROM_RUNNER:
+            tier = getattr(self, "_service_tier", None)
         if tier not in STATIC_TIERS:
             # None / auto / cold: the bounded window is applied per request by agent.fast_mode.
             route["request_overrides"] = base_request_overrides
