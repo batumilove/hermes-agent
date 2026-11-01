@@ -2409,8 +2409,10 @@ patches:
   rationale: 'De-flake test-only timing contracts under saturated CI event loops: the telegram updater-stop
     timeout test must simulate an unbounded CLOSE-WAIT hang (never-set Event) so loop scheduling delay
     cannot let the fake stop() complete before the wall-clock deadline resolves, and shutdown aggregate-budget
-    tests must give phase-completion assertions watchdog leash room proportional to CI scheduling delay.'
+    tests must give phase-completion assertions watchdog leash room proportional to CI scheduling delay.
+    API-worker cleanup waits for concurrent module initialization before retiring its executor.'
   paths:
+  - tests/gateway/conftest.py
   - tests/gateway/test_telegram_network_reconnect.py
   - tests/gateway/test_shutdown_aggregate_budget_contract.py
   tests:

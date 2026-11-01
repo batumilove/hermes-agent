@@ -33,11 +33,9 @@ generation/refresh, command dispatch); topical siblings re-exported by the facad
 Skill slash commands (`agent/skill_commands.py`) scan `~/.hermes/skills/` and inject as a **user
 message**, never into the system prompt (prompt caching).
 
-Rules: all interactive menu-pickers use curses (`hermes_cli/curses_ui.py`; example
-`hermes_cli/tools_config.py`). Never emit `\033[K` (ANSI erase-to-EOL) in spinner/display code —
-it leaks as literal `?[K` under prompt_toolkit's `patch_stdout`; space-pad instead:
-`f"\r{line}{' ' * pad}"`. Wrapper CLIs extend via the protected hooks in `cli_tui_mixin.py`
-(`website/docs/developer-guide/extending-the-cli.md`), not by overriding `run()`.
+Use curses for menu-pickers (`hermes_cli/curses_ui.py`). Spinner/display code space-pads;
+never emit `\033[K`, which leaks under prompt_toolkit's `patch_stdout`. Wrapper CLIs use
+`cli_tui_mixin.py` hooks (`website/docs/developer-guide/extending-the-cli.md`), not `run()` overrides.
 
 ## Slash command registry (`hermes_cli/commands.py`)
 

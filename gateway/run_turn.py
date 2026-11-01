@@ -190,24 +190,8 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
 
     @staticmethod
     def _is_intentional_silence(agent_result, response) -> bool:
-        try:
-            from gateway.response_filters import is_intentional_silence_agent_result
-            return is_intentional_silence_agent_result(agent_result, response)
-        except Exception:
-            return False
-
-    async def _hmwa_stop_typing_for_turn(self, event, source):
-        """Stop the typing indicator (never raises). Slack AI status is scoped to a thread/
-        workspace, so preserve the routing metadata used by the response delivery path."""
-        with suppress(Exception):
-            _typing_adapter = self._delivery_adapter_for(source)
-            _kind = type(_typing_adapter)
-            if _typing_adapter and callable(getattr(_kind, "_stop_typing_with_metadata", None)):
-                await _typing_adapter._stop_typing_with_metadata(source.chat_id, self._event_thread_metadata(event, source))
-            elif _typing_adapter and callable(getattr(_kind, "stop_typing", None)):
-                await _typing_adapter.stop_typing(source.chat_id)
-
-
+        from gateway.response_filters import is_intentional_silence_agent_result
+        return is_intentional_silence_agent_result(agent_result, response)
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""

@@ -349,7 +349,7 @@ def _stop_unit(unit: dict) -> None:
     ignores SIGTERM keeps it in ``deactivating`` for up to twice TimeoutStopSec), it keeps the
     supervisor from respawning the gateway, and a rollback ``start`` would only queue behind it
     and boot the gateway seconds before the checkout moves."""
-    from hermes_cli.update_cmd_fleet import _unit_main_pid
+    from hermes_cli.update_cmd_fleet import _systemctl, _unit_main_pid
     from hermes_cli.update_cmd_fleet_unit_budget import UNIT_JOB_STILL_RUNNING, run_unit_job
     cmd = _manage_cmd(unit["scope"])
     if cmd is None:

@@ -93,6 +93,17 @@ def _recover_or_remember_model(runner, skey, model):
 
 
 class GatewayTurnPrepareMixin:
+    async def _hmwa_stop_typing_for_turn(self, event, source):
+        """Stop the typing indicator (never raises). Slack AI status is scoped to a thread/
+        workspace, so preserve the routing metadata used by the response delivery path."""
+        with suppress(Exception):
+            _typing_adapter = self._delivery_adapter_for(source)
+            _kind = type(_typing_adapter)
+            if _typing_adapter and callable(getattr(_kind, "_stop_typing_with_metadata", None)):
+                await _typing_adapter._stop_typing_with_metadata(source.chat_id, self._event_thread_metadata(event, source))
+            elif _typing_adapter and callable(getattr(_kind, "stop_typing", None)):
+                await _typing_adapter.stop_typing(source.chat_id)
+
     def _resolve_session_agent_runtime(
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
         user_config: Optional[dict] = None, fallback: bool = True,

@@ -32,6 +32,7 @@ incident.
 """
 
 import ast
+import importlib
 import os
 import sys
 from pathlib import Path
@@ -50,8 +51,11 @@ def _join_api_turn_workers():
     ``api_worker_live_count`` inside the next test (the shutdown close-gate tests read it).
     """
     yield
-    runs = sys.modules.get("gateway.platforms.api_server_runs")
-    executor = runs.retire_api_turn_executor() if runs is not None else None
+    executor = None
+    if sys.modules.get("gateway.platforms.api_server_runs") is not None:
+        # A bounded shutdown can leave another thread importing the module; wait for its lock.
+        runs = importlib.import_module("gateway.platforms.api_server_runs")
+        executor = runs.retire_api_turn_executor()
     for thread in list(getattr(executor, "_threads", ())):
         thread.join(30)
 

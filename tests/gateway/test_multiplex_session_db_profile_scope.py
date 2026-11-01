@@ -31,6 +31,7 @@ import threading
 import time
 import json
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -41,7 +42,7 @@ from gateway.config import GatewayConfig, Platform
 from gateway.platforms.base import MessageEvent
 from gateway.post_response import FinalResponseHandoff, PostResponseWorker
 from gateway.run import GatewayRunner
-from gateway.session import SessionSource, SessionStore, build_session_key
+from gateway.session import SessionEntry, SessionSource, SessionStore, build_session_key
 from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 
 

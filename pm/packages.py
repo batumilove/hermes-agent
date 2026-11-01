@@ -279,7 +279,11 @@ class Python(_BionicDebArm, BinaryPackage, DebPackage):
             shutil.copy2(staged / "python.exe", staged / WINDOWS_PYTHON3)
 
     def verify(self, entry: Path, target: str) -> str:
-        reason = super().verify(entry, target)
+        from pm.python_bootstrap import python_bootstrap_problem
+
+        bootstrap_root = entry / self.prefix_rel if target == "linux-arm64-bionic" else entry
+        reason = super().verify(entry, target) or python_bootstrap_problem(
+            bootstrap_root, require_distlib=target != "linux-arm64-bionic")
         if reason or not target.startswith("win32"):
             return reason
         # An entry staged before python3.exe existed fails here, so an explicit install
@@ -291,13 +295,6 @@ class Python(_BionicDebArm, BinaryPackage, DebPackage):
         except OSError:
             return f"{WINDOWS_PYTHON3} is missing beside python.exe"
         return f"{WINDOWS_PYTHON3} differs from python.exe"
-
-    def verify(self, entry: Path, target: str) -> str:
-        from pm.python_bootstrap import python_bootstrap_problem
-
-        bootstrap_root = entry / self.prefix_rel if target == "linux-arm64-bionic" else entry
-        return super().verify(entry, target) or python_bootstrap_problem(
-            bootstrap_root, require_distlib=target != "linux-arm64-bionic")
 
     def fetch_url(self, version: str, target: str) -> str:
         if target == "linux-arm64-bionic":

@@ -1692,8 +1692,6 @@ def _finish_quiet_tool_spinner(agent, spinner, function_name: str, function_args
         spinner.stop(cute) if spinner else agent._vprint(f"  {cute}")
 
 
-
-
 @dataclass
 class _SequentialDispatch:
     """How one sequential call executes: the callable plus its spinner/error policy."""

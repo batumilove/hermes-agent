@@ -188,7 +188,7 @@ def _platform_enablement(
                 enabled = False if raw_enabled is False else bool(raw_enabled) or configured
             home_channel = hc if isinstance(hc, dict) else None
         except Exception:  # health: allow BLE001 -- one platform's bad config must not blank the page
-            _log.debug("Profile-scoped status for %s failed", platform_id, exc_info=True)
+            logger.debug("Profile-scoped status for %s failed", platform_id, exc_info=True)
             enabled, home_channel = False, None
         return enabled, configured, home_channel
     try:
