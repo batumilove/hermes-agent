@@ -55,6 +55,22 @@ patches:
   - scripts/run_tests.sh tests/scripts/test_ci_cache_trust.py
   retirement: Remove when upstream supplies default-branch push guards and equivalent
     namespaced restore/save identities with negative event coverage.
+- id: desktop-ui-isolated-ci-shards
+  kind: operations
+  rationale: Partition dynamic UI coverage into four isolated lanes and fail closed on coverage gaps.
+  paths:
+  - .github/scripts/run-workspace-checks.mjs
+  - .github/scripts/ui-sharding.mjs
+  - .github/scripts/ui-sharding.test.mjs
+  - .github/scripts/ui-discovery.test.mjs
+  - .github/scripts/run-ui-lane.mjs
+  - .github/workflows/js-tests.yml
+  - scripts/ci/required_results.py
+  - tests/ci/test_ui_required_results.py
+  tests:
+  - node --test .github/scripts/ui-sharding.test.mjs .github/scripts/ui-discovery.test.mjs
+  - scripts/run_tests.sh tests/ci/test_ui_required_results.py tests/ci/test_required_results.py
+  retirement: Remove when upstream provides equivalent isolated sharding and fail-closed exact-once coverage.
 - id: local-npm-source-cache-identity
   kind: compatibility
   rationale: Invalidate installed workspace caches when vendored npm file dependency
