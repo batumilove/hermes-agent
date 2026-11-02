@@ -18,6 +18,13 @@ accepted but do not alter the bounded explanation's configured-value semantics.
 Unknown/malformed prefixes, help/version and non-explain actions decline admission
 and retain ordinary interrupted-pull recovery; payload adjacency never dispatches.
 No additional checkout module or arbitrary plugin is imported to make that decision.
+Bootstrap ordering is therefore an application-import boundary, not a ban on the
+CLI's `sys` import or stdlib-only admission parsing. Ordinary startup still attempts
+bootstrap before recovery/application imports, tolerates only an absent bootstrap,
+and propagates missing dependencies of an existing bootstrap. Subprocess fixtures
+must load the real `hermes_cli` package as console scripts do; a stripped main.py
+without its package context is not a faithful startup probe. Read-only explanation
+alone exits before even attempting bootstrap.
 Profile extraction is a separate, literal pre-argparse pass (`-p NAME`,
 `--profile NAME`, `--profile=NAME`), not an option in argparse's abbreviation
 namespace. Thus `--pr=custom` and `--pro=custom` remain provider abbreviations.

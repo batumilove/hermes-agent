@@ -12,9 +12,9 @@ Key invariants covered by these tests:
   3. Idempotent: safe to call multiple times
   4. Respects user opt-out: if the user explicitly sets PYTHONUTF8=0 or
      PYTHONIOENCODING=something-else, we leave those alone
-  5. Load order: every Hermes entry point imports hermes_bootstrap as its
-     first non-docstring import (before anything that might do file I/O
-     or print to stdout)
+  5. Load order: bootstrap precedes application imports. The CLI alone may
+     inspect argv using sys and its already-loaded package's stdlib gate;
+     admitted read-only config explanations exit without bootstrap side effects.
 """
 
 from __future__ import annotations
@@ -195,15 +195,20 @@ def test_entrypoint_executes_bootstrap_before_application_imports(tmp_path, path
     # pm repair is the supported stdlib-only startup, so no update/service runs.
     program = r"""
 import builtins, os, runpy, sys
-root, entry = sys.argv[1:]
+root, entry, entrypoint_is_cli = sys.argv[1:]
+entrypoint_is_cli = entrypoint_is_cli == 'True'
 sys.path.insert(0, root)
+# Console scripts load the package before main; a detached source copy does not.
+import hermes_cli
 sys.argv = [entry, 'pm', 'repair']
 real_import = builtins.__import__
 class Boundary(BaseException): pass
 seen = []
 def guarded(name, globals=None, locals=None, fromlist=(), level=0):
+    if globals and globals.get('__name__') == 'hermes_cli' and not seen:
+        assert name in {'argparse', 're'}, 'gate imported checkout/application code: ' + name
     if globals and globals.get('__file__') == entry:
-        if name == '__future__':
+        if name == '__future__' or (entrypoint_is_cli and name == 'sys' and not seen):
             return real_import(name, globals, locals, fromlist, level)
         if not seen:
             assert name == 'hermes_bootstrap', name
@@ -223,7 +228,7 @@ except Boundary:
 else:
     raise AssertionError('entrypoint never reached the application import boundary')
 """
-    result = subprocess.run([sys.executable, "-I", "-S", "-c", program, str(root), str(entry)],
+    result = subprocess.run([sys.executable, "-I", "-S", "-c", program, str(root), str(entry), str(path == 'hermes_cli/main.py')],
                             cwd=tmp_path, env={**os.environ, "HERMES_HOME": str(tmp_path / "home")},
                             capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
@@ -313,13 +318,27 @@ def test_entrypoint_tolerates_only_an_absent_bootstrap(tmp_path, path, bootstrap
         (fake_root / "hermes_bootstrap.py").write_text(bootstrap)
     program = r"""
 import builtins, runpy, sys
-fake_root, entry = sys.argv[1:]
+fake_root, entry, root, entrypoint_is_cli = sys.argv[1:]
+entrypoint_is_cli = entrypoint_is_cli == 'True'
+# Load the real package, then remove its source root so the fake bootstrap is
+# authoritative (including genuinely absent), as in a partial editable update.
+sys.path.insert(0, root)
+import hermes_cli
+sys.path.remove(root)
 sys.path.insert(0, fake_root)
+sys.argv = [entry, 'pm', 'repair']
 real_import = builtins.__import__
 class Boundary(BaseException): pass
+attempted = []
 def guarded(name, globals=None, locals=None, fromlist=(), level=0):
-    if globals and globals.get('__file__') == entry and name not in ('__future__', 'hermes_bootstrap'):
-        raise Boundary()
+    if globals and globals.get('__file__') == entry:
+        if name == 'hermes_bootstrap':
+            attempted.append(name)
+        elif name == '__future__' or (entrypoint_is_cli and name == 'sys' and not attempted):
+            pass
+        else:
+            assert attempted == ['hermes_bootstrap'], 'application import preceded bootstrap'
+            raise Boundary()
     return real_import(name, globals, locals, fromlist, level)
 builtins.__import__ = guarded
 try:
@@ -329,10 +348,43 @@ except Boundary:
 except ModuleNotFoundError as exc:
     print('raised', exc.name)
 """
-    result = subprocess.run([sys.executable, "-I", "-S", "-c", program, str(fake_root), str(entry)],
+    result = subprocess.run([sys.executable, "-I", "-S", "-c", program, str(fake_root), str(entry), str(root), str(path == 'hermes_cli/main.py')],
                             cwd=tmp_path, capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == expected
+
+
+@pytest.mark.parametrize("argv", [
+    ['config', 'explain', 'approvals.destructive_slash_confirm', '--json'],
+    ['--pr=custom', 'config', 'explain', 'approvals.destructive_slash_confirm', '--json'],
+])
+def test_cli_readonly_explanation_never_attempts_bootstrap(tmp_path, argv):
+    """The sole scoped exception exits even when bootstrap dependencies are broken."""
+    import json
+
+    root = Path(__file__).resolve().parents[1]
+    program = r"""
+import builtins, json, runpy, sys
+root, argv = sys.argv[1:]
+sys.path.insert(0, root)
+sys.argv = ['hermes', *json.loads(argv)]
+real_import = builtins.__import__
+def guarded(name, globals=None, locals=None, fromlist=(), level=0):
+    if name == 'hermes_bootstrap':
+        raise AssertionError('read-only explanation attempted bootstrap')
+    return real_import(name, globals, locals, fromlist, level)
+builtins.__import__ = guarded
+runpy.run_module('hermes_cli.main', run_name='__main__')
+"""
+    env = {k: os.environ[k] for k in ('PATH', 'SYSTEMROOT', 'WINDIR') if k in os.environ}
+    env.update(HOME=str(tmp_path), USERPROFILE=str(tmp_path),
+               HERMES_HOME=str(tmp_path / 'home'), PYTHONDONTWRITEBYTECODE='1')
+    child = subprocess.run([sys.executable, '-I', '-c', program, str(root), json.dumps(argv)],
+                           cwd=tmp_path, env=env, capture_output=True, text=True,
+                           timeout=60, check=False)
+    assert child.returncode == 0, child.stderr
+    assert json.loads(child.stdout)['status'] == 'ok'
+    assert not (tmp_path / 'home').exists()
 
 
 class TestHardenImportPath:

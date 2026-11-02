@@ -20,6 +20,7 @@ patches:
   - tests/hermes_cli/test_config_explain.py
   - tests/hermes_cli/test_config_explain_safety.py
   - tests/hermes_cli/test_update_interrupted_pull.py
+  - tests/test_hermes_bootstrap.py
   - docs/config-explain.md
   tests:
   - scripts/run_tests.sh tests/hermes_cli/test_config_explain.py tests/hermes_cli/test_config_explain_safety.py
