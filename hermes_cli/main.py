@@ -8,14 +8,13 @@ Usage:
     hermes <cmd> --help        # Per-command help
 """
 
-# Narrow read-only command route, before recovery/bootstrap can write or activate.
-from hermes_cli.config_explain_entry import maybe_dispatch as _maybe_explain
-_maybe_explain()
+# Gate helper imports with stdlib only; ordinary launches must repair first.
+import sys
+if any(a == "config" and b == "explain" for a, b in zip(sys.argv[1:], sys.argv[2:])):
+    from hermes_cli.config_explain_entry import maybe_dispatch as _maybe_explain
+    _maybe_explain()
 
-# hermes_bootstrap must be the very first application import — it sets up UTF-8 stdio on
-# Windows (no-op on POSIX). Guarded: after a ``git pull`` / interrupted
-# ``hermes update`` the editable install's ``.pth`` may not list it yet; crashing
-# here would block ``hermes update``.
+# Bootstrap sets UTF-8 stdio on Windows; guard its absence after interrupted updates.
 try:
     import hermes_bootstrap
 except ModuleNotFoundError as exc:
