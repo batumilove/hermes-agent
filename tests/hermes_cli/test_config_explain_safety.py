@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -10,6 +11,28 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 KEY = 'approvals.destructive_slash_confirm'
+
+
+@pytest.fixture(scope='module')
+def source_tree(tmp_path_factory):
+    # Copy every tracked input, not just today's import closure. Other canonical
+    # test-file workers may write caches in ROOT, but never in this private tree.
+    source = tmp_path_factory.mktemp('explain-source')
+    tracked = subprocess.run(['git', 'ls-files', '-z'], cwd=ROOT, check=True,
+                             capture_output=True).stdout.decode().split('\0')
+    for name in filter(None, tracked):
+        original, copied = ROOT / name, source / name
+        copied.parent.mkdir(parents=True, exist_ok=True)
+        if original.is_symlink():
+            copied.symlink_to(os.readlink(original))
+        else:
+            shutil.copyfile(original, copied)
+    return source
+
+
+@pytest.fixture(autouse=True)
+def isolated_source(source_tree, monkeypatch):
+    monkeypatch.setattr(sys.modules[__name__], 'ROOT', source_tree)
 
 
 def snapshot(root):
@@ -52,6 +75,46 @@ def run(tmp_path, mode='module', raw=None, flags=(), sticky=None, env_home=True)
     assert proc.stderr == '', proc.stderr
     assert 'UNRELATED_PRIVATE_SENTINEL' not in proc.stdout + proc.stderr
     return proc, json.loads(proc.stdout)
+
+
+@pytest.mark.parametrize('write_path', ['.pytest_cache/v/cache/nodeids',
+                                        'hermes_cli/__pycache__/probe.pyc',
+                                        'unexpected.txt'])
+def test_source_snapshot_detects_all_child_writes(tmp_path, monkeypatch, write_path):
+    original_run = subprocess.run
+
+    def writing_child(*args, **kwargs):
+        proc = original_run(*args, **kwargs)
+        assert proc.returncode == 0
+        original_run([sys.executable, '-B', '-c',
+                      'from pathlib import Path; import sys; p = Path(sys.argv[1]); '
+                      'p.parent.mkdir(parents=True, exist_ok=True); '
+                      'p.write_bytes(b"child write must be detected")', write_path],
+                     cwd=kwargs['cwd'], env=kwargs['env'], check=True)
+        return proc
+
+    monkeypatch.setattr(subprocess, 'run', writing_child)
+    with pytest.raises(AssertionError):
+        run(tmp_path, mode='direct')
+
+
+def test_source_probe_ignores_unrelated_checkout_writer(tmp_path, source_tree, monkeypatch):
+    shared = tmp_path / 'runner-checkout'
+    shared.mkdir()
+    home = tmp_path / 'probe-home'
+    home.mkdir()
+    original_run = subprocess.run
+
+    def concurrent_writer(*args, **kwargs):
+        assert Path(kwargs['cwd']) == source_tree
+        proc = original_run(*args, **kwargs)
+        (shared / 'nodeids').write_bytes(b'unrelated pytest cache')
+        return proc
+
+    monkeypatch.setattr(subprocess, 'run', concurrent_writer)
+    proc, _data = run(home, mode='direct')
+    assert proc.returncode == 0
+    assert (shared / 'nodeids').read_bytes() == b'unrelated pytest cache'
 
 
 @pytest.mark.parametrize('mode', ['direct', 'module', 'console'])
