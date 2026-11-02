@@ -177,7 +177,10 @@ def runs_smokes(lanes: Iterable[str]) -> bool:
 
 
 def advances_desktop(lanes: Iterable[str]) -> bool:
-    return frozenset(lanes) >= set(CHANNEL_DESKTOP)
+    on = frozenset(lanes)
+    # Archived Windows claims used the previous protected desktop set.
+    required = ("windows", "macos-arm64") if "windows" in on else CHANNEL_DESKTOP
+    return on >= set(required)
 
 
 def moves_channels(lanes: Iterable[str]) -> bool:

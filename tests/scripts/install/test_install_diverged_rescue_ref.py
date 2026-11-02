@@ -92,7 +92,7 @@ def test_install_sh_repository_stage_parks_local_commits_before_reset(tmp_path: 
     shutil.which("git") is None or POWERSHELL is None,
     reason="needs git and PowerShell",
 )
-def test_install_ps1_repository_stage_parks_local_commits_before_reset(tmp_path: Path) -> None:
+def test_install_ps1_refuses_without_resetting_local_commits(tmp_path: Path) -> None:
     managed, local_sha = _diverged_managed_checkout(tmp_path)
     env = os.environ.copy()
     if os.name != "nt":
@@ -122,5 +122,8 @@ def test_install_ps1_repository_stage_parks_local_commits_before_reset(tmp_path:
         check=False,
     )
 
-    assert result.returncode == 0, result.stdout + result.stderr
-    _assert_local_commit_parked(managed, local_sha, result.stdout + result.stderr)
+    assert result.returncode != 0
+    assert "Native Windows is unsupported" in result.stdout + result.stderr
+    assert _git(managed, "rev-parse", "HEAD") == local_sha
+    assert not _git(managed, "for-each-ref", "--format=%(refname)", "refs/hermes-update-backups/")
+    assert not (tmp_path / "hermes-home").exists()

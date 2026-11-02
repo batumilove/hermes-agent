@@ -185,6 +185,13 @@ _COMMIT_EXPECTED = [
      r"^HermesBundled-[^-]+-mac-x64\.zip$"),
 ]
 
+_COMMIT_HISTORICAL = [
+    ("Windows x64 (MSIX)", "win32-x64", r"^HermesBundled-[^-]+-win-x64\.msix$"),
+    ("Windows ARM64 (MSIX)", "win32-arm64", r"^HermesBundled-[^-]+-win-arm64\.msix$"),
+    ("Windows universal bundle (MSIXBUNDLE)", "windows-universal", r"^HermesBundled-[^-]+-win\.msixbundle$"),
+    ("Termux aarch64 (.deb)", "termux", r"^.*\.deb$"),
+]
+
 # Linux release legs are disabled; they still get a row so a reader can see
 # they were never expected to publish.
 _COMMIT_DISABLED = ["Linux x64 (AppImage)", "Linux ARM64 (AppImage)"]
@@ -227,7 +234,8 @@ def commit_expected_rows(names: list[str],
     """Classify artifacts from validated receipts without trusting orphan objects."""
     objects = set(names)
     rows: list[dict] = []
-    for label, leg, pattern in _COMMIT_EXPECTED:
+    expected = _COMMIT_EXPECTED + [row for row in _COMMIT_HISTORICAL if row[1] in receipts]
+    for label, leg, pattern in expected:
         receipt = receipts.get(leg)
         listed = [r2.commit_key_for(receipt["commit"], row["path"])
                   for row in receipt["files"]

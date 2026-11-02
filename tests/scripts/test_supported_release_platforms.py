@@ -28,3 +28,13 @@ def test_stable_admission_requires_supported_lanes(tmp_path):
             release("a" * 40, bump="patch", repo=tmp_path / "absent", remote="origin",
                     repository="example/repo", execute=lambda _: pytest.fail("No release side effects"),
                     lanes=lanes.DEFAULT | {lane})
+
+
+def test_channel_protection_distinguishes_current_and_archived_claims():
+    assert lanes.advances_desktop({"macos-arm64", "macos-intel"})
+    assert not lanes.advances_desktop({"macos-arm64"})
+    assert not lanes.advances_desktop({"macos-intel"})
+    historical = {"windows", "macos-arm64"}
+    assert lanes.advances_desktop(historical)
+    with pytest.raises(ValueError, match="Unsupported release lanes"):
+        lanes.require_supported_lanes(historical)
