@@ -18,6 +18,11 @@ accepted but do not alter the bounded explanation's configured-value semantics.
 Unknown/malformed prefixes, help/version and non-explain actions decline admission
 and retain ordinary interrupted-pull recovery; payload adjacency never dispatches.
 No additional checkout module or arbitrary plugin is imported to make that decision.
+Profile extraction is a separate, literal pre-argparse pass (`-p NAME`,
+`--profile NAME`, `--profile=NAME`), not an option in argparse's abbreviation
+namespace. Thus `--pr=custom` and `--pro=custom` remain provider abbreviations.
+A durable matrix generates every actual global long-option prefix and compares
+accepted/rejected grammar, alongside whole-home/source snapshot regressions.
 
 This source command is not installed merely by publishing its PR. Use the owning
 installation's included updater after reviewing its entire target range and

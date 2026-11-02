@@ -206,6 +206,8 @@ def test_restore_runs_the_installers_store_git_when_path_has_none(checkout, monk
     ["--model=config", "config", "set", "config", "explain"],
     ["-mconfig", "config", "set", "config", "explain"],
     ["--provider=config", "config", "set", "config", "explain"],
+    ["--pr=config", "config", "set", "config", "explain"],
+    ["--pro=config", "config", "set", "config", "explain"],
     ["--", "config", "set", "config", "explain"],
     ["-w", "--model=config", "config", "set", "config", "explain"],
 ])

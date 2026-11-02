@@ -58,7 +58,6 @@ def _config_explain_argv(argv):
         ('-z', '--oneshot'), ('--usage-file',), ('-m', '--model'),
         ('--provider',), ('--reasoning',), ('-t', '--toolsets'),
         ('--resume', '-r'), ('--in',), ('--skills', '-s'),
-        ('--profile', '-p'),
     ):
         parser.add_argument(*flags)
     parser.add_argument('--continue', '-c', nargs='?')
@@ -71,8 +70,33 @@ def _config_explain_argv(argv):
     ):
         parser.add_argument(*flags, action='store_true')
     parser.add_argument('command_argv', nargs=argparse.REMAINDER)
+    # Profile selection precedes argparse and recognizes literal spellings only.
+    # Do not add it to argparse: that makes --pr/--pro ambiguous with --provider.
+    import re
+    clean = list(argv)
+    value_flags = {flag for action in parser._actions if action.nargs != 0
+                   for flag in action.option_strings}
+    i = 0
+    while i < len(clean):
+        token = clean[i]
+        if token == '--' or (token == '--args' and 'mcp' in clean[:i] and 'add' in clean[:i]):
+            break
+        if token in {'--profile', '-p'} or token.startswith('--profile='):
+            count = 1 if token.startswith('--profile=') else 2
+            if count == 2 and i + 1 == len(clean):
+                return None
+            raw = token.split('=', 1)[1] if count == 1 else clean[i + 1]
+            if not re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,63}', raw.strip().casefold()):
+                return None
+            del clean[i:i + count]
+            break
+        takes_value = '=' not in token and i + 1 < len(clean) and (
+            token in value_flags - {'--continue', '-c'}
+            or (token in {'--continue', '-c'} and not clean[i + 1].startswith('-'))
+        )
+        i += 2 if takes_value else 1
     try:
-        args, unknown = parser.parse_known_args(argv)
+        args, unknown = parser.parse_known_args(clean)
     except (argparse.ArgumentError, ValueError):
         return None
     words = args.command_argv

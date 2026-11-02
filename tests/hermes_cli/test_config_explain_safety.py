@@ -196,6 +196,9 @@ def test_platform_default_identity(tmp_path):
 @pytest.mark.parametrize('flags', [
     ('--model', 'foo'), ('--model=foo',), ('-m', 'foo'), ('-mfoo',),
     ('--provider', 'custom'), ('--provider=custom',),
+    ('--pr=custom',), ('--pro=custom',),
+    ('--pr=custom', '--profile', 'default'),
+    ('--profile=default', '--pro=custom'),
     ('--model', 'foo', '--profile', 'default'),
     ('--profile', 'default', '--provider', 'custom'),
     ('-p', 'default', '-mfoo'), ('--profile=default', '--model=foo'),
@@ -219,6 +222,43 @@ def test_parser_supported_globals_remain_filesystem_readonly(tmp_path, flags):
     proc, data = run(tmp_path, flags=flags)
     assert proc.returncode == 0
     assert data['status'] == 'ok' and data['value'] is True
+
+
+def test_gate_matches_systematic_actual_parser_prefixes():
+    import contextlib
+    import io
+    from hermes_cli import _config_explain_argv
+    from hermes_cli._parser import build_top_level_parser
+    from hermes_cli.subcommands.config import build_config_parser
+
+    parser, subs, _ = build_top_level_parser()
+    build_config_parser(subs, cmd_config=lambda args: None)
+    tail = ['config', 'explain', KEY, '--json']
+    prefixes = [[], ['--'], ['-wmfoo'], ['-wsone'], ['-csession'],
+                ['-w', '--continue', '--'], ['--skills=a', '-sb'],
+                ['--model='], ['--model', '-2']]
+    for action in parser._actions:
+        for flag in action.option_strings:
+            if flag.startswith('--') and action.dest not in {'help', 'version'}:
+                for n in range(3, len(flag) + 1):
+                    prefix = flag[:n]
+                    prefixes.append([prefix] if action.nargs == 0 else [prefix + '=sample'])
+    accepted, rejected, mismatches = [], [], []
+    for prefix in prefixes:
+        try:
+            with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+                args = parser.parse_args(prefix + tail)
+        except SystemExit:
+            rejected.append(prefix)
+            assert _config_explain_argv(prefix + tail) is None, prefix
+            continue
+        assert (args.command, args.config_command) == ('config', 'explain')
+        accepted.append(prefix)
+        if _config_explain_argv(prefix + tail) != tail:
+            mismatches.append(prefix)
+    print(json.dumps({'accepted': len(accepted), 'rejected': len(rejected),
+                      'mismatches': mismatches, 'accepted_prefixes': accepted}))
+    assert not mismatches
 
 
 def test_gate_matches_every_parser_global_option():
