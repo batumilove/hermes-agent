@@ -1370,22 +1370,7 @@ def _merge_partial_save(raw: dict, override: dict) -> dict:
     return result
 
 
-def _deep_merge(base: dict, override: dict) -> dict:
-    """Recursively merge *override* into *base*: dict-over-dict recurses (so overriding one leaf
-    keeps sibling defaults), and ``None`` over a dict section is ignored.
-
-    An empty section key in config.yaml (``terminal:`` with no value) parses as YAML ``None``; treating that
-    as an override would replace the entire default dict with ``None`` and crash every downstream consumer
-    that expects a mapping (#58277).
-    """
-    result = base.copy()
-    for key, value in override.items():
-        over_dict = isinstance(result.get(key), dict)
-        if over_dict and isinstance(value, dict):
-            result[key] = _deep_merge(result[key], value)
-        elif not (over_dict and value is None):
-            result[key] = value
-    return result
+from hermes_cli.config_layers import _deep_merge
 
 
 def _strip_dotted_keys(cfg: dict, dotted_keys: set) -> tuple[dict, set]:
@@ -2178,11 +2163,24 @@ def _merge_managed_overlay(expanded: dict[str, Any]) -> tuple[dict[str, Any], An
         return expanded, managed_config
     # Same canonicalization as the user config BEFORE merging (parity with
     # managed_scope.apply_managed_overlay) so the merged result never exposes a nested dict.
+    return _apply_managed_config(expanded, managed_config), managed_config
+
+
+def _apply_managed_config(expanded, managed_config):
     managed_normalized = _normalize_root_model_keys(managed_config)
     if isinstance(managed_normalized.get("model"), str):
         managed_normalized = dict(managed_normalized)
         managed_normalized["model"] = {"default": managed_normalized["model"]}
-    return _deep_merge(expanded, _expand_env_vars(managed_normalized)), managed_config
+    return _deep_merge(expanded, _expand_env_vars(managed_normalized))
+
+
+def _merge_user_defaults(user_config):
+    config = _deep_merge(copy.deepcopy(DEFAULT_CONFIG), user_config)
+    from hermes_cli.moa_config import apply_user_moa_presets
+    apply_user_moa_presets(config, user_config)
+    return config
+
+
 
 
 def _load_config_cache_hit(path_key: str, cache_sig: Any) -> Optional[dict[str, Any]]:
@@ -2259,9 +2257,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
                     user_config["agent"] = agent_user_config
                     user_config.pop("max_turns", None)
 
-                config = _deep_merge(config, user_config)
-                from hermes_cli.moa_config import apply_user_moa_presets
-                apply_user_moa_presets(config, user_config)
+                config = _merge_user_defaults(user_config)
                 # A copy of the file that just parsed is what a FRESH process falls back to when the
                 # next edit breaks the YAML (see _last_known_good_fallback). backup_config() skips
                 # byte-identical repeats and keeps a bounded count, so steady-state loads cost one stat.
@@ -2280,7 +2276,8 @@ def _load_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
                 return copy.deepcopy(fallback) if want_deepcopy else fallback
 
         normalized = _canonicalize_config(config)
-        expanded, managed_config = _merge_managed_overlay(_expand_env_vars(normalized))
+        managed_config = managed_scope.load_managed_config()
+        expanded = _apply_managed_config(_expand_env_vars(normalized), managed_config) if managed_config else _expand_env_vars(normalized)
         _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
         _note_policy("note_config_policy", (expanded.get("security") or {}).get("redact_secrets"))
         if cache_sig is not None:

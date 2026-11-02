@@ -5,6 +5,26 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: bounded-config-explanation
+  kind: core
+  rationale: Explain one non-secret approval boolean without config bootstrap or unrelated value expansion.
+  paths:
+  - hermes_cli/config.py
+  - hermes_cli/config_explain.py
+  - hermes_cli/config_explain_entry.py
+  - hermes_cli/__init__.py
+  - hermes_cli/config_layers.py
+  - hermes_cli/main.py
+  - hermes_cli/profile_selection.py
+  - hermes_cli/subcommands/config.py
+  - tests/hermes_cli/test_config_explain.py
+  - tests/hermes_cli/test_config_explain_safety.py
+  - tests/hermes_cli/test_update_interrupted_pull.py
+  - tests/test_hermes_bootstrap.py
+  - docs/config-explain.md
+  tests:
+  - scripts/run_tests.sh tests/hermes_cli/test_config_explain.py tests/hermes_cli/test_config_explain_safety.py
+  retirement: Remove when upstream provides equivalent bounded no-write explanation and profile-selection coverage.
 - id: desktop-confirmation-async-lifetime
   kind: core
   rationale: Prevent an asynchronous confirmation from closing its former owner or arming a timer after
