@@ -123,7 +123,8 @@ def test_install_ps1_refuses_without_resetting_local_commits(tmp_path: Path) -> 
     )
 
     assert result.returncode != 0
-    assert "Native Windows is unsupported" in result.stdout + result.stderr
+    output = result.stdout + result.stderr
+    assert all(fragment in output for fragment in ("Windows", "unsupported", "WSL2")), output
     assert _git(managed, "rev-parse", "HEAD") == local_sha
     assert not _git(managed, "for-each-ref", "--format=%(refname)", "refs/hermes-update-backups/")
     assert not (tmp_path / "hermes-home").exists()

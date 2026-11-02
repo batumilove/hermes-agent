@@ -114,7 +114,8 @@ def test_existing_treeless_checkout_is_refetched_before_update(tmp_path, install
     result = _run_repository_stage(installer, tmp_path, install, origin.as_uri())
     if installer == "ps1":
         assert result.returncode != 0
-        assert "Native Windows is unsupported" in result.stdout + result.stderr
+        output = result.stdout + result.stderr
+        assert all(fragment in output for fragment in ("Windows", "unsupported", "WSL2")), output
         assert git(install, "config", "--get", "remote.origin.partialclonefilter").stdout.strip() == "tree:0"
         assert git(install, "rev-parse", "HEAD").stdout.strip() == head
         return
@@ -136,7 +137,7 @@ def test_clone_failure_reason_carries_gits_own_error(tmp_path, installer):
     output = result.stdout + result.stderr
     assert result.returncode != 0
     if installer == "ps1":
-        assert "Native Windows is unsupported" in output
+        assert all(fragment in output for fragment in ("Windows", "unsupported", "WSL2")), output
         assert not (tmp_path / "install").exists()
         return
     assert "git clone failed; no checkout published: fatal:" in output, output
@@ -148,6 +149,7 @@ def test_clone_failure_reason_carries_gits_own_error(tmp_path, installer):
 def test_ps1_refuses_before_creating_a_checkout(tmp_path):
     result = _run_repository_stage("ps1", tmp_path, tmp_path / "install", "https://example.invalid/repo")
     assert result.returncode != 0
-    assert "Native Windows is unsupported" in result.stdout + result.stderr
+    output = result.stdout + result.stderr
+    assert all(fragment in output for fragment in ("Windows", "unsupported", "WSL2")), output
     assert not (tmp_path / "install").exists()
     assert not (tmp_path / "home").exists()
