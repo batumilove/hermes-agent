@@ -9,6 +9,16 @@ boolean layers fail closed; malformed managed input can therefore differ from th
 normal loader's fail-open behavior. No dotenv expansion, provider discovery,
 configuration migration or home initialization is needed by the explanation path.
 
+The already-loaded `hermes_cli` package owns a single stdlib-only admission parser,
+shared by the pre-bootstrap gate and explanation entry. Its bounded global-option
+snapshot is checked against the real CLI parser: required/optional values, equals,
+short clusters, unambiguous long abbreviations, profile selection and leading `--`
+are parsed before identifying the first command and action. Global overrides are
+accepted but do not alter the bounded explanation's configured-value semantics.
+Unknown/malformed prefixes, help/version and non-explain actions decline admission
+and retain ordinary interrupted-pull recovery; payload adjacency never dispatches.
+No additional checkout module or arbitrary plugin is imported to make that decision.
+
 This source command is not installed merely by publishing its PR. Use the owning
 installation's included updater after reviewing its entire target range and
 runtime scope. Never copy these modules into a running source tree. Gateway

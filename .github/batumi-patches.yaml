@@ -12,6 +12,7 @@ patches:
   - hermes_cli/config.py
   - hermes_cli/config_explain.py
   - hermes_cli/config_explain_entry.py
+  - hermes_cli/__init__.py
   - hermes_cli/config_layers.py
   - hermes_cli/main.py
   - hermes_cli/profile_selection.py

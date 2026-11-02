@@ -203,6 +203,11 @@ def test_restore_runs_the_installers_store_git_when_path_has_none(checkout, monk
     ["--profile", "config", "config", "set", "config", "explain"],
     ["--profile=config", "config", "set", "config", "explain"],
     ["-p", "config", "config", "set", "--", "config", "explain"],
+    ["--model=config", "config", "set", "config", "explain"],
+    ["-mconfig", "config", "set", "config", "explain"],
+    ["--provider=config", "config", "set", "config", "explain"],
+    ["--", "config", "set", "config", "explain"],
+    ["-w", "--model=config", "config", "set", "config", "explain"],
 ])
 def test_config_set_payload_reaches_recovery_before_checkout_imports(argv):
     import json

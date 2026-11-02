@@ -39,6 +39,50 @@ def __getattr__(name: str) -> str:
     return str(read_install_stamp(repo_root()).get("baseVersion") or "0.0.0")
 
 
+def _config_explain_argv(argv):
+    """Identify the real command without importing a possibly torn checkout.
+
+    This bounded snapshot mirrors _parser._add_top_level_flags (parity-tested).
+    argparse owns equals, short clusters, abbreviations, optional values and --.
+    Unknown/malformed prefixes decline admission; ordinary recovery owns them.
+    Only the first positional command/action can admit the read-only route.
+    """
+    import argparse
+
+    class GateParser(argparse.ArgumentParser):
+        def error(self, message):
+            raise ValueError(message)
+
+    parser = GateParser(add_help=False, exit_on_error=False)
+    for flags in (
+        ('-z', '--oneshot'), ('--usage-file',), ('-m', '--model'),
+        ('--provider',), ('--reasoning',), ('-t', '--toolsets'),
+        ('--resume', '-r'), ('--in',), ('--skills', '-s'),
+        ('--profile', '-p'),
+    ):
+        parser.add_argument(*flags)
+    parser.add_argument('--continue', '-c', nargs='?')
+    for flags in (
+        ('--version', '-V'), ('--help', '-h'), ('--no-restore-cwd',),
+        ('--worktree', '-w'), ('--accept-hooks',), ('--yolo',),
+        ('--pass-session-id',), ('--checkpoints',), ('--ignore-user-config',),
+        ('--ignore-rules',), ('--safe-mode',), ('--tui',),
+        ('--native', '--tui-native'), ('--cli',), ('--dev',),
+    ):
+        parser.add_argument(*flags, action='store_true')
+    parser.add_argument('command_argv', nargs=argparse.REMAINDER)
+    try:
+        args, unknown = parser.parse_known_args(argv)
+    except (argparse.ArgumentError, ValueError):
+        return None
+    words = args.command_argv
+    if words[:1] == ['--']:
+        words = words[1:]
+    if unknown or args.help or args.version or words[:2] != ['config', 'explain']:
+        return None
+    return words
+
+
 def _ensure_utf8() -> bool:
     """Force UTF-8 stdout/stderr to prevent UnicodeEncodeError crashes; True when a stream was repaired.
 

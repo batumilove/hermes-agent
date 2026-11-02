@@ -193,6 +193,67 @@ def test_platform_default_identity(tmp_path):
     assert data['profile_selection'] == 'default'
 
 
+@pytest.mark.parametrize('flags', [
+    ('--model', 'foo'), ('--model=foo',), ('-m', 'foo'), ('-mfoo',),
+    ('--provider', 'custom'), ('--provider=custom',),
+    ('--model', 'foo', '--profile', 'default'),
+    ('--profile', 'default', '--provider', 'custom'),
+    ('-p', 'default', '-mfoo'), ('--profile=default', '--model=foo'),
+    ('--',), ('--reasoning', 'high'), ('-w', '-mfoo'),
+    ('--continue=session',), ('--continue', '--'),
+])
+def test_parser_supported_globals_remain_filesystem_readonly(tmp_path, flags):
+    from hermes_cli._parser import build_top_level_parser
+    from hermes_cli.subcommands.config import build_config_parser
+
+    clean = list(flags)
+    for flag in ('--profile', '-p'):
+        if flag in clean:
+            index = clean.index(flag)
+            del clean[index:index + 2]
+    clean = [arg for arg in clean if not arg.startswith('--profile=')]
+    parser, subs, _ = build_top_level_parser()
+    build_config_parser(subs, cmd_config=lambda args: None)
+    args = parser.parse_args([*clean, 'config', 'explain', KEY, '--json'])
+    assert (args.command, args.config_command, args.key) == ('config', 'explain', KEY)
+    proc, data = run(tmp_path, flags=flags)
+    assert proc.returncode == 0
+    assert data['status'] == 'ok' and data['value'] is True
+
+
+def test_gate_matches_every_parser_global_option():
+    from hermes_cli import _config_explain_argv
+    from hermes_cli._parser import build_top_level_parser
+    from hermes_cli.subcommands.config import build_config_parser
+
+    parser, subs, _ = build_top_level_parser()
+    build_config_parser(subs, cmd_config=lambda args: None)
+    tail = ['config', 'explain', KEY, '--json']
+    for action in parser._actions:
+        if action.dest in {'help', 'version'}:
+            continue
+        for flag in action.option_strings:
+            variants = [[flag]] if action.nargs == 0 else [[flag, 'sample'], [flag + '=sample']]
+            if action.nargs == '?':
+                variants.append([flag, '--'])
+            for prefix in variants:
+                args = parser.parse_args(prefix + tail)
+                assert (args.command, args.config_command) == ('config', 'explain')
+                assert _config_explain_argv(prefix + tail) == tail, prefix
+
+
+@pytest.mark.parametrize('argv', [
+    ['--unknown', 'config', 'explain'], ['--model'],
+    ['--model', '--provider', 'config', 'explain'],
+    ['--continue', 'config', 'explain'],
+    ['--help', 'config', 'explain'], ['--version', 'config', 'explain'],
+    ['chat', '--', 'config', 'explain'], ['config', 'set', 'config', 'explain'],
+])
+def test_gate_declines_unknown_malformed_or_other_commands(argv):
+    from hermes_cli import _config_explain_argv
+    assert _config_explain_argv(argv) is None
+
+
 def test_classifier_does_not_treat_flag_value_as_command():
     from hermes_cli.config_explain_entry import is_explain_command
     assert is_explain_command(['config', 'explain', KEY, '--json'])

@@ -6,28 +6,8 @@ import sys
 
 
 def is_explain_command(argv):
-    # Reuse parser-owned option arity; option values must never be commands.
-    from hermes_cli._parser import top_level_value_flag_sets
-    required, optional = top_level_value_flag_sets()
-    words = []
-    i = 0
-    while i < len(argv):
-        arg = argv[i]
-        if arg in {"-p", "--profile"}:
-            i += 2
-            continue
-        if arg.startswith("--profile="):
-            i += 1
-            continue
-        if arg in required or (arg in optional and i + 1 < len(argv) and not argv[i + 1].startswith("-")):
-            i += 2
-            continue
-        if not arg.startswith("-"):
-            words.append(arg)
-            if len(words) == 2:
-                return words == ["config", "explain"]
-        i += 1
-    return False
+    from hermes_cli import _config_explain_argv
+    return _config_explain_argv(argv) is not None
 
 
 def maybe_dispatch():
@@ -45,7 +25,8 @@ def maybe_dispatch():
     parser.add_argument("action", choices=["explain"])
     parser.add_argument("key")
     parser.add_argument("--json", action="store_true")
-    args = parser.parse_args()
+    from hermes_cli import _config_explain_argv
+    args = parser.parse_args(_config_explain_argv(sys.argv[1:]))
     from hermes_cli.config_explain import explain_config
     result = explain_config(args.key, profile_selection=basis)
     print(json.dumps(result, sort_keys=True))

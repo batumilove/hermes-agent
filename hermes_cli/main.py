@@ -8,15 +8,10 @@ Usage:
     hermes <cmd> --help        # Per-command help
 """
 
-# Admit only the literal explain prefix (plus pre-dispatch profile selection).
-# Other global options go through normal recovery, not a second argv parser.
+# The already-loaded package owns the stdlib-only gate. Other commands repair
+# interrupted pulls before importing any further checkout module.
 import sys
-_explain_argv = sys.argv[1:]
-if _explain_argv[:1] in (["-p"], ["--profile"]):
-    _explain_argv = _explain_argv[2:]
-elif _explain_argv and _explain_argv[0].startswith("--profile="):
-    _explain_argv = _explain_argv[1:]
-if _explain_argv[:2] == ["config", "explain"]:
+if sys.modules["hermes_cli"]._config_explain_argv(sys.argv[1:]) is not None:
     from hermes_cli.config_explain_entry import maybe_dispatch as _maybe_explain
     _maybe_explain()
 
