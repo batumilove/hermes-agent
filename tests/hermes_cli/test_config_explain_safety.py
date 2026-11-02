@@ -101,6 +101,28 @@ def test_managed_readonly_and_strict_failure(tmp_path, managed_raw, expected):
         assert proc.returncode == 0 and data['value'] is expected and data['origin'] == 'managed'
 
 
+@pytest.mark.parametrize('error_type', [OSError, RuntimeError, ImportError])
+def test_profile_resolution_failure_keeps_startup_without_exception_text(tmp_path, monkeypatch, capsys, error_type):
+    from hermes_cli import profile_selection, profiles
+
+    home = tmp_path / '.hermes'
+    home.mkdir()
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    monkeypatch.setattr(sys, 'argv', ['hermes', '-p', 'work', 'chat'])
+
+    def fail(_name):
+        raise error_type('UNRELATED_PRIVATE_SENTINEL')
+
+    monkeypatch.setattr(profiles, 'resolve_profile_env', fail)
+    profile_selection._apply_profile_override()
+    assert os.environ['HERMES_HOME'] == str(home)
+    assert sys.argv == ['hermes', '-p', 'work', 'chat']
+    assert profile_selection.explicit_cli_profile() is None
+    output = capsys.readouterr()
+    assert output.out == ''
+    assert output.err == 'Warning: profile override failed, using default\n'
+
+
 def test_platform_default_identity(tmp_path):
     proc, data = run(tmp_path, env_home=False)
     assert proc.returncode == 0

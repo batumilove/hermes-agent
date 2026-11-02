@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from hermes_yaml import YAMLError
 
 KEY = "approvals.destructive_slash_confirm"
 
@@ -49,7 +50,7 @@ def explain_config(key: str, *, profile_selection="environment") -> dict:
     except (OSError, ValueError, TypeError, KeyError):
         result["blockers"] = ["configuration_unreadable_or_malformed"]
         return result
-    except Exception:
+    except YAMLError:
         # YAML exception strings may include unrelated credentials; never serialize them.
         result["blockers"] = ["configuration_resolution_failed"]
         return result

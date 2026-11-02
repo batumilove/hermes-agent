@@ -224,9 +224,10 @@ def _apply_profile_override() -> None:
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
-    except Exception as exc:
-        # A bug in profiles.py must NEVER prevent hermes from starting
-        print(f"Warning: profile override failed ({exc}), using default", file=sys.stderr)
+    except (ImportError, OSError, RuntimeError):
+        # Missing modules, inaccessible paths or symlink loops must not block startup.
+        # Exception text can contain private path/configuration data.
+        print("Warning: profile override failed, using default", file=sys.stderr)
         return
     os.environ["HERMES_HOME"] = hermes_home
     if consume > 0:
