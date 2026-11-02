@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { discoverUnits } from './run-workspace-checks.mjs'
-import { planUnits, validatePartitions, workerBudget, validateReceipts, parseUiInventory } from './ui-sharding.mjs'
+import { planUnits, validatePartitions, workerBudget, validateReceipts, parseUiInventory, exactUiFilters } from './ui-sharding.mjs'
 
 const lane = process.argv[2]
 const sha = execFileSync('git', ['rev-parse','HEAD'], {encoding:'utf8'}).trim()
@@ -28,13 +28,14 @@ if (lane === 'aggregate') {
       validatePartitions(inventory, partitions)
       const selected = partitions[Number(lane)-1]
       const report = `/var/tmp/hermes-ui-receipts/report-${lane}.json`
-      const r = spawnSync(process.execPath,[vitest,'run','--project','ui','--isolate','--maxWorkers',String(workerBudget()),'--reporter=json',`--outputFile=${report}`, ...selected],{cwd,stdio:'inherit'})
+      receipt.inventory = inventory
+      receipt.selected = selected
+      const r = spawnSync(process.execPath,[vitest,'run','--project','ui','--isolate','--maxWorkers',String(workerBudget()),'--reporter=json',`--outputFile=${report}`, ...exactUiFilters(inventory, selected)],{cwd,stdio:'inherit'})
       const result = JSON.parse(fs.readFileSync(report,'utf8'))
       const actual = result.testResults.map(t => t.name).sort()
+      receipt.files = actual
       // Filters are not exact filenames: reject accidental overlapping matches.
       if (JSON.stringify(actual) !== JSON.stringify([...selected].sort())) throw Error('executed file coverage differs from selected partition')
-      receipt.inventory = inventory
-      receipt.files = actual
       receipt.ok = r.status === 0 && result.success === true
     }
   } finally {

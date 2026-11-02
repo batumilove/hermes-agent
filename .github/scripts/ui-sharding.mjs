@@ -8,6 +8,14 @@ export function parseUiInventory(records) {
   return files.sort()
 }
 
+// Positional Vitest filters are substring/prefix matches (.test.ts also matches
+// .test.tsx). Exclude every unselected inventory member with literal glob paths.
+export function exactUiFilters(inventory, selected) {
+  if (!selected.length || new Set(selected).size !== selected.length || selected.some(f => !inventory.includes(f))) throw Error('invalid selected UI files')
+  const escapeGlob = f => f.replace(/([*?{}()[\]!+@])/g, '\\$1')
+  return [...selected, ...inventory.filter(f => !selected.includes(f)).flatMap(f => ['--exclude', escapeGlob(f)])]
+}
+
 const key = u => `${u.pkg} :: ${u.script}`
 export function planUnits(units) {
   if (!units.length || new Set(units.map(key)).size !== units.length) throw Error('empty or duplicate workspace checks')
