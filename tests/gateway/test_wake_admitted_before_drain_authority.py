@@ -96,6 +96,12 @@ async def test_authority_route_runs_a_wake_receipted_before_drain_once_after_res
         lambda: admissions(runner, authority, source)[0] == ("messaging", "terminal", "completed"),
         what="the human turn to settle",
     )
+    # A wake claimed just before drain may still be finishing its durable receipt.
+    # Do not start a successor until that admitted owner has settled.
+    await async_wait_until(
+        lambda: admissions(runner, authority, source)[-1][1] != "started",
+        what="the admitted wake to remain queued or finish before restart",
+    )
     wake_row = admissions(runner, authority, source)[-1]
     assert wake_row[0] == "automation"
     assert wake_row[1] == "queued" or (wake_row[1:] == ("terminal", "completed") and wake_runs(executed) == ["owner"])

@@ -12,6 +12,7 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform
 from gateway.run import GatewayRunner
+from tests.waiting import async_wait_until
 
 OWNERS = ["child", "handoff", "foreground", "live_handoff"]
 
@@ -278,9 +279,10 @@ async def test_batched_completions_follow_the_owning_profile(
 
     rig = _build_rig(monkeypatch, tmp_path, request, surface_a, "all")
     runner = rig.runner
+    flush = runner._flush_process_completion_batch
 
     async def consume(leg):
-        runner._completion_notification_batch_window = 0.01
+        runner._completion_notification_batch_window = 0
         if owner == "live_handoff":
             _transfer_to_parent(rig, leg)
         leg.proc.output_buffer = "PROCESS_RESULT"
@@ -297,10 +299,26 @@ async def test_batched_completions_follow_the_owning_profile(
         pair = [("PROCESS_RESULT", evt), ("COMPANION_RESULT", companion)]
         if path in {"batch_foreground_first", "batch_boundary_first"}:
             pair.reverse()
-        outcomes = await asyncio.gather(*(
-            runner._enqueue_process_completion_notification(text, event)
-            for text, event in pair
-        ))
+        enqueued = asyncio.Event()
+
+        async def flush_after_enqueue(key):
+            # Profile resolution may outlast the production batch window on a busy runner.
+            # Exercise coalescing only after both policy-admitted inputs have reached the queue.
+            await async_wait_until(
+                lambda: enqueued.is_set() or sum(
+                    len(items) for items in runner._completion_notification_batches.values()
+                ) >= 1 + int(leg.surfaced),
+                what="both completion inputs to pass profile policy and enqueue",
+            )
+            enqueued.set()
+            await flush(key)
+
+        with monkeypatch.context() as batch:
+            batch.setattr(runner, "_flush_process_completion_batch", flush_after_enqueue)
+            outcomes = await asyncio.gather(*(
+                runner._enqueue_process_completion_notification(text, event)
+                for text, event in pair
+            ))
         assert outcomes[pair.index(("PROCESS_RESULT", evt))] is (True if leg.surfaced else None)
         assert outcomes[pair.index(("COMPANION_RESULT", companion))] is (None if boundary else True)
         texts = "\n".join(event.text for event, _sid, _home in rig.admitted)
