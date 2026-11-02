@@ -47,6 +47,7 @@ def probe():
     raise SystemExit(0)
 
 er.restore_interrupted_pull = probe
+sys.argv = ["hermes"] + json.loads(os.environ.get("RECOVERY_ARGV", "[]"))
 importlib.import_module(entry)
 """
 
@@ -192,6 +193,35 @@ def test_restore_runs_the_installers_store_git_when_path_has_none(checkout, monk
         run = subprocess.run([sys.executable, "-c", _ENTRY_SPY, entry], cwd=repo, capture_output=True, text=True,
                              encoding="utf-8", env={**os.environ, "PYTHONPATH": repo}, timeout=120, check=False)
         assert run.stdout.strip().splitlines()[-1:] == ["[]"], (entry, run.stdout[-500:], run.stderr[-2000:])
+
+
+@pytest.mark.parametrize("argv", [
+    ["config", "set", "config", "explain"],
+    ["config", "set", "--", "config", "explain"],
+    ["--model", "config", "config", "set", "config", "explain"],
+    ["--provider", "config", "config", "set", "config", "explain"],
+    ["--profile", "config", "config", "set", "config", "explain"],
+    ["--profile=config", "config", "set", "config", "explain"],
+    ["-p", "config", "config", "set", "--", "config", "explain"],
+])
+def test_config_set_payload_reaches_recovery_before_checkout_imports(argv):
+    import json
+
+    from hermes_cli._parser import build_top_level_parser
+    from hermes_cli.subcommands.config import build_config_parser
+
+    # Profile selection consumes its leading pair before the real argparse grammar.
+    parsed_argv = argv[2:] if argv[0] in {"-p", "--profile"} else argv[1:] if argv[0].startswith("--profile=") else argv
+    parser, subs, _ = build_top_level_parser()
+    build_config_parser(subs, cmd_config=lambda args: None)
+    args = parser.parse_args(parsed_argv)
+    assert (args.command, args.config_command, args.key, args.value) == ("config", "set", "config", "explain")
+    repo = os.path.realpath(Path(er.__file__).parent.parent)
+    run = subprocess.run([sys.executable, "-c", _ENTRY_SPY, "hermes_cli.main"], cwd=repo,
+                         capture_output=True, text=True, encoding="utf-8", timeout=120, check=False,
+                         env={**os.environ, "PYTHONPATH": repo, "RECOVERY_ARGV": json.dumps(argv)})
+    assert run.returncode == 0, run.stderr[-2000:]
+    assert run.stdout.strip().splitlines()[-1:] == ["[]"], (argv, run.stdout[-500:], run.stderr[-2000:])
 
 
 def test_restore_never_touches_user_work_when_git_wrote_nothing(checkout, capsys, monkeypatch):

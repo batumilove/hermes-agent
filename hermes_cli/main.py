@@ -8,9 +8,15 @@ Usage:
     hermes <cmd> --help        # Per-command help
 """
 
-# Gate helper imports with stdlib only; ordinary launches must repair first.
+# Admit only the literal explain prefix (plus pre-dispatch profile selection).
+# Other global options go through normal recovery, not a second argv parser.
 import sys
-if any(a == "config" and b == "explain" for a, b in zip(sys.argv[1:], sys.argv[2:])):
+_explain_argv = sys.argv[1:]
+if _explain_argv[:1] in (["-p"], ["--profile"]):
+    _explain_argv = _explain_argv[2:]
+elif _explain_argv and _explain_argv[0].startswith("--profile="):
+    _explain_argv = _explain_argv[1:]
+if _explain_argv[:2] == ["config", "explain"]:
     from hermes_cli.config_explain_entry import maybe_dispatch as _maybe_explain
     _maybe_explain()
 
@@ -21,11 +27,8 @@ except ModuleNotFoundError as exc:
     if exc.name != "hermes_bootstrap":
         raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
 
-# A `hermes update` killed while git was writing the new tree leaves a mix of old and new files that
-# fails at the next import, whichever it is — put the old tree back before importing anything else
-# from the checkout, then rerun the command (this module may itself be one of the new files).
-# ``_early_recovery`` is stdlib-only and imported unguarded on purpose: same package
-# dir, so if IT can't import nothing in hermes_cli can.
+# Repair a mixed tree left by a killed pull before further checkout imports.
+# _early_recovery is stdlib-only and must remain importable beside this module.
 from hermes_cli import _early_recovery as _early_recovery_mod
 
 if _early_recovery_mod.restore_interrupted_pull():
@@ -54,15 +57,9 @@ import itertools
 # before the first reader — otherwise it resolves against cwd and scaffolds <cwd>/~/.hermes.
 _startup_fast.normalize_hermes_home_env()
 
-# Startup-liveness watchdog: for gateway runs, arm BEFORE the heavy import
-# graph below — an import-time deadlock (native-extension init, contended
-# import lock) is exactly the "wedged before the event loop, no logs, live
-# PID" class it exists for. ``hermes_startup_watchdog`` is stdlib-only so it
-# cannot itself wedge. The match requires the ADJACENT pair ``gateway run``
-# (wherever global flags like ``-p <profile>`` put it) so unrelated commands
-# mentioning both words never arm a 300s hard-exit timer. Foreground runs arm
-# too — a pre-loop wedge is just as dead without a supervisor; GatewayRunner
-# disarms once the event loop is live.
+# Arm the stdlib-only watchdog before heavy imports can wedge gateway startup.
+# Foreground runs also arm; GatewayRunner disarms after its loop is live.
+# Match the adjacent gateway/run pair, not unrelated occurrences of both words.
 def _argv_is_gateway_run(argv: list) -> bool:
     return any(a == "gateway" and b == "run" for a, b in itertools.pairwise(argv))
 
