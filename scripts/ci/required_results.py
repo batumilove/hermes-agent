@@ -37,6 +37,7 @@ _UPDATE_CONSUMER_LANES = {
     "fork-delta": ("fork_contracts",),
     "fork-contracts": ("fork_contracts",),
     "osv-scanner": ("scan",),
+    "js-tests": ("frontend",),
     "tests": ("python", "e2e", "e2e_upgrade"),
     "tests-os": ("python", "desktop_updater", "e2e", "e2e_upgrade"),
     "e2e-desktop-update": ("e2e_desktop_update",),
