@@ -1147,6 +1147,8 @@ patches:
   - tests/gateway/test_active_session_refusal_completion.py
   - tests/gateway/test_journey_compress_restart_fifo.py
   - tests/gateway/test_room_allow_silence.py
+  - tests/gateway/test_child_notice_profile_admission.py
+  - tests/gateway/test_wake_admitted_before_drain_authority.py
   - tests/gateway/test_startup_failed_platform_reports_degraded.py
   - tests/hermes_cli/test_update_slow_unit_stop.py
   - tests/hermes_cli/test_windows_ssh_runtime_ownership.py
@@ -1165,6 +1167,7 @@ patches:
   - hermes_cli/plugins_loader.py
   - tests/hermes_cli/test_plugins_module_eviction.py
   - tests/plugins/model_providers/test_commandcode_profile.py
+  - tests/plugins/image_gen/test_openrouter_compat_provider.py
   - tests/e2e/core/parity/_helpers.py
   - tests/e2e/core/parity/_drive_cli.py
   - tests/e2e/core/parity/test_entrypoint_parity.py
