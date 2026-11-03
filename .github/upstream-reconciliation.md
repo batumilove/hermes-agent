@@ -606,3 +606,14 @@ structural catalog check still runs. Data-only submissions continue to clone,
 scan and validate each changed pin under the ordinary admission gate. A later
 mixed code/catalog PR cannot reuse an old receipt: its head must still be the
 exact initial import and its upstream base must advance.
+
+### Promoting accepted canonical source to main
+
+The fork's main alignment is not a new upstream import. For pull requests targeting
+`main` in `batumilove/hermes-agent`, catalog and import comparison workflows fetch
+`batumi/live` independently from the fixed fork repository. The optional canonical
+promotion proof requires that commit to be an ancestor and the complete candidate
+tree to equal its tree. Official ancestry, immutable import proof and exact official
+catalog equality remain mandatory. Any extra source change, catalog drift or unrelated
+same-tree commit refuses promotion. Other repositories and target branches retain
+the strict initial-import checks; PR labels and receipt fields cannot select this path.
