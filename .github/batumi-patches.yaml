@@ -2814,3 +2814,34 @@ patches:
   - npm exec --workspace tests-js -- vitest run setup-pm-cache.test.mjs
   retirement: Remove if the fork adopts upstream host support policy or upstream
     provides equivalent Linux and macOS admission across installation and releases.
+- id: turn-liveness-watchdog-diagnostics
+  kind: core
+  rationale: Dump the stalled turn thread before the turn-liveness watchdog's diagnostic thread cap, and report
+    system-issued interruptions by their actual issuer instead of blaming a user /stop.
+  paths:
+  - agent/turn_liveness.py
+  - gateway/run.py
+  - gateway/run_empty_response.py
+  - locales/af.yaml
+  - locales/ar.yaml
+  - locales/de.yaml
+  - locales/en.yaml
+  - locales/es.yaml
+  - locales/fr.yaml
+  - locales/ga.yaml
+  - locales/hu.yaml
+  - locales/it.yaml
+  - locales/ja.yaml
+  - locales/ko.yaml
+  - locales/pt.yaml
+  - locales/ru.yaml
+  - locales/tr.yaml
+  - locales/uk.yaml
+  - locales/zh.yaml
+  - locales/zh-hant.yaml
+  - tests/agent/test_turn_liveness_watchdog.py
+  - tests/gateway/test_normalize_empty_agent_response.py
+  tests:
+  - scripts/run_tests.sh tests/agent/test_turn_liveness_watchdog.py tests/gateway/test_normalize_empty_agent_response.py
+  retirement: Remove when upstream dumps the stalled turn thread ahead of the cap and reports system interruption
+    issuers by name with equivalent coverage.
