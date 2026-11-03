@@ -96,9 +96,15 @@ jobs:
               git fetch --filter=blob:none --no-tags \
                 https://github.com/NousResearch/hermes-agent.git \
                 refs/heads/main:refs/remotes/official-catalog/main
+              set --
+              if [ "${GITHUB_REPOSITORY:-}" = "batumilove/hermes-agent" ] && [ "${GITHUB_BASE_REF:-}" = "main" ]; then
+                git fetch --filter=blob:none --no-tags https://github.com/batumilove/hermes-agent.git \
+                  refs/heads/batumi/live:refs/remotes/accepted-canonical/live
+                set -- --canonical-tip refs/remotes/accepted-canonical/live
+              fi
               python3 scripts/ci/catalog_upstream_import.py \
                 --comparison 'HEAD^1' \
-                --official-tip refs/remotes/official-catalog/main
+                --official-tip refs/remotes/official-catalog/main "$@"
               OFFICIAL_IMPORT=true
             fi
           fi

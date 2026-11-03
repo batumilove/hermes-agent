@@ -41,5 +41,11 @@ jobs:
           accepted=$(tr -d '[:space:]' < .github/upstream-base)
           [[ "$accepted" =~ ^[0-9a-f]{40}$ ]]
           git merge-base --is-ancestor "$accepted" refs/remotes/upstream/main
-          BASE=$(python3 -m scripts.fork_check_base --comparison HEAD^1 --official-tip refs/remotes/upstream/main)
+          set --
+          if [ "${GITHUB_REPOSITORY:-}" = "batumilove/hermes-agent" ] && [ "${GITHUB_BASE_REF:-}" = "main" ]; then
+            git fetch --filter=blob:none --no-tags https://github.com/batumilove/hermes-agent.git \
+              refs/heads/batumi/live:refs/remotes/accepted-canonical/live
+            set -- --canonical-tip refs/remotes/accepted-canonical/live
+          fi
+          BASE=$(python3 -m scripts.fork_check_base --comparison HEAD^1 --official-tip refs/remotes/upstream/main "$@")
           python3 scripts/ci/check_blob_size.py --base "$BASE"

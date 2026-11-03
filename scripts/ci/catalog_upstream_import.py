@@ -9,9 +9,11 @@ from pathlib import Path
 if not __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from hermes_cli import fork_provenance as provenance
+from scripts.fork_check_base import verify_canonical_promotion
 
 
-def verify_import(repo: Path, head: str, comparison: str, official_tip: str) -> str:
+def verify_import(repo: Path, head: str, comparison: str, official_tip: str, *,
+                  canonical_tip: str | None = None) -> str:
     """Require an exact initial import and catalog bytes already accepted upstream."""
     official_tip = provenance.freeze_official_tip(repo, official_tip)
     head = provenance.git(repo, "rev-parse", "--verify", f"{head}^{{commit}}")
@@ -26,7 +28,9 @@ def verify_import(repo: Path, head: str, comparison: str, official_tip: str) -> 
         raise provenance.ProvenanceError("catalog import must advance the recorded upstream base")
     provenance.resolve_v2(repo, base, head, proof=proof)
     if provenance.projected_tree(repo, head) != proof["import_tree"]:
-        raise provenance.ProvenanceError("catalog import head differs from its immutable source")
+        if canonical_tip is None:
+            raise provenance.ProvenanceError("catalog import head differs from its immutable source")
+        verify_canonical_promotion(repo, head, canonical_tip)
     expected = provenance.git(repo, "rev-parse", f"{base}:plugin-catalog")
     actual = provenance.git(repo, "rev-parse", f"{head}:plugin-catalog")
     if actual != expected:
@@ -39,9 +43,11 @@ def main() -> int:
     parser.add_argument("--head", default="HEAD")
     parser.add_argument("--comparison", required=True)
     parser.add_argument("--official-tip", required=True)
+    parser.add_argument("--canonical-tip", help="Trusted canonical ref for an exact-tree promotion")
     args = parser.parse_args()
     try:
-        base = verify_import(Path.cwd(), args.head, args.comparison, args.official_tip)
+        base = verify_import(Path.cwd(), args.head, args.comparison, args.official_tip,
+                             canonical_tip=args.canonical_tip)
     except (provenance.ProvenanceError, ValueError) as error:
         print(f"official catalog import rejected: {error}", file=sys.stderr)
         return 1
