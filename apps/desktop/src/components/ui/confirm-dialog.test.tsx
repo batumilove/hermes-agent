@@ -53,21 +53,37 @@ describe('ConfirmDialog secondary action', () => {
 })
 
 describe('ConfirmDialog async lifetime', () => {
-  it.each([false, true])('does not close its former owner when confirmation resolves after unmount (dismissOnConfirm=%s)', async dismissOnConfirm => {
-    vi.useFakeTimers()
-    let finish!: () => void
-    const pending = new Promise<void>(resolve => { finish = resolve })
-    const onClose = vi.fn()
+  it.each([false, true])(
+    'does not close its former owner when confirmation resolves after unmount (dismissOnConfirm=%s)',
+    async dismissOnConfirm => {
+      vi.useFakeTimers()
+      let finish!: () => void
+      const pending = new Promise<void>(resolve => {
+        finish = resolve
+      })
+      const onClose = vi.fn()
 
-    const view = render(
-      <ConfirmDialog confirmLabel="Confirm action" dismissOnConfirm={dismissOnConfirm} onClose={onClose}
-        onConfirm={() => pending} open title="Confirm?" />
-    )
+      const view = render(
+        <ConfirmDialog
+          confirmLabel="Confirm action"
+          dismissOnConfirm={dismissOnConfirm}
+          onClose={onClose}
+          onConfirm={() => pending}
+          open
+          title="Confirm?"
+        />
+      )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm action' }))
-    view.unmount()
-    await act(async () => { finish(); await pending })
-    await act(async () => { await vi.advanceTimersByTimeAsync(600) })
-    expect(onClose).not.toHaveBeenCalled()
-  })
+      fireEvent.click(screen.getByRole('button', { name: 'Confirm action' }))
+      view.unmount()
+      await act(async () => {
+        finish()
+        await pending
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(600)
+      })
+      expect(onClose).not.toHaveBeenCalled()
+    }
+  )
 })
