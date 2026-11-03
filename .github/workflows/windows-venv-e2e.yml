@@ -41,6 +41,8 @@ concurrency:
 
 jobs:
   venv-holder-e2e:
+    # This fork supports standard Linux and macOS only.
+    if: ${{ false }}
     name: venv-holder live E2E (windows-latest)
     runs-on: windows-latest
     timeout-minutes: 25

@@ -218,6 +218,8 @@ jobs:
           set -euo pipefail
           matrices="$(node scripts/sandbox/generate-e2e-matrix.mjs \
             --tags '${{ needs.pick-releases.outputs.tags }}' --route "$ROUTE")"
+          # Keep the legacy Windows generator data without scheduling Windows runners.
+          matrices="$(printf '%s' "$matrices" | jq '.windows.include = []')"
           echo "$matrices"
           for key in linux windows macos; do
             echo "$key=$(echo "$matrices" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>console.log(JSON.stringify(JSON.parse(d)[process.argv[1]])))' "$key")" >> "$GITHUB_OUTPUT"
@@ -253,8 +255,9 @@ jobs:
           node tests/install/e2e-assets/bundle-plan.mjs
 
   windows-bundled:
+    # This fork supports standard Linux and macOS only.
+    if: ${{ false }}
     name: ${{ matrix.name }}
-    if: inputs.windows-bundle-manifest != '' && contains(fromJSON('["all", "bundled", "windows-bundled"]'), inputs.route)
     needs: bundle-inputs
     strategy:
       fail-fast: false
@@ -308,8 +311,9 @@ jobs:
       leg-id: ${{ matrix.leg_id }}
 
   windows:
+    # This fork supports standard Linux and macOS only.
+    if: ${{ false }}
     name: ${{ matrix.name }}
-    if: needs.generate-matrix.outputs.windows-legs != '0'
     needs: generate-matrix
     strategy:
       fail-fast: false
@@ -394,7 +398,7 @@ jobs:
         run: |
           set -euo pipefail
           fail=0
-          for os_name in LINUX WINDOWS MACOS; do
+          for os_name in LINUX MACOS; do
             result="${!os_name}"
             matrix_var="${os_name}_MATRIX"
             matrix="${!matrix_var}"

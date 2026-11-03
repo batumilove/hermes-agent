@@ -13,6 +13,8 @@ import os
 JOB_GROUPS = ("darwin-arm64", "darwin-x64", "win32-arm64", "win32-x64",
               "win32-bundle", "linux-x64", "linux-arm64", "termux")
 ALL_JOBS = ",".join(JOB_GROUPS)
+SUPPORTED_GROUPS = ("darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64")
+DEFAULT_JOBS = ",".join(SUPPORTED_GROUPS)
 
 # The workflow jobs each group runs, in the names desktop-bundled-release.yml
 # declares. `phase_jobs` turns a selection into the list the stable phase
@@ -64,8 +66,19 @@ def parse_jobs(raw: str | None) -> dict[str, bool]:
 
 
 def selects_all(raw: str | None) -> bool:
-    """True only when the input selects every group."""
-    return all(parse_jobs(raw).values())
+    """True only when the input selects every supported group."""
+    selected = supported_jobs(raw)
+    return all(selected[group] for group in SUPPORTED_GROUPS)
+
+
+def supported_jobs(raw: str | None) -> dict[str, bool]:
+    """Keep legacy output keys, but refuse builds outside this fork's support policy."""
+    selected = parse_jobs(DEFAULT_JOBS if raw is None else raw)
+    unsupported = [group for group, enabled in selected.items()
+                   if enabled and group not in SUPPORTED_GROUPS]
+    if unsupported:
+        raise ValueError("This fork does not build unsupported platforms: " + ", ".join(unsupported))
+    return selected
 
 
 def phase_jobs(selected: dict[str, bool], phase: str, *, skip_tests: bool = False,
@@ -101,10 +114,10 @@ def phase_jobs(selected: dict[str, bool], phase: str, *, skip_tests: bool = Fals
 
 def main() -> None:
     """Emit one `<group>=true|false` line per group, and `all-jobs`, for `$GITHUB_OUTPUT`."""
-    selected = parse_jobs(os.environ.get("JOBS"))
+    selected = supported_jobs(os.environ.get("JOBS"))
     for group in JOB_GROUPS:
         print(f"{group}={'true' if selected[group] else 'false'}")
-    print(f"all-jobs={'true' if all(selected.values()) else 'false'}")
+    print(f"all-jobs={'true' if all(selected[group] for group in SUPPORTED_GROUPS) else 'false'}")
 
 
 if __name__ == "__main__":

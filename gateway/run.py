@@ -5071,16 +5071,16 @@ def _guard_corrupt_user_config() -> None:
 
 def main():
     """CLI entry point for the gateway."""
-    # Before any config-dependent startup (watchdog, DB opens, provider resolution).
+    from hermes_platform.support import require_supported_host
+
+    require_supported_host()
+
     _guard_corrupt_user_config()
 
-    # Advertise the harness to children (mirrors _advertise_agent_env in hermes_cli/main.py, inlined to
-    # avoid its startup side effects). Value must equal registry id ``hermes-agent`` exactly.
     os.environ.setdefault("AI_AGENT", "hermes-agent")
     os.environ.setdefault("HERMES_AGENT", "true")
 
     def _register_identity() -> None:
-        # Ledger registration + Windows job-object attach so update-time reapers can identify this gateway.
         from hermes_cli.process_identity import attach_self_to_kill_on_close_job, register_self
         register_self("gateway")
         attach_self_to_kill_on_close_job()

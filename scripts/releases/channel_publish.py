@@ -11,11 +11,9 @@ import tempfile
 from hermes_cli.release_channels import ChannelReader, build_prefix, canonical_json, decode_json, require_sha256, validate_request
 from scripts.releases import commit_build, handoff, r2
 
-NATIVE_LEGS = ("darwin-arm64", "darwin-x64", "win32-arm64", "win32-x64", "windows-universal")
+NATIVE_LEGS = ("darwin-arm64", "darwin-x64")
 REQUIRED_JOBS = ("validate", "build-darwin-arm64", "build-darwin-x64",
-                 "build-win32-arm64", "build-win32-x64", "assemble-win32-bundle",
-                 "smoke-darwin-arm64", "smoke-darwin-x64",
-                 "smoke-win32-arm64", "smoke-win32-x64")
+                 "smoke-darwin-arm64", "smoke-darwin-x64")
 
 
 def read_request(build_id: str, digest: str, public_base: str, repository: str) -> dict:
@@ -130,7 +128,7 @@ def assemble(request: dict, root: Path, *, needs: dict) -> tuple[dict, list[Path
                 raise ValueError("Channel artifact differs from its receipt")
             files[row["path"]] = row
     rows = [_metadata(root, request, platform, arch)
-            for platform in ("darwin", "win32") for arch in ("arm64", "x64")]
+            for platform in ("darwin",) for arch in ("arm64", "x64")]
     return assemble_native(request, {"files": files, "packages": rows}, root, artifact_prefix=prefix)
 
 

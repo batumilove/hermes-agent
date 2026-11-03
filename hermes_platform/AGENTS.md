@@ -12,3 +12,10 @@ client (another machine): `host.*` answers only the first. A new bare `shutil.wh
 hand-written known-path table outside `hermes_platform/` fails
 `tests/test_managed_runtime_resolution.py` unless allowlisted with a reason; resolvers land in
 `hermes_platform/resolver/`. Lookup never installs, downloads, or starts anything.
+
+## Fork support policy
+
+`support.py` owns application host admission: standard Linux (including WSL2) and macOS,
+x86_64/ARM64 only. Native Windows and Android/Termux are refused. Preserve this scope when
+syncing upstream; historical compatibility code may remain. See
+`website/docs/getting-started/platform-support.md` for build and installer support.

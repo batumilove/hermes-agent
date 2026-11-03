@@ -91,7 +91,8 @@ def test_signing_jobs_pin_source_and_controller_revisions_not_mutable_tags():
                 assert refs[0] == SHA, (
                     f"signing job {name!r} builds from {refs[0]!r} for a {dispatch} build; "
                     "outside a pinned channel build it must build the admitted source")
-    assert set(native_builds(jobs).values()) <= exercised, "walk broken: a native build leg never ran"
+    assert {name for (target, _), name in native_builds(jobs).items()
+            if target.startswith("darwin-")} <= exercised, "walk broken: a native build leg never ran"
     assert exercised, "walk broken: no signing job runs for a downloadable build"
 
 

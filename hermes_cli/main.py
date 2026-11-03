@@ -3195,11 +3195,14 @@ def _default_to_chat(args) -> None:
 
 def main():
     """Main entry point for hermes CLI."""
+    from hermes_platform.support import require_supported_host
+
+    require_supported_host()
+
     _set_process_title()
     _warn_if_unsupervised_pid1()
     _advertise_agent_env()
 
-    # Force UTF-8 stdio on Windows before anything prints.  No-op elsewhere.
     try:
         from hermes_cli.stdio import configure_windows_stdio
         configure_windows_stdio()
@@ -3218,8 +3221,6 @@ def main():
 
     install_truststore()
 
-    # Sweep stale ``hermes.exe.old.*`` quarantine files from previous Windows
-    # updates. No-op elsewhere.
     try:
         _cleanup_quarantined_exes()
     except Exception:
@@ -3236,7 +3237,6 @@ def main():
         from pm.paths import install_root
         maybe_run_boot_bootstrap(install_root())
 
-    # Every dispatch, including fast chat/serve, gets one passive PM verdict.
     try:
         from hermes_cli.venv_sync import check_runtime
         from pm.paths import install_root

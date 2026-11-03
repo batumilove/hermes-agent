@@ -65,5 +65,5 @@ def test_download_survives_smoke_failure_without_claiming_acceptance(state, stat
         assert '✅ Built' in output and 'https://cdn.example/' + PREFIX + PACKAGE in output
         assert 'unsigned Store envelopes are not install-smoked' in output
     missing = rbt.render_commit_summary([], 'https://cdn.example', SHA, {},
-                                       failed_legs=['assemble-win32-bundle'])
-    assert 'failed: assemble-win32-bundle' in missing
+                                       failed_legs=['build-darwin-arm64'])
+    assert 'failed: build-darwin-arm64' in missing

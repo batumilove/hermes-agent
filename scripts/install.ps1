@@ -51,6 +51,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+throw "This fork supports standard Linux and macOS only. Native Windows is unsupported; install inside WSL2 using scripts/install.sh."
+
 # -SkipSetup is the pre-rework spelling of -NonInteractive.
 if ($SkipSetup) { $NonInteractive = $true }
 

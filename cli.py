@@ -1756,6 +1756,9 @@ def main(
         python cli.py -w                         # Start in isolated git worktree
         python cli.py -w -q "Fix issue #123"     # Single query in worktree
     """
+    from hermes_platform.support import require_supported_host
+
+    require_supported_host()
     # UTF-8 stdio on Windows before any print (Rich box-drawing would UnicodeEncodeError on cp1252).
     with suppress(Exception):
         from hermes_cli.stdio import configure_windows_stdio

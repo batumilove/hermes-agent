@@ -196,7 +196,7 @@ def stage_canary(clone, identity, env, run):
 
 def test_published_canary_workflow_advances_only_after_every_gate(canary, r2_server, monkeypatch, tmp_path):
     clone, identity, env, run = canary
-    bundle = stage_canary(clone, identity, env, run)
+    stage_canary(clone, identity, env, run)
     publisher = canary_job()
     script = step_script(publisher, "Publish the admitted canary and advance its protected head")
     before = dict(r2_server.store)
@@ -224,7 +224,8 @@ def test_published_canary_workflow_advances_only_after_every_gate(canary, r2_ser
     assert r2_server.store == before
     release.write_text(json.dumps(published))
     prefix = f"releases/tag/{env['RELEASE_TAG']}/"
-    for key in (prefix + "metadata-windows-arm64.json", prefix + bundle.name):
+    for key in (prefix + "metadata-macos-arm64.json",
+                prefix + f"{identity['artifactNamePascal']}-{env['RELEASE_TAG'][1:]}-mac-arm64.zip"):
         saved = r2_server.store.pop(key)
         missing = dict(r2_server.store)
         result = run(script)
@@ -247,10 +248,9 @@ def test_published_canary_workflow_advances_only_after_every_gate(canary, r2_ser
     assert resolved.manifest is not None
     assert resolved.manifest["request"]["windowsVersion"] == "26.913.0.1000"
     assert resolved.manifest["request"]["commit"] == env["RELEASE_COMMIT"]
-    assert len(resolved.manifest["packages"]) == 4
+    assert len(resolved.manifest["packages"]) == 2
     # Bootstrap reads actual receipt-bound artifacts and the promoted native feeds,
     # rather than asking canary for a stable-only candidate manifest.
-    from scripts.bundles.release_artifacts import write_appinstaller
     from scripts.releases import stable
     from hermes_cli.release_channels import canonical_json
     mac = resolved.manifest["packages"][0]
@@ -259,14 +259,6 @@ def test_published_canary_workflow_advances_only_after_every_gate(canary, r2_ser
         entry["url"] = entry["url"].removeprefix(env["CLOUDFLARE_R2_PUBLIC_URL"])
     mac_feed["path"] = mac_feed["path"].removeprefix(env["CLOUDFLARE_R2_PUBLIC_URL"])
     r2_server.store["releases/darwin/canary/canary-mac.yml"] = (canonical_json(mac_feed), '"feed"')
-    win = next(p for p in resolved.manifest["packages"] if p["platform"] == "win32")
-    promoted_key = "releases/win32/canary/" + bundle.name
-    r2_server.store[promoted_key] = r2_server.store[win["artifact"]["key"]]
-    descriptor = tmp_path / "canary.appinstaller"
-    write_appinstaller(descriptor, identity=win["identity"], publisher=win["publisher"], version=win["version"],
-                       self_uri=env["CLOUDFLARE_R2_PUBLIC_URL"] + "/releases/win32/canary/canary.appinstaller",
-                       artifact_uri=env["CLOUDFLARE_R2_PUBLIC_URL"] + "/" + promoted_key)
-    r2_server.store["releases/win32/canary/canary.appinstaller"] = (descriptor.read_bytes(), '"feed"')
     monkeypatch.setattr(stable, "output", lambda args: env["RELEASE_COMMIT"] if "/commits/" in args[2]
                         else json.dumps({"draft": False, "prerelease": True, "published_at": "fixture-published"}))
     assert channel_releases.verify_bootstrap(resolved.manifest["request"], resolved.manifest,
