@@ -62,6 +62,7 @@ class GatewayTurnPersistenceMixin:
             from gateway.response_filters import is_intentional_silence_agent_result
             return is_intentional_silence_agent_result(agent_result, response)
         except Exception:
+            logger.warning("Could not classify intentional silence; retaining response", exc_info=True)
             return False
 
     async def _record_room_silence_decision(
