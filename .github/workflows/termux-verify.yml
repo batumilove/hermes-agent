@@ -41,6 +41,8 @@ concurrency:
 
 jobs:
   contracts:
+    # This fork supports standard Linux and macOS only.
+    if: ${{ false }}
     name: Termux packaging contracts on Linux
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -71,6 +73,8 @@ jobs:
             tests/scripts/test_run_tests_shell.py
 
   tui:
+    # This fork supports standard Linux and macOS only.
+    if: ${{ false }}
     name: Prebuilt TUI checks
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -106,8 +110,9 @@ jobs:
   # bionic verification below cannot fetch its pinned inputs; skipping it
   # keeps a fork or an unprovisioned main green instead of red.
   r2-provisioned:
+    # This fork supports standard Linux and macOS only.
+    if: ${{ false }}
     name: Detect R2 credentials
-    if: github.event_name != 'pull_request' && github.event_name != 'pull_request_target'
     runs-on: ubuntu-latest
     environment: release-signing
     timeout-minutes: 5
@@ -122,11 +127,12 @@ jobs:
           [ -n "$CLOUDFLARE_R2_ACCOUNT_ID" ] || echo "::notice::CLOUDFLARE_R2_* secrets are not configured; the bionic runtime verification is skipped."
 
   native-runtime:
+    # This fork supports standard Linux and macOS only.
+    if: ${{ false }}
     name: Verify bionic runtime tools
     needs: r2-provisioned
     # A stable-release candidate run still fails loudly on missing R2: the
     # release must not pass on a skipped verification.
-    if: needs.r2-provisioned.outputs.configured == 'true' || inputs.release == true
     runs-on: ubuntu-24.04-arm
     environment: release-signing
     timeout-minutes: 45

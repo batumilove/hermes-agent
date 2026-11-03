@@ -24,6 +24,8 @@ concurrency:
 
 jobs:
   attach:
+    # This fork supports standard Linux and macOS only.
+    if: ${{ false }}
     name: Desktop attach to a running local gateway (Windows)
     runs-on: windows-latest
     timeout-minutes: 60

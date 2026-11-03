@@ -100,7 +100,7 @@ def test_release_claims_the_first_attempt_creates_a_draft_and_dispatches(source)
         return ""
 
     result = _release(source, commit, execute=execute, autopublish=True,
-                     lanes=lane_set.select(only=["docker", "ci"], with_=["windows"]))
+                     lanes=lane_set.select(only=["docker", "ci"], with_=["macos-arm64"]))
 
     assert result["version"] == "0.21.5"
     assert result["tag"] == "rc.1-v0.21.5"
@@ -117,11 +117,11 @@ def test_release_claims_the_first_attempt_creates_a_draft_and_dispatches(source)
         "autopublish": True,
         "commit": commit,
         "schema": 1,
-        "lanes": ["ci", "docker", "windows"],
+        "lanes": ["ci", "docker", "macos-arm64"],
         "lanesRevision": lane_set.LANES_REVISION,
         "version": "0.21.5",
     }
-    assert result["lanes"] == frozenset({"ci", "docker", "windows"})
+    assert result["lanes"] == frozenset({"ci", "docker", "macos-arm64"})
     create = calls[0]
     assert create[:4] == ["gh", "release", "create", "rc.1-v0.21.5"]
     assert "--verify-tag" in create and "--draft" in create
@@ -182,7 +182,7 @@ def test_release_output_names_the_ci_run_and_the_publish_step():
     # The publish command sits on its own line so it can be copied whole.
     assert "\n    python scripts/release.py publish --version 0.21.5 --remote origin" in text
     # The default set names what it leaves out, and warns about no test lane.
-    assert "Not built: macos-intel, termux." in text
+    assert "Not built: windows, windows-store, termux." in text
     assert "Not tested" not in text
 
     automatic = next_steps({**result, "autopublish": True})
@@ -192,7 +192,7 @@ def test_release_output_names_the_ci_run_and_the_publish_step():
     # --only windows,docker: no tests, no macOS, and a partial desktop set never moves the channel.
     windows = next_steps({**result, "lanes": lane_set.select(only=["windows", "docker"])})
     assert "Not built: windows-store, macos-arm64, macos-intel, termux." in windows
-    assert "Not tested: ci, nix, docker-tests, pm-bundle, windows-live, install-e2e, bootstrap-version, smoke, upgrade" in windows
+    assert "Not tested: ci, nix, docker-tests, pm-bundle, install-e2e, bootstrap-version, smoke, upgrade" in windows
     assert "partial desktop release" in windows
     assert "\033[" not in windows
     assert "\033[1mNot tested" in next_steps({**result, "lanes": lane_set.select(without=["ci"])}, bold=True)
@@ -1081,4 +1081,4 @@ def test_release_refuses_an_unknown_lane_before_touching_git(tmp_path):
     assert "--with and --without both name ci" in both.stderr
     helped = subprocess.run([sys.executable, "scripts/release.py", "release", "--help"], cwd=ROOT,
                             capture_output=True, text=True, encoding="utf-8", check=False)
-    assert "macos-intel (off)" in helped.stdout and "docker-tests" in helped.stdout
+    assert "macos-intel =" in helped.stdout and "docker-tests" in helped.stdout

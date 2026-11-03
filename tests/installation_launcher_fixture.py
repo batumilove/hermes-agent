@@ -17,11 +17,15 @@ def publish_fixture_launcher(root: Path, main_source: str) -> Path:
     # are real. The interpreter is external to the checkout, like PM's store.
     (root / "hermes_bootstrap.py").write_text("", encoding="utf-8")
     (root / "pm").mkdir(exist_ok=True)
-    for relative in ("hermes_constants.py", "hermes_cli/_launchers.py", "pm/environments.py"):
+    for relative in ("hermes_constants.py", "hermes_cli/_launchers.py", "pm/environments.py", "pm/python_bootstrap.py"):
         shutil.copyfile(repository / relative, root / relative)
     out = root / ".hermes" / "bin"
     out.mkdir(parents=True)
-    launcher = mint_launcher("hermes", root, out, Path(sys.executable), None)
+    python = Path(sys.executable)
+    if sys.platform == 'win32':
+        from tests.native_supplier import provision_windows_python
+        python = provision_windows_python(root.parent / (root.name + '-python'))
+    launcher = mint_launcher("hermes", root, out, python, None)
     assert launcher is not None
     assert not (root / "venv").exists()
     return launcher

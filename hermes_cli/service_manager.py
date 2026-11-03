@@ -467,6 +467,13 @@ class S6ServiceManager:
         if profile == "default":
             gateway_cmd = "hermes gateway run --replace"
         else:
+            # /proc exposes the initial exec environment, not main.py's later
+            # profile override. Bind the same home before exec for stop ownership.
+            lines.extend([
+                'hermes_root="${HERMES_HOME:-/opt/data}"',
+                'case "${hermes_root%/*}" in */profiles) hermes_root="${hermes_root%/profiles/*}" ;; esac',
+                f'export HERMES_HOME="$hermes_root/profiles/"{shlex.quote(profile)}',
+            ])
             gateway_cmd = f"hermes -p {shlex.quote(profile)} gateway run --replace"
         # Skip the drop when already non-root (setgroups() lacks CAP_SETGID → s6 boot-loop).
         lines.append(f'[ "$(id -u)" = 0 ] || exec {gateway_cmd}')

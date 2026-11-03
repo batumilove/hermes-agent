@@ -7,15 +7,8 @@ from pathlib import Path
 import subprocess
 import threading
 import time
-from typing import Optional
 
 logger = logging.getLogger("cron.scheduler")
-
-
-# Worktree prune throttle: the cron tick is the only reliably periodic process on gateway boxes.
-_WORKTREE_MAINTENANCE_INTERVAL_SECONDS = 6 * 3600.0
-_last_worktree_maintenance_at: Optional[dict] = None  # profile home -> monotonic stamp
-_worktree_maintenance_lock = threading.Lock()
 
 
 def _worktree_maintenance_repos() -> list[str]:
@@ -57,36 +50,26 @@ def _worktree_maintenance_repos() -> list[str]:
 def _maybe_run_worktree_maintenance() -> None:
     """Throttled worktree prune from the cron tick, on a daemon thread so the tick never waits on
     git. Same pruner as ``hermes -w`` startup (idle dirty/unpushed trees archived before removal,
-    live trees untouched). Throttled per profile home: a multiplexed tick runs once per served
-    profile, and each must sweep its own registered repos under its own config. The thread runs in
-    a copy of the caller's context so the profile-home override travels with it. Errors never
-    propagate: GC is hygiene, not scheduling."""
-    global _last_worktree_maintenance_at
+    live trees untouched). Discovery is throttled per profile home; pruning is serialized and
+    throttled per repo across served profiles. The thread copies the caller's profile context.
+    Errors never propagate: GC is hygiene, not scheduling."""
+    from cron import scheduler
     from hermes_constants import get_hermes_home
 
     home = str(get_hermes_home())
     now = time.monotonic()
-    with _worktree_maintenance_lock:
-        stamps = _last_worktree_maintenance_at or {}
+    with scheduler._worktree_maintenance_lock:
+        stamps = scheduler._last_worktree_maintenance_at or {}
         last = stamps.get(home)
-        if last is not None and now - last < _WORKTREE_MAINTENANCE_INTERVAL_SECONDS:
+        if last is not None and now - last < scheduler._WORKTREE_MAINTENANCE_INTERVAL_SECONDS:
             return
-        _last_worktree_maintenance_at = {**stamps, home: now}
+        scheduler._last_worktree_maintenance_at = {**stamps, home: now}
 
     def _run() -> None:
-        try:
-            repos = _worktree_maintenance_repos()
-            if not repos:
-                return
-            from hermes_cli.worktree_ops import _prune_stale_worktrees
+        from cron.scheduler_worktree_maintenance import run_sweep
 
-            for repo in repos:
-                try:
-                    _prune_stale_worktrees(repo)
-                except Exception:
-                    logger.debug("Cron worktree maintenance failed for %s", repo, exc_info=True)
-        except Exception:
-            logger.debug("Cron worktree maintenance skipped", exc_info=True)
+        run_sweep(scheduler._worktree_maintenance_repos,
+                  interval_seconds=scheduler._WORKTREE_MAINTENANCE_INTERVAL_SECONDS)
 
     threading.Thread(target=contextvars.copy_context().run, args=(_run,), name="cron-worktree-prune",
                      daemon=True).start()

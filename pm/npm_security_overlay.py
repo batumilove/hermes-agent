@@ -20,7 +20,7 @@ OVERLAY_URL = f"https://registry.npmjs.org/brace-expansion/-/brace-expansion-{BR
 _PAYLOAD = ".npm-security-overlay"
 _RECEIPT = ".npm-security-overlay.json"
 _REVIEWED_BUNDLES = {"5.0.9", "5.0.10", "5.0.11", "5.0.12"}
-UNDICI_FLOOR = "6.29.0"
+UNDICI_FLOOR = "6.29.1"
 UNDICI_OVERLAY_URL = f"https://registry.npmjs.org/undici/-/undici-{UNDICI_FLOOR}.tgz"
 
 

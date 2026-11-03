@@ -210,10 +210,11 @@ def test_bad_undici_overlay_cannot_replace_published_npm(stage_setup, damage):
     assert tree_digest(entry) == before
 
 
-def test_verifier_rejects_stale_undici_inside_existing_npm(stage_setup):
+@pytest.mark.parametrize("stale_version", ["6.28.0", "6.29.0"])
+def test_verifier_rejects_stale_undici_inside_existing_npm(stage_setup, stale_version):
     store, lock, _calls, _selection = stage_setup
     _pin(store, lock, _bundle_files())
     entry = _publish(stage_setup, "linux-x64")
     metadata = entry / "lib/node_modules/npm/node_modules/undici/package.json"
-    metadata.write_text(json.dumps({"name": "undici", "version": "6.28.0"}), encoding="utf-8")
+    metadata.write_text(json.dumps({"name": "undici", "version": stale_version}), encoding="utf-8")
     assert get_package("npm").verify(entry, "linux-x64")

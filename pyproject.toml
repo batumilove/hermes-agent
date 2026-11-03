@@ -303,6 +303,9 @@ matrix = [
 # and XXE. aiohttp/httpx are already in [messaging]; defusedxml lands
 # here to keep the dependency local to wecom_callback's threat model.
 wecom = ["defusedxml==0.7.1"]
+# Opt-in OS-keychain storage for the local credential vault key (vault.key_storage: keychain).
+# Lazy-installed by `hermes vault key migrate --to keychain`, so NOT in [all].
+keychain = ["keyring==25.7.0"]
 tts-premium = ["elevenlabs==1.59.0"]
 voice = [
   # Local STT pulls in wheel-only transitive deps (ctranslate2, onnxruntime).
@@ -374,6 +377,24 @@ google-chat = [
 # bundles firecrawl-anydoc==0.2.4; the extra exists so a lean/broken install
 # can re-sync exactly the pin from core.
 doc-extract = ["firecrawl-anydoc==0.2.4"]
+# Office/PDF authoring libraries for skills/productivity/{docx,xlsx,powerpoint,pdf}.
+# Baked into the Docker image (Dockerfile `--extra documents`), whose sealed
+# venv has no pip and whose root fs resets on restart; ~25 MB there. Not in
+# [all]: plain installs keep the skills' persistent side environment instead.
+documents = [
+  "python-docx==1.2.0",
+  "openpyxl==3.1.5",
+  "python-pptx==1.0.2",
+  "reportlab==5.1.0",
+  "pypdf==6.21.4",
+]
+# PDF text extraction and rasterization for skills/productivity/pdf. Only in
+# the skills' side environment (`hermes pm environment documents --extra
+# documents --extra documents-pdf`), never baked: ~17 MB of pdfminer/pdfium.
+documents-pdf = [
+  "pdfplumber==0.11.10",
+  "pypdfium2==5.14.0",
+]
 trace-upload = ["huggingface-hub==1.33.0"]
 # Cloud memory providers are opt-in PM extras. They stay outside [all]
 # so a quarantined release cannot break fresh installs.
@@ -481,9 +502,9 @@ google = [
   # The Google SDKs permit older vulnerable transitives, so unlocked installs
   # must carry the same fixed floors as uv.lock and the runtime installers:
   # httplib2 0.32.0 (GHSA-j5g9-f88f-gfj3 decompression bomb DoS),
-  # pyasn1 0.6.4, google-auth 2.55.1.
+  # pyasn1 0.6.5, google-auth 2.55.1.
   "httplib2==0.32.0",
-  "pyasn1==0.6.4",
+  "pyasn1==0.6.5",
 ]
 youtube = [
   # Required by skills/media/youtube-content and
@@ -616,7 +637,7 @@ constraint-dependencies = [
   # consumers to every installation. Preserve the next-major upper bounds.
   "multidict>=6.9.1,<7",  # GHSA-54p9-h82j-f925
   "oauthlib>=4.0.0,<5",  # GHSA-hj66-6f7g-4r5v, GHSA-xpv3-w29h-x7cv
-  "tornado>=6.5.9,<7",  # GHSA-3hv7-mjh2-fv65, GHSA-c2m8-h5v5-343r, GHSA-chx6-46f5-w4vp
+  "tornado>=6.6,<7",  # GHSA-pcg2-g6cj-q92c, GHSA-pw9p-v7r6-gx4p, GHSA-r4j5-9xpp-3985
 ]
 # uv otherwise enables the dev group by default, including in payload builds.
 default-groups = []
@@ -713,6 +734,7 @@ hermes_cli = [
   "observability/schemas/*.json",
   "data/*.json",
   "local_runtime/*.json",
+  "process_supervisor.sh",
 ]
 # gateway/assets/ ships status_phrases.yaml and the Telegram BotFather
 # screenshot. Without this, sealed venvs (uv2nix) silently lose both —
@@ -723,7 +745,9 @@ gateway = ["assets/**/*"]
 # Bundled plugin discovery reads these manifests at runtime. Keep them in
 # sealed wheels with the plugin Python modules; without this declaration the
 # wheel contains adapters but discovery finds zero bundled plugins.
-plugins = ["**/plugin.yaml", "**/plugin.yml"]
+# The remote config backend checks its vendored config-plane conformance fixtures (secret-key
+# list) at runtime: plugins/config_backends/remote/values.py.
+plugins = ["**/plugin.yaml", "**/plugin.yml", "config_backends/remote/vendor/**/*"]
 # pm/lock.json is the runtime pin table (uv/python/tool versions + sha256s).
 # Without it a sealed wheel installs the pm package but has no pins to
 # realize — the pm store would be empty.

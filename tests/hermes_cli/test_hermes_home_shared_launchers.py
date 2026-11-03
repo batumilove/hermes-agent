@@ -25,6 +25,9 @@ def _make_home(base: Path, name: str) -> tuple[Path, Path]:
     python.touch()
     exe = entry / "python.exe"
     exe.touch()
+    if os.name == 'nt':
+        from tests.native_supplier import unpack_supplier
+        unpack_supplier(entry / 'Lib/site-packages')
     (store / "facts.json").write_text(json.dumps({
         "schema": 1,
         "packages": {"python": {"version": "fixture", "entry": entry.name}},
@@ -42,6 +45,9 @@ def _repoint_store(home: Path, name: str) -> Path:
     python.touch()
     exe = entry / "python.exe"
     exe.touch()
+    if os.name == 'nt':
+        from tests.native_supplier import unpack_supplier
+        unpack_supplier(entry / 'Lib/site-packages')
     (store / "facts.json").write_text(json.dumps({
         "schema": 1,
         "packages": {"python": {"version": "fixture", "entry": entry.name}},

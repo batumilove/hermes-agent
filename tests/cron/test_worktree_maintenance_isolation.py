@@ -20,7 +20,7 @@ def test_cold_worktree_maintenance_preserves_terminal_cwd(tmp_path):
 import os
 import sys
 import threading
-from cron import scheduler_worktree
+from cron import scheduler
 from hermes_cli import worktree_ops
 
 assert 'cli' not in sys.modules, 'requires a cold CLI import'
@@ -38,8 +38,8 @@ def observed_prune(repo):
         finished.set()
 
 worktree_ops._prune_stale_worktrees = observed_prune
-scheduler_worktree._worktree_maintenance_repos = lambda: [sys.argv[1]]
-scheduler_worktree._maybe_run_worktree_maintenance()
+scheduler._worktree_maintenance_repos = lambda: [sys.argv[1]]
+scheduler._maybe_run_worktree_maintenance()
 assert finished.wait(30), 'maintenance did not finish'
 assert not errors, errors
 assert os.environ['TERMINAL_CWD'] == before

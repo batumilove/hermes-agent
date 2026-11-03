@@ -63,6 +63,10 @@ def main(argv: Optional[list[str]] = None, *, run: Optional[Callable[..., object
     Metadata flags and a bare invocation never reach the runner; ``run`` lets
     ``python run_agent.py`` pass its own ``main`` instead of importing the module twice.
     """
+    from hermes_platform.support import require_supported_host
+
+    require_supported_host()
+
     parser = _build_parser()
     args = parser.parse_args(argv)
     positional = " ".join(args.prompt).strip()

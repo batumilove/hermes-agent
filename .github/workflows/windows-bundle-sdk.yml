@@ -22,6 +22,8 @@ concurrency:
   cancel-in-progress: true
 jobs:
   windows-bundle-tools:
+    # This fork supports standard Linux and macOS only.
+    if: ${{ false }}
     name: Cold Windows SDK (${{ matrix.runner }})
     runs-on: ${{ matrix.runner }}
     # Cold ARM64 npm extraction alone can exceed 15 minutes on the hosted runner.

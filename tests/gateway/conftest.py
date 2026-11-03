@@ -32,12 +32,32 @@ incident.
 """
 
 import ast
+import importlib
 import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _join_api_turn_workers():
+    """Join the API turn workers a test left running, as its loop's teardown used to.
+
+    API turns ran on the loop's default executor, which each test's loop teardown joined. They now
+    run on ``api_server_runs``' own executor, which only an adapter disconnect retires, and most
+    API-server tests never disconnect: a worker still finishing would raise the process-global
+    ``api_worker_live_count`` inside the next test (the shutdown close-gate tests read it).
+    """
+    yield
+    executor = None
+    if sys.modules.get("gateway.platforms.api_server_runs") is not None:
+        # A bounded shutdown can leave another thread importing the module; wait for its lock.
+        runs = importlib.import_module("gateway.platforms.api_server_runs")
+        executor = runs.retire_api_turn_executor()
+    for thread in list(getattr(executor, "_threads", ())):
+        thread.join(30)
 
 
 @pytest.fixture
@@ -255,6 +275,11 @@ def _ensure_discord_mock() -> None:
         def __init__(self, timeout=None):
             self.timeout = timeout
             self.children = []
+            self._finished = False
+        def stop(self):
+            self._finished = True
+        def is_finished(self):
+            return self._finished
         def add_item(self, item):
             self.children.append(item)
         def clear_items(self):

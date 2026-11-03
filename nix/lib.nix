@@ -214,6 +214,7 @@ let
     [
       (repoRoot + "/package.json")
       (repoRoot + "/package-lock.json")
+      (repoRoot + "/vendor/npm/minimatch-compat")
     ]
     ++ map (d: repoRoot + "/${d}/package.json") workspaceMemberDirs
   );
@@ -256,6 +257,9 @@ let
   # keep in sync with it.
   npmDeps = importNpmLock.importNpmLock {
     npmRoot = npmDepsSrc;
+    # importNpmLock treats relative directory resolutions as workspace links;
+    # this installed local package is packed instead, with its own dependencies.
+    packageSourceOverrides."node_modules/minimatch" = repoRoot + "/vendor/npm/minimatch-compat";
     package = rootPackageJson // lib.optionalAttrs (rootPackageJson ? overrides) {
       overrides = offlineOverrides;
     };
@@ -309,6 +313,7 @@ let
         # so npmConfigHook finds the lockfile there.
         src = mkNpmSrc dirs;
         npmConfigHook = patchedNpmConfigHook;
+        npm_config_install_links = "true";
         npmRoot = ".";
         ELECTRON_SKIP_BINARY_DOWNLOAD = 1;
         passthru = {
@@ -353,7 +358,7 @@ in
 
     # importNpmLock reads hashes from the lockfile itself — rebuild every
     # npm package to verify the new lockfile resolves offline.
-    nix build .#tui .#web .#desktop
+    nix build .#tui .#web .#webapp .#desktop
     echo "Lockfile updated and all npm packages built."
   '';
 

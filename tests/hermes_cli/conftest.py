@@ -103,6 +103,15 @@ def _source_channels_resolve_locally(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_detached_commit_graph_writer(monkeypatch):
+    """The update's maintenance starts a detached ``git commit-graph write`` on the checkout it ran
+    from: in a test, this repository or a tmp copy deleted under it. In-process runs never spawn it."""
+    from hermes_cli import git_commit_graph
+
+    monkeypatch.setattr(git_commit_graph, "spawn_commit_graph_refresh", lambda root: False)
+
+
+@pytest.fixture(autouse=True)
 def _discharge_host_update_obligation():
     """Start and end every ``hermes_cli`` test with NO host update-restart obligation.
 
@@ -178,3 +187,42 @@ def probe_root(tmp_path):
     """
     (tmp_path / "hermes_bootstrap.py").write_text("", encoding="utf-8")
     return tmp_path
+
+
+@pytest.fixture(params=["v0.22.0", "v0.23.0"])
+def release_repo(tmp_path, monkeypatch, request):
+    import json
+    from hermes_cli import upstream_compatibility as compat
+    from tests.hermes_cli.test_upstream_release_custody import git
+
+    repo = tmp_path
+    git(repo, "init", "-q")
+    # Setup commits must not leave background Git maintenance changing the object
+    # directory while the admission tests verify that validation is read-only.
+    git(repo, "config", "maintenance.auto", "false")
+    git(repo, "config", "gc.auto", "0")
+    git(repo, "config", "user.name", "Fixture")
+    git(repo, "config", "user.email", "fixture@example.invalid")
+    folder = repo / ".github"
+    folder.mkdir()
+    (repo / "payload").write_text("release", encoding="utf-8")
+    git(repo, "add", ".")
+    git(repo, "commit", "-qm", "release")
+    release = git(repo, "rev-parse", "HEAD")
+    git(repo, "tag", "-a", request.param, "-m", "fixture")
+    anchor = dict(repository="NousResearch/hermes-agent", release_id=1,
+                  release_tag=request.param, release_commit=release,
+                  tag_object=git(repo, "rev-parse", request.param), published_at="2026-10-14T03:21:46Z")
+    (folder / "upstream-base").write_text(release, encoding="utf-8")
+    git(repo, "add", ".")
+    git(repo, "commit", "-qm", "import")
+    source = git(repo, "rev-parse", "HEAD")
+    proof = dict(version=2, upstream_base=release, source_head=source,
+                 import_tree=git(repo, "rev-parse", "HEAD^{tree}"), fetch_depth=8)
+    receipt = dict(anchor, schema=1, proof=proof, squash_commit=source)
+    (repo / compat.PROVENANCE_PATH).write_text(json.dumps(proof), encoding="utf-8")
+    (repo / compat.RECEIPT_PATH).write_text(json.dumps(receipt), encoding="utf-8")
+    git(repo, "add", ".")
+    git(repo, "commit", "-qm", "custody")
+    monkeypatch.setattr(compat, "REVIEWED_RELEASES", (anchor,), raising=False)
+    return repo, receipt

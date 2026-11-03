@@ -69,7 +69,7 @@ const BUILD_CACHE = './.github/actions/desktop-build-cache'
 const cacheUsers = workflow => Object.entries(workflow.jobs)
   .filter(([, job]) => (job.steps ?? []).some(step => step.uses === BUILD_CACHE))
 const targetOf = job => job.strategy.matrix.target.map(row => row.label)
-const desktopLegs = cacheUsers(desktop)
+const desktopLegs = cacheUsers(desktop).filter(([, job]) => targetOf(job).every(target => target.startsWith('darwin-')))
 
 const SHA = 'a'.repeat(40)
 const dispatches = {
@@ -89,7 +89,7 @@ const payloadEvents = {
 
 it('finds a release and a commit leg for every native target, and the payload producer', () => {
   const legs = desktopLegs.map(([, job]) => `${targetOf(job)}:${job['cache-mode']}`).sort()
-  const targets = ['darwin-arm64', 'darwin-x64', 'win32-arm64', 'win32-x64']
+  const targets = ['darwin-arm64', 'darwin-x64']
   expect(legs).toEqual(targets.flatMap(target => [`${target}:read`, `${target}:write`]).sort())
   expect(cacheUsers(payload)).toHaveLength(1)
 })
@@ -162,8 +162,8 @@ it.each([
 
 it('each selection gate joins exactly one target\'s two trust branches after admission', () => {
   const legs = Object.fromEntries(desktopLegs.map(([id, job]) => [id, job]))
-  const gates = Object.values(desktop.jobs).filter(job => job.env?.SELECTED_BUILD_SUCCEEDED)
-  expect(gates).toHaveLength(4)
+  const gates = Object.values(desktop.jobs).filter(job => job.env?.SELECTED_BUILD_SUCCEEDED && job.needs.some(id => legs[id]))
+  expect(gates).toHaveLength(2)
   for (const gate of gates) {
     const [admission, ...branches] = gate.needs
     expect(admission).toBe('validate')
@@ -176,5 +176,15 @@ it('each selection gate joins exactly one target\'s two trust branches after adm
     expect(evaluate(gate.if, { inputs: dispatches.tag, needs })).toBe(true)
     expect(evaluate(gate.if, { inputs: dispatches.tag,
       needs: { validate: { ...needs.validate, result: 'failure' } } })).toBe(false)
+  }
+})
+
+it('unsupported native cache jobs cannot run for any supported dispatch', () => {
+  const unsupported = cacheUsers(desktop).filter(([, job]) => targetOf(job).some(target => target.startsWith('win32-')))
+  expect(unsupported.length).toBeGreaterThan(0)
+  for (const [, job] of unsupported) {
+    for (const inputs of Object.values(dispatches)) {
+      expect(evaluate(job.if, { inputs, needs: admitted(targetOf(job)) })).toBe(false)
+    }
   }
 })

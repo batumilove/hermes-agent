@@ -15,6 +15,8 @@
 param([switch]$RuntimeOnly, [string]$TestExtras = '')
 $ErrorActionPreference = 'Stop'
 
+throw "This fork supports standard Linux and macOS only. Use setup-hermes.sh inside WSL2 instead of native Windows."
+
 Write-Host ''
 Write-Host 'Hermes Agent Setup' -ForegroundColor Cyan
 Write-Host ''

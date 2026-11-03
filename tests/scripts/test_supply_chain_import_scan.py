@@ -83,6 +83,12 @@ def scan_import(tmp_path, request):
     (repo / "scripts").mkdir()
     for name in ("fork_check_base.py", "fork_provenance.py"):
         shutil.copyfile(ROOT / "scripts" / name, repo / "scripts" / name)
+    (repo / "scripts/ci").mkdir()
+    shutil.copyfile(ROOT / "scripts/ci/reviewed_supply_chain_fixtures.py",
+                    repo / "scripts/ci/reviewed_supply_chain_fixtures.py")
+    (repo / "hermes_cli").mkdir()
+    for name in ("__init__.py", "fork_provenance.py"):
+        shutil.copyfile(ROOT / "hermes_cli" / name, repo / "hermes_cli" / name)
     return repo, previous, tip, official
 
 
@@ -93,7 +99,7 @@ def _run_scan(repo, base, head, tmp_path):
     scan = scan.replace("${{ github.event.pull_request.head.sha }}", head)
     output = tmp_path / "scan-output"
     output.unlink(missing_ok=True)
-    environment = dict(os.environ, GITHUB_OUTPUT=str(output))
+    environment = dict(os.environ, GITHUB_REPOSITORY="fixture/test", GITHUB_OUTPUT=str(output))
     result = subprocess.run(["bash", "-c", scan], cwd=repo, env=environment,
                             capture_output=True, text=True, check=False, timeout=30)
     return result, output.read_text(encoding="utf-8") if output.exists() else ""

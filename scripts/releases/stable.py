@@ -674,6 +674,7 @@ def summary(text: str, env: dict) -> None:
 def admit(env: dict) -> None:
     """Admit the claim. The checkout carries 0.0.0, so the tag is the version."""
     admitted = check_claim(env)
+    lane_set.require_supported_lanes(admitted["lanes"])
     repository = env["GITHUB_REPOSITORY"]
     release = json.loads(output([
         "gh", "release", "view", admitted["claim_tag"], "--repo", repository,

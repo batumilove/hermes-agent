@@ -23,7 +23,7 @@ const IS_CI = Boolean(process.env.GITHUB_ACTIONS)
 const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm'
 
 /** @returns {{pkg: string, script: string}[]} */
-function discoverUnits() {
+export function discoverUnits() {
   const raw = execFileSync(NPM, ['query', '.workspace'], {
     encoding: 'utf-8',
     shell: process.platform === 'win32',
@@ -76,7 +76,9 @@ function runUnit(unit) {
 
 async function main() {
   const argv = process.argv.slice(2)
-  const units = discoverUnits()
+  const discovered = discoverUnits()
+  const units = argv.includes('--without-desktop-ui')
+    ? (await import('./ui-sharding.mjs')).planUnits(discovered).other : discovered
 
   if (units.length === 0) {
     console.error(
@@ -140,4 +142,4 @@ async function main() {
   console.log(`\nall ${results.length} checks passed`)
 }
 
-await main()
+if (process.argv[1] && import.meta.url === (await import('node:url')).pathToFileURL(process.argv[1]).href) await main()

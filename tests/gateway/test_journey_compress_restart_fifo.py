@@ -194,11 +194,20 @@ def test_followers_survive_compression_and_restart_in_order_exactly_once(tmp_pat
         order = [r['text'] for r in peer.requests if r['model'] == 'original' and r['text'] in FOLLOWERS]
         assert order == list(FOLLOWERS), order
         assert executed(compacting['text'][:12]) == before['compacting_requests'], 'compacted turn replayed'
+        # Compression also preserves a minimum recent tail. Which pressure turn falls inside it
+        # depends on the imported compressor's token accounting; use the rows actually summarized.
+        removed = {
+            str(m['content']) for request in peer.requests if request['model'] == 'original'
+            and 'SUMMARY_RETAINED_FACTS' not in request['wire'] for m in json.loads(request['wire'])
+            if str(m.get('content', '')).startswith(('PRESSURE_', 'ACK_PRESSURE_'))
+            and not any(str(m['content']) in str(c) for _, _, c in before['compacted'])
+        }
+        assert removed, 'compression must replace historical pressure rows with the summary'
         for name in FOLLOWERS:
             wire = next(r['wire'] for r in peer.requests if r['text'] == name)
-            # protect_first_n keeps PRESSURE_0 verbatim; the compacted middle is only inside the summary.
             turns = [str(m.get('content', '')) for m in json.loads(wire)]
-            assert 'SUMMARY_RETAINED_FACTS' in wire and not any(t.startswith('PRESSURE_1 ') for t in turns), name
+            assert 'SUMMARY_RETAINED_FACTS' in wire, name
+            assert not any(old in turn for old in removed for turn in turns), name
         settled = admissions()
         assert {r['target_session_id'] for r in settled} == {sid}
         assert [r['request_id'] for r in settled][-3:] == list(FOLLOWERS)

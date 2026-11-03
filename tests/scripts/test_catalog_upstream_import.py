@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from scripts import fork_provenance
+from hermes_cli import fork_provenance
 from scripts.ci.catalog_upstream_import import verify_import
 
 
@@ -97,7 +97,7 @@ def test_receipt_cannot_authorize_a_different_import(tmp_path, mutation):
         verify_import(repo, head, previous, official)
 
 
-@pytest.mark.parametrize("kind", ["official", "catalog-only", "mixed"])
+@pytest.mark.parametrize("kind", ["official", "canonical", "catalog-only", "mixed"])
 def test_workflow_routes_only_authenticated_imports_away_from_readmission(tmp_path, kind):
     repo, previous, official, _head = imported(tmp_path)
     root = Path(__file__).resolve().parents[2]
@@ -105,7 +105,12 @@ def test_workflow_routes_only_authenticated_imports_away_from_readmission(tmp_pa
     git(repo, "clone", "--bare", "--single-branch", "--branch", "official", str(repo), str(remote))
     git(remote, "update-ref", "refs/heads/main", official)
     git(repo, "config", f"url.{remote.as_uri()}.insteadOf", "https://github.com/NousResearch/hermes-agent.git")
-    if kind != "official":
+    if kind == "canonical":
+        (repo / "core.py").write_text("accepted later fix\n")
+        canonical = commit(repo, "canonical later fix")
+        git(repo, "update-ref", "refs/heads/batumi/live", canonical)
+        git(repo, "config", f"url.{repo.as_uri()}.insteadOf", "https://github.com/batumilove/hermes-agent.git")
+    elif kind != "official":
         git(repo, "checkout", "-qb", "admission", previous)
         (repo / "plugin-catalog/example.yaml").write_text("new admission\n")
         if kind == "mixed":
@@ -114,7 +119,9 @@ def test_workflow_routes_only_authenticated_imports_away_from_readmission(tmp_pa
     branch = git(repo, "branch", "--show-current")
     git(repo, "checkout", "main")
     git(repo, "merge", "--no-ff", branch, "-m", "PR merge")
-    for relative in ("scripts/fork_provenance.py", "scripts/ci/catalog_upstream_import.py"):
+    # The scripts compatibility import delegates to the packaged runtime helper.
+    for relative in ("scripts/fork_provenance.py", "scripts/fork_check_base.py", "scripts/ci/catalog_upstream_import.py",
+                     "hermes_cli/__init__.py", "hermes_cli/fork_provenance.py"):
         destination = repo / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(root / relative, destination)
@@ -123,12 +130,59 @@ def test_workflow_routes_only_authenticated_imports_away_from_readmission(tmp_pa
     command = next(step["run"] for step in steps if step.get("id") == "changed")
     output = tmp_path / "outputs"
     result = subprocess.run(["bash", "-euo", "pipefail", "-c", command], cwd=repo,
-                            env={**os.environ, "GITHUB_OUTPUT": str(output)},
+                            env={**os.environ, "GITHUB_REPOSITORY": "batumilove/hermes-agent" if kind == "canonical" else "fixture/test",
+                                 "GITHUB_BASE_REF": "main", "GITHUB_OUTPUT": str(output)},
                             capture_output=True, text=True, timeout=30, check=False)
     if kind == "mixed":
         assert result.returncode != 0
         assert not output.exists()
     else:
         assert result.returncode == 0, result.stdout + result.stderr
-        assert f"official_import={str(kind == 'official').lower()}\n" in output.read_text()
+        assert f"official_import={str(kind in {'official', 'canonical'}).lower()}\n" in output.read_text()
         assert "plugin-catalog/example.yaml" in output.read_text()
+
+
+def test_exact_canonical_promotion_retains_the_import_and_later_fixes(tmp_path):
+    from scripts.fork_check_base import comparison_base
+
+    repo, previous, official, _ = imported(tmp_path)
+    (repo / "core.py").write_text("accepted later fix\n")
+    canonical = commit(repo, "accepted canonical fix")
+    git(repo, "checkout", "main")
+    git(repo, "merge", "--no-ff", "review", "-m", "promote canonical source")
+    head = git(repo, "rev-parse", "HEAD")
+    with pytest.raises(fork_provenance.ProvenanceError):
+        verify_import(repo, head, previous, official)
+    with pytest.raises(fork_provenance.ProvenanceError):
+        comparison_base(repo, previous, head, official_tip=official)
+    assert verify_import(repo, head, previous, official, canonical_tip=canonical) == official
+    assert comparison_base(repo, previous, head, official_tip=official,
+                           canonical_tip=canonical) == official
+
+
+@pytest.mark.parametrize("fault", ["extra-source", "catalog", "unrelated"])
+def test_canonical_promotion_cannot_authorize_different_source_or_history(tmp_path, fault):
+    from scripts.fork_check_base import comparison_base
+
+    repo, previous, official, _ = imported(tmp_path)
+    (repo / "core.py").write_text("accepted later fix\n")
+    canonical = commit(repo, "accepted canonical fix")
+    if fault == "unrelated":
+        tree = git(repo, "rev-parse", "HEAD^{tree}")
+        canonical = git(repo, "commit-tree", tree, "-m", "unrelated same tree")
+    else:
+        path = "core.py" if fault == "extra-source" else "plugin-catalog/example.yaml"
+        (repo / path).write_text("not in canonical\n")
+        commit(repo, "unaccepted change")
+    with pytest.raises(fork_provenance.ProvenanceError):
+        verify_import(repo, "HEAD", previous, official, canonical_tip=canonical)
+    with pytest.raises(fork_provenance.ProvenanceError):
+        comparison_base(repo, previous, official_tip=official, canonical_tip=canonical)
+
+
+def test_even_canonical_promotion_requires_the_official_catalog_bytes(tmp_path):
+    repo, previous, official, _ = imported(tmp_path)
+    (repo / "plugin-catalog/example.yaml").write_text("fork-only pin\n")
+    canonical = commit(repo, "fork catalog drift")
+    with pytest.raises(fork_provenance.ProvenanceError, match="catalog tree differs"):
+        verify_import(repo, canonical, previous, official, canonical_tip=canonical)

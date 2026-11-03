@@ -11,6 +11,7 @@
 #
 services:
   gateway:
+    stop_grace_period: 90s
     image: nousresearch/hermes-agent:latest
     container_name: hermes
     restart: unless-stopped

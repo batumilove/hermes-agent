@@ -201,6 +201,7 @@ jobs:
           fi
           python3 scripts/write_install_stamp.py --output install-stamp.json \
             --distribution docker --update-mechanism external --source ci "${identity[@]}"
+          python3 -m scripts.build.image_identity --repo . --stamp install-stamp.json
       - name: Reject profile exports in the build context
         run: python3 scripts/ci/check_profile_archive_boundary.py
 
@@ -380,6 +381,7 @@ jobs:
           fi
           python3 scripts/write_install_stamp.py --output install-stamp.json \
             --distribution docker --update-mechanism external --source ci "${identity[@]}"
+          python3 -m scripts.build.image_identity --repo . --stamp install-stamp.json
       - name: Reject profile exports in the build context
         run: python3 scripts/ci/check_profile_archive_boundary.py
 

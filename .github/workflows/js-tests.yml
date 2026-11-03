@@ -14,14 +14,12 @@ permissions:
 
 jobs:
   check:
-    name: JS & TS checks
-    # One job replaces a 14-leg matrix. The matrix spread about 612s
-    # of check payload over 4-core runners. It paid about 371s of repeated
-    # setup to do it: 14 checkouts, 14 node installs, 14 node_modules
-    # restores.
-    #
-    # The runner installs one time. vitest, tsc and eslint each size
-    # their own worker pool from the core count.
+    name: JS & TS checks (${{ matrix.lane }})
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [other, '1', '2', '3', '4']
+    # Four isolated UI partitions; dynamic non-UI checks execute once.
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -50,9 +48,10 @@ jobs:
       # The job then extracts the full workspace node_modules
       # again and runs the native postinstalls again. Electron's binary is
       # prepared explicitly below. This caches the installed tree itself, keyed on the
-      # lockfile, and skips ``npm ci`` on an exact hit. There are no
-      # restore-keys: a partial hit leaves a stale tree, so anything other
-      # than an exact lockfile match reinstalls from the start.
+      # lockfile and local dependency sources, and skips ``npm ci`` on an exact hit.
+      # There are no restore-keys: a partial hit leaves a stale tree, so anything other
+      # than an exact input match reinstalls from the start. Vendored file dependencies
+      # are copied into node_modules, so their source bytes must invalidate the tree.
       #
       # This install runs only scripts admitted by the reviewed exact-version
       # policy; strict mode rejects missing trusted lockfile identities.
@@ -75,7 +74,7 @@ jobs:
             ui-tui/packages/*/node_modules
             tests-js/node_modules
             web/node_modules
-          key: node-modules-scripts-v2-${{ runner.os }}-${{ runner.arch }}-node${{ steps.node.outputs.node-version }}-npm${{ steps.node.outputs.npm-version }}-${{ hashFiles('package-lock.json', 'package.json', '.npmrc', 'pm/lock.json') }}
+          key: node-modules-scripts-v2-${{ runner.os }}-${{ runner.arch }}-node${{ steps.node.outputs.node-version }}-npm${{ steps.node.outputs.npm-version }}-${{ hashFiles('package-lock.json', 'package.json', '.npmrc', 'pm/lock.json', 'vendor/npm/**') }}
 
       - uses: ./.github/actions/retry
         if: steps.node-modules-cache.outputs.cache-hit != 'true'
@@ -92,29 +91,56 @@ jobs:
       - name: Prepare locked Electron runtime before parallel checks
         run: node scripts/build/electron-runtime.mjs --source .
 
-      # Two checks run at a time on the standard four-core runner; each check
-      # owns its own worker pool. The step fails only after all of
-      # them finish. There are two reasons this is not ``npm run --ws check``.
-      #
-      #   * ``--ws`` is serial and stops at the first workspace that fails. A
-      #     run then reports one failure, where the matrix this replaced
-      #     reported every failure together.
-      #   * The unit of work is a CHECK, and not a workspace. apps/desktop is
-      #     most of the payload, and its own ``check`` is a serial && chain.
-      #     A spread across workspaces alone leaves that chain as the long
-      #     pole. This expands the ``check:*`` sub-scripts of a package, so
-      #     its lint, ui, electron and plugin suites all run together. That
-      #     is the same selection rule the old matrix job used.
-      #
-      # Discovery is ``npm query .workspace``. A new package or a new
-      # ``check:*`` script needs no change here. An empty list is an error and
-      # not an empty run, because an empty run reports green after it checks
-      # nothing.
-      - name: Run all workspace checks
-        run: node .github/scripts/run-workspace-checks.mjs --concurrency 2
+      # The WhatsApp bridge is a standalone npm package, outside the root
+      # workspaces, so run-workspace-checks never sees it. Two of its suites
+      # import @whiskeysockets/baileys, so install its own lockfile first;
+      # --ignore-scripts because the tests need no native build.
+      - name: Install WhatsApp bridge dependencies
+        if: matrix.lane == 'other'
+        uses: ./.github/actions/retry
+        with:
+          command: npm ci --ignore-scripts --no-audit --no-fund --prefix scripts/whatsapp-bridge
+      - name: Run WhatsApp bridge node tests
+        if: matrix.lane == 'other'
+        run: node --test scripts/whatsapp-bridge/*.test.mjs
+
+      - name: Protected sharding contracts
+        run: node --test .github/scripts/ui-sharding.test.mjs .github/scripts/ui-discovery.test.mjs
+      - name: Run discovered lane
+        run: node .github/scripts/run-ui-lane.mjs '${{ matrix.lane }}'
+      - name: Upload lane receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: js-lane-${{ matrix.lane }}
+          path: /var/tmp/hermes-ui-receipts/${{ matrix.lane }}.json
+          if-no-files-found: error
       - name: Check the checkout is clean
         # Last step of every job (tests/ci/test_clean_worktree_check.py): a test or CI step that
         # leaves an untracked or modified file in the checkout is reported here. Runs only when
         # every earlier step passed: a step that failed midway can leave its own temp files
         # (a half-extracted download, a worktree its later cleanup never removed).
+        uses: ./.github/actions/check-clean-worktree
+
+  aggregate:
+    name: JS coverage aggregate
+    if: always()
+    needs: [check]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ inputs.commit }}
+      - name: Require every selected matrix lane
+        env:
+          RESULT: ${{ needs.check.result }}
+        run: test "$RESULT" = success
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: js-lane-*
+          path: /var/tmp/js-lane-aggregate
+          merge-multiple: true
+      - name: Validate exact-once receipts
+        run: node .github/scripts/run-ui-lane.mjs aggregate /var/tmp/js-lane-aggregate
+      - name: Check the checkout is clean
         uses: ./.github/actions/check-clean-worktree
