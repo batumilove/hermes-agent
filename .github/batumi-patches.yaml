@@ -2821,6 +2821,7 @@ patches:
   paths:
   - agent/turn_liveness.py
   - gateway/run.py
+  - gateway/run_empty_response.py
   - locales/af.yaml
   - locales/ar.yaml
   - locales/de.yaml
