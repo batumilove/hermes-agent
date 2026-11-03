@@ -83,7 +83,13 @@ jobs:
           accepted=$(tr -d '[:space:]' < .github/upstream-base)
           [[ "$accepted" =~ ^[0-9a-f]{40}$ ]]
           git merge-base --is-ancestor "$accepted" refs/remotes/upstream/main
-          SCAN_BASE=$(python3 -m scripts.fork_check_base --comparison "$BASE" --official-tip refs/remotes/upstream/main)
+          set --
+          if [ "${GITHUB_REPOSITORY:-}" = "batumilove/hermes-agent" ] && [ "${GITHUB_BASE_REF:-}" = "main" ]; then
+            git fetch --filter=blob:none --no-tags https://github.com/batumilove/hermes-agent.git \
+              refs/heads/batumi/live:refs/remotes/accepted-canonical/live
+            set -- --canonical-tip refs/remotes/accepted-canonical/live
+          fi
+          SCAN_BASE=$(python3 -m scripts.fork_check_base --comparison "$BASE" --official-tip refs/remotes/upstream/main "$@")
 
           # Added lines only, excluding lockfiles.
           # An import's exact upstream tree may not be an ancestor after
