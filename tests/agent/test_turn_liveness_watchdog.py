@@ -802,3 +802,49 @@ def test_host_sleep_is_not_a_stalled_turn(monkeypatch, during_sample):
         poll()
     abort.assert_called_once()
     assert clock.mono - 1000.0 == 600.0
+
+
+def test_stall_dump_always_includes_the_turn_thread(monkeypatch, caplog):
+    """The watchdog's thread-stack dump must contain the stalled turn thread's
+    stack even when 40+ other threads crowd the process.
+
+    Regression for a live stall where the dump captured 40 threads, omitted
+    163 more, and the turn thread — the only stack that could localize the
+    wedge — was among the omitted, leaving the root cause undiagnosable.
+    """
+    import sys as _sys
+
+    from unittest.mock import MagicMock as _MagicMock
+
+    from agent import activity_tracking as _activity_tracking, turn_liveness as _turn_liveness
+
+    agent = _activity_tracking.ActivityTrackingMixin()
+    watchdog = _turn_liveness.TurnLivenessWatchdog(
+        agent, session_id="dump-test", timeout_s=600, poll_s=15,
+        stop_event=threading.Event(), activity_lock=agent._liveness_activity_lock(),
+        is_turn_active=lambda: True, commit_abort=_MagicMock(), deactivate_turn=_MagicMock(),
+    )
+
+    def blocked_turn_frame():
+        return _sys._getframe()
+
+    # The turn thread's live frame, ordered LAST among 60 frames so a capped
+    # first-N loop can never reach it.
+    turn_ident = 0xBEEF
+    turn_frame = blocked_turn_frame()
+    fake_frames = {ident: turn_frame for ident in range(60)}
+    fake_frames[turn_ident] = turn_frame
+    agent._execution_thread_id = turn_ident
+    monkeypatch.setattr(_sys, "_current_frames", lambda: dict(fake_frames))
+
+    with caplog.at_level(logging.ERROR, logger="agent.turn_liveness"):
+        watchdog._dump_turn_thread_stack()
+
+    dump = caplog.records[-1].getMessage()
+    assert "<- turn thread" in dump, "turn thread missing from the stall dump"
+    assert "blocked_turn_frame" in dump, "turn thread's own frames were not captured"
+    omitted_at = dump.find("more threads omitted")
+    marker_at = dump.find("<- turn thread")
+    assert omitted_at == -1 or marker_at < omitted_at, (
+        "the turn thread must be dumped before the cap drops threads"
+    )

@@ -174,12 +174,16 @@ class TurnLivenessWatchdog:
             lines = ["## All thread stacks at turn stall (watchdog dump)"]
             by_ident = {t.ident: t for t in threading.enumerate() if t.ident}
             turn_ident = getattr(self._agent, "_execution_thread_id", None)
+            # The turn thread is dumped FIRST, before the cap: a crowded process otherwise drops it
+            # from the capture, and its frame is the only direct evidence localizing the wedge.
+            idents = sorted(frames, key=lambda ident: ident != turn_ident)
             dumped = 0
-            for ident, frame in frames.items():
+            for ident in idents:
                 if dumped >= 40:
                     lines.append(f"  <{len(frames) - dumped} more threads omitted>")
                     break
                 dumped += 1
+                frame = frames[ident]
                 thread = by_ident.get(ident)
                 name = thread.name if thread is not None else "?"
                 marker = " <- turn thread" if ident == turn_ident else ""

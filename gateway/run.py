@@ -3119,6 +3119,12 @@ def _normalize_empty_agent_response(
         # (response=0 chars) and the user sees no reply at all. Surface a short retry hint so the message
         # isn't lost in silence. (#31884)
         if api_calls == 0:
+            # The cause is the turn's own exit reason: a system abort (turn liveness watchdog,
+            # gateway restart) is NOT a user /stop, and claiming one hides the real defect.
+            exit_reason = str(agent_result.get("turn_exit_reason") or "")
+            if exit_reason.startswith("interrupted_by_system("):
+                issuer = exit_reason[len("interrupted_by_system("):].rstrip(")")
+                return t("gateway.errors.interrupted_before_start_system", cause=issuer or "system")
             return t("gateway.errors.interrupted_before_start")
         return response
     if api_calls > 0:

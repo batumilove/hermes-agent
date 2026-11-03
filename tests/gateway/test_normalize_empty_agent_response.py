@@ -13,6 +13,53 @@ import pytest
 from gateway.run import _normalize_empty_agent_response
 
 
+class TestInterruptedBeforeStartCause:
+    """A zero-api-call interrupted turn must report WHO interrupted it.
+
+    Regression for the Telegram incident where a turn-abort by the turn
+    liveness watchdog was reported to the user as 'likely by a recent /stop'.
+    """
+
+    def test_watchdog_interrupted_turn_does_not_blame_stop(self):
+        """A zero-api-call turn aborted by the system (turn liveness watchdog)
+        must not be reported as 'likely by a recent /stop': the user never
+        stopped anything, and the wrong hint hides the real defect."""
+        agent_result = {
+            "final_response": "",
+            "interrupted": True,
+            "api_calls": 0,
+            "turn_exit_reason": "interrupted_by_system(turn_liveness_watchdog)",
+        }
+
+        response = _normalize_empty_agent_response(agent_result, "", history_len=53)
+
+        assert "/stop" not in response
+        assert "watchdog" in response.lower()
+        assert "send it again" in response.lower()
+
+    def test_user_stop_interrupted_turn_keeps_stop_hint(self):
+        """The legacy stale-/stop shape (no system issuer) keeps the original
+        interrupted-before-start hint."""
+        agent_result = {
+            "final_response": "",
+            "interrupted": True,
+            "api_calls": 0,
+            "turn_exit_reason": "interrupted_by_user",
+        }
+
+        response = _normalize_empty_agent_response(agent_result, "", history_len=53)
+
+        assert "/stop" in response
+        assert "send it again" in response.lower()
+
+    def test_legacy_interrupted_result_without_exit_reason_keeps_stop_hint(self):
+        agent_result = {"final_response": "", "interrupted": True, "api_calls": 0}
+
+        response = _normalize_empty_agent_response(agent_result, "", history_len=53)
+
+        assert "/stop" in response
+
+
 class TestPersistenceFailureRecoveryMessage:
     """Failed turns whose failure_reason marks a session-persistence
     failure get a dedicated recovery message: reassure the user their
