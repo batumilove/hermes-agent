@@ -117,8 +117,9 @@ jobs:
       ref: ${{ needs.admit.outputs.commit }}
 
   termux-checks:
+    # This fork supports standard Linux and macOS only.
+    if: ${{ false }}
     needs: admit
-    if: fromJSON(needs.admit.outputs.jobs)['termux-checks']
     permissions:
       contents: read
       actions: read
@@ -129,8 +130,9 @@ jobs:
       release: true
 
   windows-live:
+    # This fork supports standard Linux and macOS only.
+    if: ${{ false }}
     needs: admit
-    if: fromJSON(needs.admit.outputs.jobs)['windows-live']
     uses: ./.github/workflows/windows-venv-e2e.yml
     with:
       commit: ${{ needs.admit.outputs.commit }}
@@ -176,8 +178,7 @@ jobs:
     name: Build signed release candidates (darwin-x64)
     needs: admit
     # Starts with the gates; the acceptance join is what requires CI.
-    # macOS Intel is off by default: unsupported on main, and its macos-15-intel
-    # runner adds over an hour to the release.
+    # macOS Intel is supported alongside Apple Silicon in this fork.
     if: >-
       !cancelled() && needs.admit.result == 'success' && fromJSON(needs.admit.outputs.jobs)['candidates-darwin-x64']
     permissions:
@@ -196,11 +197,11 @@ jobs:
       skip-tests: ${{ !fromJSON(needs.admit.outputs.lanes).smoke }}
 
   candidates-win32-arm64:
+    # This fork supports standard Linux and macOS only.
+    if: ${{ false }}
     name: Build signed release candidates (win32-arm64)
     needs: admit
     # Starts with the gates; the acceptance join is what requires CI.
-    if: >-
-      !cancelled() && needs.admit.result == 'success' && fromJSON(needs.admit.outputs.jobs)['candidates-win32-arm64']
     permissions:
       contents: write
       actions: read
@@ -220,11 +221,11 @@ jobs:
       windows-smokes-with-bundle: true
 
   candidates-win32-x64:
+    # This fork supports standard Linux and macOS only.
+    if: ${{ false }}
     name: Build signed release candidates (win32-x64)
     needs: admit
     # Starts with the gates; the acceptance join is what requires CI.
-    if: >-
-      !cancelled() && needs.admit.result == 'success' && fromJSON(needs.admit.outputs.jobs)['candidates-win32-x64']
     permissions:
       contents: write
       actions: read
@@ -244,13 +245,11 @@ jobs:
       windows-smokes-with-bundle: true
 
   candidates-win32-bundle:
+    # This fork supports standard Linux and macOS only.
+    if: ${{ false }}
     name: Build signed release candidates (win32-bundle)
     needs: [admit, candidates-win32-arm64, candidates-win32-x64]
     # Starts with the gates; the acceptance join is what requires CI.
-    if: >-
-      !cancelled() && needs.admit.result == 'success' && fromJSON(needs.admit.outputs.jobs)['candidates-win32-bundle']
-      && needs.candidates-win32-arm64.result == 'success'
-      && needs.candidates-win32-x64.result == 'success'
     permissions:
       contents: write
       actions: read
@@ -270,12 +269,12 @@ jobs:
       windows-smokes-with-bundle: true
 
   candidates-termux:
+    # This fork supports standard Linux and macOS only.
+    if: ${{ false }}
     name: Build signed release candidates (termux)
     needs: admit
     # Starts with the gates; the acceptance join is what requires CI.
     # Termux is off by default.
-    if: >-
-      !cancelled() && needs.admit.result == 'success' && fromJSON(needs.admit.outputs.jobs)['candidates-termux']
     permissions:
       contents: write
       actions: read
@@ -364,9 +363,10 @@ jobs:
           CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
 
   transitions-win32:
+    # This fork supports standard Linux and macOS only.
+    if: ${{ false }}
     name: Pin actual OLD and NEW signed packages (win32)
     needs: [admit, candidates-win32-bundle]
-    if: fromJSON(needs.admit.outputs.jobs)['transitions-win32']
     runs-on: ubuntu-latest
     environment: release-signing
     outputs:
@@ -438,10 +438,11 @@ jobs:
         run: python -m scripts.releases.stable candidate-manifest
 
   windows-packaged:
+    # This fork supports standard Linux and macOS only.
+    if: ${{ false }}
     name: Windows signed-package acceptance
     needs: [admit, transitions-win32]
     # Without a published stable baseline there is no OLD package to upgrade from.
-    if: fromJSON(needs.admit.outputs.jobs)['windows-packaged'] && needs.transitions-win32.outputs.baseline != 'none'
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.transitions-win32.outputs.windows) }}

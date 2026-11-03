@@ -153,7 +153,7 @@ def test_external_worker_adopts_execution_and_runs_payload_once(
     adopted = Mock(
         side_effect=lambda execution_id: (
             observed_homes.append(get_hermes_home().resolve())
-            or {"id": execution_id, "status": "running"}
+            or {"id": execution_id, "status": "running", "process_id": "worker", "pid": 42, "process_started_at": 123}
         )
     )
     run = Mock(
@@ -162,6 +162,8 @@ def test_external_worker_adopts_execution_and_runs_payload_once(
         )
     )
     monkeypatch.setattr("cron.executions.adopt_claimed_execution", adopted)
+    monkeypatch.setattr("cron.executions.get_execution", lambda execution_id: {
+        "id": execution_id, "status": "running", "process_id": "worker", "pid": 42, "process_started_at": 123})
     monkeypatch.setattr(scheduler, "run_one_job", run)
 
     assert scheduler._run_external_worker_payload(payload, ack) is True
@@ -195,7 +197,9 @@ def test_external_worker_ack_is_never_observable_half_written(tmp_path, monkeypa
     )
     monkeypatch.setattr(
         "cron.executions.adopt_claimed_execution",
-        lambda execution_id: {"id": execution_id, "status": "running"})
+        lambda execution_id: {"id": execution_id, "status": "running", "process_id": "worker", "pid": 42, "process_started_at": 123})
+    monkeypatch.setattr("cron.executions.get_execution", lambda execution_id: {
+        "id": execution_id, "status": "running", "process_id": "worker", "pid": 42, "process_started_at": 123})
     monkeypatch.setattr(scheduler, "run_one_job", lambda *_a, **_k: True)
 
     real_dump = json.dump

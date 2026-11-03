@@ -61,6 +61,7 @@ export function ConfirmDialog({
   const { t } = useI18n()
   const confirmRef = useRef<HTMLButtonElement>(null)
   const closeTimerRef = useRef<null | number>(null)
+  const mountedRef = useRef(false)
   const [status, setStatus] = useState<'done' | 'idle' | 'saving'>('idle')
   const [error, setError] = useState<null | string>(null)
   const busy = status === 'saving' || status === 'done'
@@ -76,17 +77,15 @@ export function ConfirmDialog({
     }
   }, [open])
 
-  // Cancel the pending close timer on unmount. The timer below holds the
-  // "done" beat visible for 600ms, and an unmount inside that window used to
-  // leave it armed. It then called onClose on a tree that is gone, which
-  // reaches setState in the parent. Under vitest the environment can be torn
-  // down first, and React then reads `window` during the update and throws
-  // ReferenceError.
-  // The write below is a timer handle, and not a mirror of a reactive value.
-  // It happens on unmount only, and it clears the handle this component owns.
+  // An in-flight confirmation may settle after unmount; it must not arm a new close timer.
+  // This ref owns the component lifetime, not a copy of reactive state.
   // eslint-disable-next-line no-restricted-syntax
   useEffect(() => {
+    mountedRef.current = true
+
     return () => {
+      mountedRef.current = false
+
       if (closeTimerRef.current !== null) {
         window.clearTimeout(closeTimerRef.current)
         closeTimerRef.current = null
@@ -101,27 +100,33 @@ export function ConfirmDialog({
 
     setError(null)
 
-    if (dismissOnConfirm) {
-      try {
-        await onConfirm()
-        onClose()
-      } catch (err) {
-        setError(err instanceof Error ? err.message : t.errors.genericFailure)
-      }
-
-      return
+    if (!dismissOnConfirm) {
+      setStatus('saving')
     }
-
-    setStatus('saving')
 
     try {
       await onConfirm()
+
+      if (!mountedRef.current) {
+        return
+      }
+
+      if (dismissOnConfirm) {
+        onClose()
+
+        return
+      }
+
       setStatus('done')
       closeTimerRef.current = window.setTimeout(() => {
         closeTimerRef.current = null
         onClose()
       }, 600)
     } catch (err) {
+      if (!mountedRef.current) {
+        return
+      }
+
       setStatus('idle')
       setError(err instanceof Error ? err.message : t.errors.genericFailure)
     }

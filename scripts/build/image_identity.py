@@ -48,20 +48,51 @@ def package_version(repo: Path, stamp: dict, release: Release = BASELINE) -> str
 
 
 def _source_distance(repo: Path, release: str, head: str) -> int:
-    from scripts import fork_provenance as provenance
+    from hermes_cli.fork_provenance import source_distance
 
-    if provenance.is_ancestor(repo, release, head):
-        return int(_git(repo, "rev-list", "--count", f"{release}..{head}"))
-    proof = provenance.validate_v2(json.loads(_git(repo, "show", f"{head}:{provenance.PROVENANCE_PATH}")))
-    base = _git(repo, "show", f"{head}:{provenance.BASE_PATH}")
-    # Acquisition belongs to the caller; never silently fetch mutable origin here.
-    _git(repo, "cat-file", "-e", f"{proof['source_head']}^{{commit}}")
-    _git(repo, "cat-file", "-e", f"{base}^{{commit}}")
-    anchor = provenance.resolve_v2(repo, base, head, proof=proof)
-    if not provenance.is_ancestor(repo, release, base):
-        raise ValueError("image release is not an ancestor of the accepted upstream base")
-    return (int(_git(repo, "rev-list", "--count", f"{release}..{proof['source_head']}"))
-            + int(_git(repo, "rev-list", "--count", f"{anchor}..{head}")))
+    return source_distance(repo, release, head)
+
+
+def prepare_history(repo: Path, stamp: dict, *, upstream: str | None = None,
+                    release: Release = BASELINE) -> str:
+    """Acquire missing history explicitly, then apply the existing identity policy.
+
+    Never change HEAD or the worktree. The official authority supplies the pinned
+    release and upstream base; origin supplies only the immutable import source,
+    whose projected tree and ancestry are checked by source_distance.
+    """
+    from hermes_cli import fork_provenance as provenance
+    from scripts.ci.prepare_upgrade_source import OFFICIAL
+
+    head = _git(repo, "rev-parse", "HEAD")
+    if stamp.get("commit") != head or stamp.get("dirty") or _git(repo, "status", "--porcelain", "--untracked-files=no"):
+        raise ValueError("image history preparation requires the stamped clean source HEAD")
+    try:
+        with provenance.offline_git():
+            return package_version(repo, stamp, release)
+    except (provenance.ProvenanceError, subprocess.CalledProcessError):
+        pass
+    authority = upstream or OFFICIAL
+    provenance.git(repo, "fetch", "--filter=blob:none", "--no-tags", authority, f"refs/tags/{release.tag}")
+    if (_git(repo, "rev-parse", "FETCH_HEAD") != release.tag_object
+            or _git(repo, "rev-parse", "FETCH_HEAD^{commit}") != release.commit):
+        raise ValueError("canonical image release differs from its pinned object or commit")
+    if (repo / provenance.PROVENANCE_PATH).is_file():
+        proof = provenance.validate_v2(json.loads(_git(repo, "show", f"{head}:{provenance.PROVENANCE_PATH}")))
+        base = _git(repo, "show", f"{head}:{provenance.BASE_PATH}")
+        if proof["upstream_base"] != base:
+            raise ValueError("image import proof differs from recorded upstream base")
+        provenance.git(repo, "fetch", "--filter=blob:none", "--no-tags", authority, base)
+        if _git(repo, "rev-parse", "FETCH_HEAD") != base:
+            raise ValueError("canonical upstream did not supply the recorded base")
+        options = ["--filter=blob:none", "--no-tags"]
+        if _git(repo, "rev-parse", "--is-shallow-repository") == "true":
+            options.append("--unshallow")
+        provenance.git(repo, "fetch", *options, "origin", proof["source_head"])
+    elif _git(repo, "rev-parse", "--is-shallow-repository") == "true":
+        provenance.git(repo, "fetch", "--unshallow", "--filter=blob:none", "--no-tags", "origin", head)
+    with provenance.offline_git():
+        return package_version(repo, stamp, release)
 
 
 def main() -> None:
@@ -77,7 +108,7 @@ def main() -> None:
                             branch=_git(args.repo, "rev-parse", "--abbrev-ref", "HEAD"),
                             commit_date=int(_git(args.repo, "show", "-s", "--format=%ct", "HEAD")),
                             dirty=False, source="ci", distribution="docker", update_mechanism="external")
-    stamp["packageVersion"] = package_version(args.repo, stamp)
+    stamp["packageVersion"] = prepare_history(args.repo, stamp)
     args.stamp.write_text(json.dumps(stamp, indent=2) + "\n", encoding="utf-8")
 
 

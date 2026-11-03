@@ -51,6 +51,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+throw "This fork supports standard Linux and macOS only. Native Windows is unsupported; install inside WSL2 using scripts/install.sh."
+
 # -SkipSetup is the pre-rework spelling of -NonInteractive.
 if ($SkipSetup) { $NonInteractive = $true }
 
@@ -1541,7 +1543,9 @@ function New-DesktopShortcuts {
         }
                 $sc = $shell.CreateShortcut($lnkPath)
                 $sc.TargetPath = $TargetExe
-                $sc.WorkingDirectory = $workDir
+                # Not the exe's folder: the Desktop's children inherit it, and a helper
+                # that outlives the app then blocks the next update's swap (#101789).
+                $sc.WorkingDirectory = $env:USERPROFILE
                 $sc.IconLocation = $iconLocation
                 $sc.Description = 'Hermes Agent'
                 $sc.Save()

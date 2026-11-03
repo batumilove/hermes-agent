@@ -8,7 +8,7 @@ from pathlib import Path
 
 if not __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from scripts import fork_provenance as provenance
+from hermes_cli import fork_provenance as provenance
 
 
 def verify_import(repo: Path, head: str, comparison: str, official_tip: str) -> str:

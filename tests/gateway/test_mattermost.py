@@ -200,9 +200,9 @@ class TestMattermostSend:
         """Tool/status/progress bubbles must stay quiet when the thread is broken."""
         self.adapter._reply_mode = "thread"
         self.adapter._api_get = AsyncMock(return_value={"id": "bad_root", "root_id": ""})
-        self.adapter._last_post_status = 400
-        self.adapter._last_post_error = "api.context.invalid_param.app_error: invalid root_id"
-        self.adapter._api_post = AsyncMock(return_value={})
+        from plugins.platforms.mattermost.delivery import ApiFailure
+        failure = ApiFailure(400, "api.context.invalid_param.app_error: invalid root_id")
+        self.adapter._api_post = AsyncMock(return_value=failure)
 
         result = await self.adapter.send(
             "channel_1",
@@ -220,9 +220,9 @@ class TestMattermostSend:
         """Notify-worthy replies may fall back flat so the answer is not lost."""
         self.adapter._reply_mode = "thread"
         self.adapter._api_get = AsyncMock(return_value={"id": "bad_root", "root_id": ""})
-        self.adapter._last_post_status = 400
-        self.adapter._last_post_error = "api.context.invalid_param.app_error: invalid root_id"
-        self.adapter._api_post = AsyncMock(side_effect=[{}, {"id": "flat_final"}])
+        from plugins.platforms.mattermost.delivery import ApiFailure
+        failure = ApiFailure(400, "api.context.invalid_param.app_error: invalid root_id")
+        self.adapter._api_post = AsyncMock(side_effect=[failure, {"id": "flat_final"}])
 
         result = await self.adapter.send(
             "channel_1",

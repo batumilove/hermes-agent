@@ -90,8 +90,7 @@ def test_scheduled_and_main_r2_consumers_skip_without_credentials():
     native = termux["jobs"]["native-runtime"]
     probe = termux["jobs"][native["needs"]]
     assert probe["environment"] == "release-signing"
-    for configured, release, runs in (("true", False, True), ("false", True, True), ("false", False, False),
-                                      ("", False, False)):
+    for configured, release in (("true", False), ("false", True), ("false", False), ("", False)):
         needs = {native["needs"]: {"result": "success", "outputs": {"configured": configured}}}
-        assert gate(native["if"], {"release": release}, needs) is runs, (configured, release)
+        assert not gate(native["if"], {"release": release}, needs), (configured, release)
 

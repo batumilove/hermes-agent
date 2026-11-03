@@ -1,8 +1,8 @@
-name: Publish and deploy Hermes image
+name: Publish immutable Hermes image
 
+# Publication-only bridge: restoring automatic promotion/deployment requires
+# a separately reviewed caller change. No push-triggered publication occurs.
 on:
-  push:
-    branches: [batumi/live]
   workflow_dispatch:
 
 permissions:
@@ -21,23 +21,10 @@ jobs:
       contents: read
       id-token: write
       packages: write
-    uses: batumilove/hermes-ops/.github/workflows/build-image.yml@c3954554c455da8cbadad75f130fc863c9ee6499
+    uses: batumilove/hermes-ops/.github/workflows/build-image.yml@c89af38733b73087883609110a0a5e69e83c5c63
     with:
       source_sha: ${{ github.sha }}
-      ops_sha: c3954554c455da8cbadad75f130fc863c9ee6499
-      deployment_lane: ${{ github.ref_name == 'rebuild/batumi-live' && 'candidate' || 'live' }}
-    secrets: inherit
-
-  deploy-staging:
-    needs: publish
-    if: github.ref_name == 'batumi/live' && vars.HERMES_STAGING_DEPLOY_ENABLED == 'true'
-    permissions:
-      contents: read
-    uses: batumilove/hermes-ops/.github/workflows/compose-deploy.yml@3c1cd919a029fe69a9521f9f5edd2614e25271a7
-    with:
-      environment: batumi-staging
-      operation: deploy
-      image_digest: ${{ needs.publish.outputs.digest }}
-      source_sha: ${{ needs.publish.outputs.source_sha }}
-      ops_sha: 3c1cd919a029fe69a9521f9f5edd2614e25271a7
+      ops_sha: c89af38733b73087883609110a0a5e69e83c5c63
+      immutable_only: true
+      deployment_lane: live
     secrets: inherit

@@ -239,6 +239,7 @@ def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
     attempt (so it needs ``inspect``, which cancels runs and deletes the draft)
     and the cut goes on; no confirmer, or a no, is the refusal.
     """
+    lane_set.require_supported_lanes(lanes)
     _refresh_claims(repo, remote)
     _require_release_line(repo, commit)
     outstanding = _outstanding_attempt(repo, remote)
@@ -520,9 +521,9 @@ def next_steps(result: dict, *, bold: bool = False) -> str:
     if lane_set.has_bundles(lanes) and not lane_set.advances_desktop(lanes):
         lines.append("This is a partial desktop release: its packages are verified, but the desktop "
                      "update channel and feeds stay on the previous release (they move only when "
-                     "windows and macos-arm64 are both built).")
+                     "macos-intel and macos-arm64 are both built).")
     untested = [name for name in lane_set.NAMES if name not in lanes and name not in lane_set.LEFT_OUT
-                and not (name == "termux-checks" and "termux" not in lanes)]
+                and name not in lane_set.UNSUPPORTED_LANES]
     if untested:
         warning = f"Not tested: {', '.join(untested)}"
         lines.append(f"\033[1m{warning}\033[0m" if bold else warning)

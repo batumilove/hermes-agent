@@ -40,6 +40,8 @@ env:
 
 jobs:
   windows-x64:
+    # This fork supports standard Linux and macOS only.
+    if: ${{ false }}
     name: Hermes-Setup.exe (windows x64, signed)
     runs-on: windows-latest
     environment: release-signing
@@ -52,7 +54,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # 7.0.0
         with:
-          node-version: 24.11.1
+          node-version: 26.12.1
 
       - name: Fresh cache dirs
         shell: bash
@@ -162,7 +164,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # 7.0.0
         with:
-          node-version: 24.11.1
+          node-version: 26.12.1
 
       - name: Fresh cache dirs
         run: |

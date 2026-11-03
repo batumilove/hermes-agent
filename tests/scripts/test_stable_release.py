@@ -16,6 +16,8 @@ from scripts.releases.draft_warning import (
     WARNING_CLOSE, WARNING_OPEN, strip_draft_warning,
 )
 from scripts.releases import lanes as lane_set
+
+LEGACY_DEFAULT = frozenset(lane_set.NAMES) - {"macos-intel", "termux"}
 from scripts.releases.stable import (
     check_claim, ensure_final_tag, gate_expectations, plan_receipt_transitions, plan_transitions, read_manifest,
     require_stable_identity, require_success, validate_candidates, validate_receipt,
@@ -70,7 +72,7 @@ def test_gate_requires_every_success_including_real_cli(tmp_path):
                 require_success(needs, required)
     summary = tmp_path / "summary.md"
     env = {**os.environ, "RELEASE_NEEDS": json.dumps(success), "GITHUB_STEP_SUMMARY": str(summary), "PYTHONPATH": str(ROOT),
-           "LANES": json.dumps(lane_set.flags(lane_set.DEFAULT))}
+           "LANES": json.dumps(lane_set.flags(LEGACY_DEFAULT))}
     argv = [sys.executable, "-m", "scripts.releases.stable", "gate", *required]
     assert subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True, check=False).returncode == 0
     empty = subprocess.run(argv[:4], cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8", check=False)
@@ -229,7 +231,7 @@ def test_a_manifest_must_carry_exactly_the_targets_its_claims_lanes_build():
                                archive="rc.2-v1.2.4").keys() == {"windows/x64", "windows/arm64"}
     from scripts.releases.stable import require_targets_match_claim
     require_targets_match_claim(windows_only, ["windows"])
-    for wrong in (lane_set.DEFAULT, ["windows", "macos-arm64"], []):
+    for wrong in (LEGACY_DEFAULT, ["windows", "macos-arm64"], []):
         with pytest.raises(ValueError, match="differ from the claim"):
             require_targets_match_claim(windows_only, wrong)
     with pytest.raises(ValueError, match="no packages"):
@@ -446,7 +448,7 @@ def test_claim_object_movement_and_lightweight_tags_fail_closed(tmp_path, monkey
         "claim_tag": "rc.1-v1.2.3", "claim_object": claim_object,
         "tag": "v1.2.3", "version": "1.2.3", "attempt": 1, "commit": commit,
         # A claim cut before lanes existed reads as the lane set that gated the same jobs.
-        "autopublish": False, "lanes": lane_set.DEFAULT,
+        "autopublish": False, "lanes": LEGACY_DEFAULT,
         "claim_epoch": 1_790_000_000,
     }
     # The metadata binds the attempt its ref names.
@@ -474,7 +476,7 @@ def test_claim_object_movement_and_lightweight_tags_fail_closed(tmp_path, monkey
     subprocess.run(["git", "remote", "add", "origin", str(remote)], check=True)
     metadata = json.dumps({
         "schema": 1, "version": "1.2.3", "attempt": 1, "commit": actual,
-        "autopublish": False, "lanes": sorted(lane_set.DEFAULT),
+        "autopublish": False, "lanes": sorted(LEGACY_DEFAULT),
         "claimEpoch": 1_790_000_000,
     }, sort_keys=True, separators=(",", ":"))
     subprocess.run(
@@ -513,7 +515,7 @@ def test_a_claim_cut_before_lanes_existed_reads_as_the_lane_set_that_gated_the_s
            "claimEpoch": 1_790_000_000}
     raw = json.dumps(old, sort_keys=True, separators=(",", ":"))
     parsed = _claim_metadata(raw, version="0.21.7", attempt=11, commit=commit)
-    assert parsed == {**old, "lanes": lane_set.DEFAULT}
+    assert parsed == {**old, "lanes": LEGACY_DEFAULT}
     assert old == json.loads(raw)  # the caller's record is not mutated
     both = {**old, "includeMacosIntel": True, "includeTermux": True}
     assert validate_claim(both, version="0.21.7", attempt=11, commit=commit)["lanes"] == frozenset(lane_set.NAMES)
@@ -545,10 +547,10 @@ def test_a_default_claim_builds_no_macos_intel_or_termux_and_lanes_restore_them(
     off = {"candidates-darwin-x64", "transitions-darwin-x64", "macos-packaged-x64",
            "candidates-termux", "termux-checks"}
     required = ["admit", *lane_set.JOB_LANES]
-    default = stable.gate_expectations(required, lane_set.DEFAULT)
+    default = stable.gate_expectations(required, LEGACY_DEFAULT)
     assert {name for name, result in default.items() if result == "skipped"} == off
     assert set(stable.gate_expectations(required, lane_set.NAMES).values()) == {"success"}
-    intel = stable.gate_expectations(required, lane_set.select(with_=["macos-intel"]))
+    intel = stable.gate_expectations(required, lane_set.select(only=LEGACY_DEFAULT, with_=["macos-intel"]))
     assert {name for name, result in intel.items() if result == "skipped"} == \
         {"candidates-termux", "termux-checks"}
     # A lane that is off removes its jobs even when its test lane is on.
@@ -565,8 +567,8 @@ def test_a_default_claim_builds_no_macos_intel_or_termux_and_lanes_restore_them(
     _stage_windows_handoff(built, "x64")
     _stage_windows_handoff(built, "arm64")
     _stage_universal_bundle(built)
-    monkeypatch.setattr(stable, "stable_context", _fake_stable_context(lanes=lane_set.DEFAULT))
-    calls = _calls(lane_set.DEFAULT)
+    monkeypatch.setattr(stable, "stable_context", _fake_stable_context(lanes=LEGACY_DEFAULT))
+    calls = _calls(LEGACY_DEFAULT)
     env = {**_receipt_env(tmp_path, https_origin.base), "RELEASE_NEEDS": json.dumps(calls)}
     stable.main(["candidate-manifest"], env)
     stored, _ = r2_server.store[f"releases/tag/{ATTEMPT}/release-candidates.json"]
@@ -576,9 +578,9 @@ def test_a_default_claim_builds_no_macos_intel_or_termux_and_lanes_restore_them(
     assert manifest["smoke_results"]["smoke-darwin-x64"] == {"result": "skipped"}
     stable.validate_candidates(manifest, "v1.2.3", RECEIPT_COMMIT, https_origin.base,
                                RELEASE_EPOCH, archive=ATTEMPT)
-    stable.require_targets_match_claim(manifest, lane_set.DEFAULT)
+    stable.require_targets_match_claim(manifest, LEGACY_DEFAULT)
     with pytest.raises(ValueError, match="differ from the claim"):
-        stable.require_targets_match_claim(manifest, lane_set.select(with_=["macos-intel"]))
+        stable.require_targets_match_claim(manifest, lane_set.select(only=LEGACY_DEFAULT, with_=["macos-intel"]))
     # A smoke that claims to have passed for a target nobody built is refused.
     forged = {**manifest, "smoke_results": {**manifest["smoke_results"],
                                             "smoke-darwin-x64": {"result": "success"}}}
@@ -587,7 +589,7 @@ def test_a_default_claim_builds_no_macos_intel_or_termux_and_lanes_restore_them(
                                    RELEASE_EPOCH, archive=ATTEMPT)
     # A claim that built Termux needs its handoff: a missing one leaves no manifest.
     del r2_server.store[f"releases/tag/{ATTEMPT}/release-candidates.json"]
-    termux = lane_set.select(with_=["termux"])
+    termux = lane_set.select(only=LEGACY_DEFAULT, with_=["termux"])
     monkeypatch.setattr(stable, "stable_context", _fake_stable_context(lanes=termux))
     with pytest.raises(Exception, match="handoff-termux"):
         stable.main(["candidate-manifest"], {**env, "RELEASE_NEEDS": json.dumps(_calls(termux))})
@@ -682,7 +684,7 @@ def test_a_store_plus_macos_claim_records_only_the_macos_smoke(
         (built / f"Store-Product-1.2.3-win-{arch}.msix").write_bytes(f"store msix: {arch}".encode())
         handoff.stage(ATTEMPT, RECEIPT_COMMIT, f"win32-{arch}", built, [f"Store-Product-1.2.3-win-{arch}.msix"])
     _stage_universal_bundle(built, signed=False)
-    lanes = lane_set.select(without=["windows"])
+    lanes = lane_set.select(only=LEGACY_DEFAULT, without=["windows"])
     assert lane_set.runs_smokes(lanes) and "windows-store" in lanes
     monkeypatch.setattr(stable, "stable_context", _fake_stable_context(lanes=lanes))
     calls = _calls(lanes)
@@ -717,7 +719,7 @@ def test_the_manifest_refuses_a_windows_bundle_the_claims_lanes_did_not_build(
     assert f"releases/tag/{ATTEMPT}/release-candidates.json" not in r2_server.store
 
 
-def _claim_fixture(tmp_path, *, tag, version, lanes=lane_set.DEFAULT):
+def _claim_fixture(tmp_path, *, tag, version, lanes=LEGACY_DEFAULT):
     """A real checkout + bare remote carrying one annotated attempt claim."""
     from scripts.releases.versioning import parse_attempt_ref
 
@@ -803,7 +805,7 @@ def test_strip_refuses_an_unbalanced_fence(body):
         strip_draft_warning(body)
 
 
-def _publish_record(commit, tag_object, *, epoch, release_id=42, lanes=lane_set.DEFAULT):
+def _publish_record(commit, tag_object, *, epoch, release_id=42, lanes=LEGACY_DEFAULT):
     return {"claim_tag": "rc.2-v1.2.3", "claim_object": tag_object, "tag": "v1.2.3",
             "commit": commit, "version": "1.2.3", "attempt": 2, "release_id": release_id,
             "autopublish": False, "lanes": frozenset(lanes), "claim_epoch": epoch}
@@ -1399,7 +1401,7 @@ def test_a_claim_without_the_smoke_lane_records_skipped_smokes_never_passed(
                                RELEASE_EPOCH, archive=ATTEMPT)
     stable.require_smokes_match_claim(manifest, lane_set.select(without=["smoke"]))
     with pytest.raises(ValueError, match="test policy"):
-        stable.require_smokes_match_claim(manifest, lane_set.DEFAULT)
+        stable.require_smokes_match_claim(manifest, LEGACY_DEFAULT)
 
 
 def test_the_final_tag_push_authenticates_with_gh_token_without_persisted_credentials():

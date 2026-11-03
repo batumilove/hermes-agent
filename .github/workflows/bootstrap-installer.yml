@@ -133,6 +133,8 @@ jobs:
         run: bash scripts/run_tests.sh tests/scripts/test_fresh_source_install.py -q -j 1
 
   windows:
+    # This fork supports standard Linux and macOS only.
+    if: ${{ false }}
     name: install.ps1 protocol surface
     runs-on: windows-latest
     timeout-minutes: 10

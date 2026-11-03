@@ -4,15 +4,15 @@ import pytest
 from scripts.releases import lanes as lane_set
 
 
-def test_the_default_builds_everything_but_macos_intel_and_termux():
-    assert lane_set.DEFAULT == set(lane_set.NAMES) - {"macos-intel", "termux"}
+def test_the_default_builds_linux_and_both_macos_architectures():
+    assert lane_set.DEFAULT == set(lane_set.NAMES) - lane_set.UNSUPPORTED_LANES
     assert lane_set.select() == lane_set.DEFAULT
 
 
 @pytest.mark.parametrize("kwargs,expected", [
     # The request that motivated lanes: only the Windows bundles and the image, no tests.
     ({"only": ["windows", "docker"]}, {"windows", "docker"}),
-    ({"with_": ["macos-intel", "termux"]}, set(lane_set.NAMES)),
+    ({"with_": ["macos-intel", "termux"]}, set(lane_set.DEFAULT) | {"termux"}),
     ({"without": ["macos-arm64", "upgrade"]}, set(lane_set.DEFAULT) - {"macos-arm64", "upgrade"}),
     ({"only": ["windows"], "with_": ["smoke"], "without": ["windows"]}, {"smoke"}),
     ({"only": []}, set()),
@@ -115,5 +115,5 @@ def test_the_desktop_channel_moves_only_for_the_full_desktop_set():
     assert not lane_set.advances_desktop(["windows", "docker"])
     assert not lane_set.advances_desktop(["macos-arm64"])
     # A release that moves no channel is finished once public.
-    assert lane_set.moves_channels(["docker"]) and lane_set.moves_channels(["windows", "macos-arm64"])
+    assert lane_set.moves_channels(["docker"]) and lane_set.moves_channels(["macos-intel", "macos-arm64"])
     assert not lane_set.moves_channels(["windows"]) and not lane_set.moves_channels([])

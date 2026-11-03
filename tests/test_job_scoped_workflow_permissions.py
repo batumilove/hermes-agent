@@ -37,6 +37,4 @@ def test_deploy_grants_publish_permissions_only_to_publish_job() -> None:
         "id-token": "write",
         "packages": "write",
     }
-    assert workflow["jobs"]["deploy-staging"]["permissions"] == {
-        "contents": "read"
-    }
+    assert set(workflow["jobs"]) == {"publish"}

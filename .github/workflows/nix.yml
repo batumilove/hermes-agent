@@ -92,6 +92,12 @@ jobs:
           # A stable run passes the claim commit. Every other event tests its own head SHA.
           ref: ${{ inputs.commit || github.sha }}
 
+      # The Nix closure exceeds the space left by unused hosted SDKs on a cold run.
+      - name: Free disk space for the Nix closure
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          df -h /
+
       - name: Install Nix
         uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
         with:

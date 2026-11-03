@@ -33,11 +33,9 @@ generation/refresh, command dispatch); topical siblings re-exported by the facad
 Skill slash commands (`agent/skill_commands.py`) scan `~/.hermes/skills/` and inject as a **user
 message**, never into the system prompt (prompt caching).
 
-Rules: all interactive menu-pickers use curses (`hermes_cli/curses_ui.py`; example
-`hermes_cli/tools_config.py`). Never emit `\033[K` (ANSI erase-to-EOL) in spinner/display code —
-it leaks as literal `?[K` under prompt_toolkit's `patch_stdout`; space-pad instead:
-`f"\r{line}{' ' * pad}"`. Wrapper CLIs extend via the protected hooks in `cli_tui_mixin.py`
-(`website/docs/developer-guide/extending-the-cli.md`), not by overriding `run()`.
+Use curses for menu-pickers (`hermes_cli/curses_ui.py`). Spinner/display code space-pads;
+never emit `\033[K`, which leaks under prompt_toolkit's `patch_stdout`. Wrapper CLIs use
+`cli_tui_mixin.py` hooks (`website/docs/developer-guide/extending-the-cli.md`), not `run()` overrides.
 
 ## Slash command registry (`hermes_cli/commands.py`)
 
@@ -90,12 +88,13 @@ set/get/unset <NAME>` route any bare name registered in `OPTIONAL_ENV_VARS` / `_
 - **One writer seam.** Every write of a `config.yaml` (main or profile) goes through
   `hermes_cli.config.atomic_config_write` (refuses deletion by omission) or the explicit
   `atomic_config_replace` full-state path (→ `utils.atomic_roundtrip_yaml_save`, ruamel
-  round-trip): comments, key order, quoting and blank lines survive, and the fail-closed unreadable-file
-  guard runs first. Deliberate `pop()`/unset/migration paths use `atomic_config_replace`; additive
+  round-trip): formatting survives, and the fail-closed unreadable-file guard runs first. Deliberate `pop()`/unset/migration paths use `atomic_config_replace`; additive
   writers stay on `atomic_config_write`. Never call
   `atomic_yaml_write` / `yaml.dump` / `yaml.safe_dump` on a config path — `scripts/check_config_yaml_writers.py`
   (CI lint) rejects it, and `tests/hermes_cli/test_config_yaml_comment_preservation.py` guards each
   path (#92554). The commented example blocks are appended only when the file is created.
+- **Reads** too go only through `config_backend.py`; see `developer-guide/config-backend.md`.
+  In daemon, RPC and tick code catch `ConfigBackendUnavailable` explicitly: it is a `SystemExit`, so `except Exception` won't stop it.
 - **Three loaders — know which you're in:** `load_cli_config()` (CLI, `cli.py`); `load_config()`
   (`hermes tools/setup`, most subcommands, `hermes_cli/config.py`, merges `DEFAULT_CONFIG`);
   `hermes_cli/config_effective.py::load_user_config_effective()` (gateway runtime via

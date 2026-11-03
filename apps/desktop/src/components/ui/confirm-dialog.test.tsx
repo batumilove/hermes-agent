@@ -1,9 +1,12 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ConfirmDialog } from './confirm-dialog'
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.useRealTimers()
+})
 
 describe('ConfirmDialog secondary action', () => {
   function renderWithSecondary() {
@@ -46,5 +49,25 @@ describe('ConfirmDialog secondary action', () => {
 
     await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1))
     expect(onSecondary).not.toHaveBeenCalled()
+  })
+})
+
+describe('ConfirmDialog async lifetime', () => {
+  it.each([false, true])('does not close its former owner when confirmation resolves after unmount (dismissOnConfirm=%s)', async dismissOnConfirm => {
+    vi.useFakeTimers()
+    let finish!: () => void
+    const pending = new Promise<void>(resolve => { finish = resolve })
+    const onClose = vi.fn()
+
+    const view = render(
+      <ConfirmDialog confirmLabel="Confirm action" dismissOnConfirm={dismissOnConfirm} onClose={onClose}
+        onConfirm={() => pending} open title="Confirm?" />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm action' }))
+    view.unmount()
+    await act(async () => { finish(); await pending })
+    await act(async () => { await vi.advanceTimersByTimeAsync(600) })
+    expect(onClose).not.toHaveBeenCalled()
   })
 })

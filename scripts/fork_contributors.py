@@ -9,7 +9,7 @@ from pathlib import Path
 
 if not __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from scripts import fork_provenance
+from hermes_cli import fork_provenance
 
 def new_author_emails(
     repo: Path, *, comparison_ref: str | None, accepted_base: str | None, official_tip: str | None = None

@@ -71,9 +71,34 @@ jobs:
       - name: Set up locked Python and test dependencies
         uses: ./.github/actions/setup-pm
         with:
-          extras: '["all", "anthropic", "bedrock", "mistral", "fal", "modal", "daytona", "parallel-web"]'
+          extras: '["all", "anthropic", "bedrock", "mistral", "fal", "modal", "daytona", "parallel-web", "keychain"]'
           test-environment: 'true'
           prune-python-cache: true
+
+      - name: Probe installed-wheel provenance (packaging fixture)
+        if: matrix.slice == 1
+        # This is a Python packaging-closure fixture, NOT production Nix acceptance.
+        # Only the build gets the existing explicit Nix-policy fixture flag; the
+        # normal wheel/sdist guard stays fail-closed. No supported PyPI release
+        # or bundled Nix assets are claimed. This probe's import closure is stdlib
+        # only: --no-deps avoids unrelated/private browser-harness resolution.
+        shell: bash
+        run: |
+          set -euo pipefail
+          scratch=$(mktemp -d "$RUNNER_TEMP/packaged-provenance.XXXXXX")
+          trap 'rm -rf "$scratch"' EXIT
+          mkdir -p "$scratch/source" "$scratch/outside"
+          # Build a disposable tracked-source copy, never pollute the checkout.
+          git ls-files -z | tar --null -T - -cf - | tar -xf - -C "$scratch/source"
+          uv venv --python "$HERMES_PYTHON" "$scratch/venv"
+          HERMES_NIX_BUILD=1 uv build --wheel --python "$scratch/venv/bin/python" \
+            --out-dir "$scratch/wheels" "$scratch/source"
+          uv pip install --python "$scratch/venv/bin/python" --no-deps "$scratch"/wheels/*.whl
+          cp tests/packaged_provenance_probe.py "$scratch/outside/probe.py"
+          cd "$scratch/outside"
+          env -u PYTHONPATH -u PYTHONHOME HOME="$scratch/outside" \
+            HERMES_HOME="$scratch/outside/state" \
+            "$scratch/venv/bin/python" -I "$scratch/outside/probe.py"
 
       - name: Check SQLite runs WAL
         # Hermes picks DELETE journal mode on a SQLite with the WAL-reset
@@ -92,13 +117,13 @@ jobs:
         # test_durations.json from the checkout; without this restore the
         # file is absent on a fresh runner and the scaler is inert.
         # Exact key never matches (run_id differs); restore-keys picks the
-        # most recent cache saved by a main push. PRs read, only main writes.
+        # most recent default-branch push cache. PRs read, only that branch writes.
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: test_durations.json
-          key: test-durations-never-exact
+          key: trusted-test-durations-${{ github.event.repository.default_branch }}-never-exact
           restore-keys: |
-            test-durations-
+            trusted-test-durations-${{ github.event.repository.default_branch }}-
 
       - name: Run tests
         # Per-file isolation via scripts/run_tests.sh: each test file runs
@@ -119,16 +144,16 @@ jobs:
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
 
-      - name: Save per-file duration cache (main only)
+      - name: Save per-file duration cache (default-branch push only)
         # Only green first-attempt durations are written by the runner, so
-        # a hang on main cannot ratchet its own bound upward.
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && hashFiles('test_durations.json') != ''
+        # a hang on the default branch cannot ratchet its own bound upward.
+        if: github.event_name == 'push' && github.event.repository.default_branch != '' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && hashFiles('test_durations.json') != ''
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: test_durations.json
           # Per-slice key: each slice's file keeps the restored entries for the other
           # slice's files and refreshes its own, so the cache stays complete.
-          key: test-durations-${{ github.run_id }}-${{ matrix.slice }}
+          key: trusted-test-durations-${{ github.event.repository.default_branch }}-${{ github.run_id }}-${{ matrix.slice }}
 
       - name: Check the checkout is clean
         # Last step of every job (tests/ci/test_clean_worktree_check.py): a test or CI step that
@@ -230,7 +255,8 @@ jobs:
         # and must not share interpreter state.
         # tests/e2e/core/upgrade runs in its own job (e2e-upgrade) below.
         run: |
-          mapfile -t files < <(find tests/e2e -name 'test_*.py' -not -path 'tests/e2e/core/upgrade/*' | sort)
+          files=()
+          while IFS= read -r file; do files+=("$file"); done < <(find tests/e2e -name 'test_*.py' -not -path 'tests/e2e/core/upgrade/*' | sort)
           scripts/run_tests.sh --include-integration "${files[@]}"
         env:
           HERMES_E2E_STRICT_ACCEPTANCE: ${{ inputs.strict_acceptance }}
@@ -390,7 +416,7 @@ jobs:
         # in the venv up front.
         uses: ./.github/actions/retry
         with:
-          command: uv sync --locked --python 3.14 --extra all --group dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra parallel-web
+          command: uv sync --locked --python 3.14 --extra all --group dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra parallel-web --extra keychain
 
       - name: Install bubblewrap
         # Every spawned updater runs in bwrap (own PID namespace, no user
@@ -416,10 +442,11 @@ jobs:
         run: |
           set -euo pipefail
           source .venv/bin/activate
+          files=()
           if [ "$SHARD" = core ]; then
-            mapfile -t files < <(find tests/e2e/core/upgrade -maxdepth 1 -name 'test_*.py' | sort)
+            while IFS= read -r file; do files+=("$file"); done < <(find tests/e2e/core/upgrade -maxdepth 1 -name 'test_*.py' | sort)
           else
-            mapfile -t files < <(find "tests/e2e/core/upgrade/$SHARD" -name 'test_*.py' | sort)
+            while IFS= read -r file; do files+=("$file"); done < <(find "tests/e2e/core/upgrade/$SHARD" -name 'test_*.py' | sort)
           fi
           # A shard that collects nothing is a wiring bug, not a pass.
           [ "${#files[@]}" -gt 0 ] || { echo "no test files for shard $SHARD" >&2; exit 1; }

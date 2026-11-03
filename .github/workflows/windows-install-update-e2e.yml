@@ -48,6 +48,8 @@ concurrency:
 
 jobs:
   install-update:
+    # This fork supports standard Linux and macOS only.
+    if: ${{ false }}
     name: Windows install.ps1 + hermes update E2E (${{ matrix.journey }})
     runs-on: windows-latest
     # Cold-install journeys exceeded one runner's 75-minute queue budget

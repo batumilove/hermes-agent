@@ -31,10 +31,8 @@ def _leg_sha512(root: Path, files: dict, arch: str) -> dict[str, str]:
 
 
 def assemble(request: dict, native: dict, root: Path, *, artifact_prefix: str,
-             targets=ALL_TARGETS, local_bytes: bool = True) -> tuple[dict, list[Path]]:
-    """``targets`` defaults to every native target. A stable release that did not
-    opt into macOS Intel passes the three it built; arm64 macOS and both Windows
-    arches are always required.
+             targets=None, local_bytes: bool = True) -> tuple[dict, list[Path]]:
+    """Assemble exactly the receipt-bound targets, including macOS-only releases.
 
     ``local_bytes=False`` trusts the receipts instead of downloaded packages:
     every artifact is bound by its receipt sha256 (and was validated when the
@@ -42,19 +40,20 @@ def assemble(request: dict, native: dict, root: Path, *, artifact_prefix: str,
     per-arch feed legs, and no multi-GB package needs to be on disk."""
     files = native["files"]
     rows = native["packages"]
-    targets = sorted(targets)
-    if not {("macos", "arm64"), ("windows", "arm64"), ("windows", "x64")} <= set(targets) \
-            or not set(targets) <= set(ALL_TARGETS):
-        raise ChannelError("Native targets must include macOS arm64 and both Windows architectures")
+    targets = sorted(targets if targets is not None else ((row["platform"], row["arch"]) for row in rows))
+    if ("macos", "arm64") not in targets or not set(targets) <= set(ALL_TARGETS):
+        raise ChannelError("Native targets must include macOS arm64")
     if sorted((row["platform"], row["arch"]) for row in rows) != targets:
         raise ChannelError("Native metadata must cover both platforms and architectures")
     prefix = build_prefix(request["buildId"])
     base = request["publicBase"]
     windows = [row for row in rows if row["platform"] == "windows"]
-    if windows[0]["applicationId"] != request["identity"]["appNamePascal"]:
+    if windows and {row["arch"] for row in windows} != {"arm64", "x64"}:
+        raise ChannelError("Historical Windows bundles require both architectures")
+    if windows and windows[0]["applicationId"] != request["identity"]["appNamePascal"]:
         raise ChannelError("Windows application identity mismatch")
-    bundle_name = single(name for name in files if name.endswith(".msixbundle") and not name.startswith("Store-"))
-    if local_bytes:
+    bundle_name = single(name for name in files if name.endswith(".msixbundle") and not name.startswith("Store-")) if windows else None
+    if local_bytes and windows:
         validate_windows_bundle(root / bundle_name, windows)
     packages, mac_files = [], []
     for row in rows:
@@ -91,14 +90,17 @@ def assemble(request: dict, native: dict, root: Path, *, artifact_prefix: str,
     record = {"name": request["channel"], "repository": request["repository"], "identity": request["identity"],
               "policy": ("canary-release" if is_canary_tag(tag) else "stable-release") if tag else "preview", "head": None}
     validate_manifest(manifest, record, base)
-    descriptor = root / "win32" / "stable.appinstaller"
-    write_appinstaller(descriptor, identity=windows[0]["identity"], publisher=windows[0]["publisher"],
-                       version=windows[0]["version"], self_uri=f"{base}/{prefix}win32/stable.appinstaller",
-                       artifact_uri=f"{base}/{artifact_prefix}{bundle_name}", update_policy="pinned")
+    descriptors = []
+    if windows:
+        descriptor = root / "win32" / "stable.appinstaller"
+        write_appinstaller(descriptor, identity=windows[0]["identity"], publisher=windows[0]["publisher"],
+                           version=windows[0]["version"], self_uri=f"{base}/{prefix}win32/stable.appinstaller",
+                           artifact_uri=f"{base}/{artifact_prefix}{bundle_name}", update_policy="pinned")
+        descriptors.append(descriptor)
     feed = root / "darwin" / "stable-mac.yml"
     feed.parent.mkdir(parents=True, exist_ok=True)
     first = single(row for row in mac_files if row["url"].endswith("-arm64.zip"))
     # A neutral feed name avoids interpreting custom channel names as prereleases.
     feed.write_bytes(canonical_json({"version": request["version"], "files": mac_files,
                                     "path": first["url"], "sha512": first["sha512"]}))
-    return manifest, [feed, descriptor]
+    return manifest, [feed, *descriptors]

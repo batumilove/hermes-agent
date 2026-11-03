@@ -553,6 +553,7 @@ class GatewayForkContractsMixin:
                 ],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                # detached-spawn: ok — systemd restart helper must outlive the exiting gateway.
                 start_new_session=True,
             )
             logger.info(

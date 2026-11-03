@@ -24,6 +24,10 @@ def build_config_parser(subparsers, *, cmd_config: Callable) -> None:
         "--raw", action="store_true",
         help="Print credential values unmasked (default masks api_key/token/secret-shaped values)")
 
+    explain = config_subparsers.add_parser("explain", help="Explain one allowlisted non-secret leaf (fresh CLI only)")
+    explain.add_argument("key")
+    add_json_flag(explain, "Print explanation as JSON")
+
     config_set = config_subparsers.add_parser("set", help="Set a configuration value")
     config_set.add_argument(
         "key", nargs="?", help="Configuration key (e.g., model, terminal.backend)")

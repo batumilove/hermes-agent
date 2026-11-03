@@ -1,30 +1,7 @@
 name: OS-specific tests
 
-# Runs the tests that can only be trusted on their own host OS.
-#
-# The main Python suite (.github/workflows/tests.yml) runs on
-# ubuntu-latest and covers everything that is either platform-agnostic or
-# genuinely Linux-specific. Tests whose subject is macOS- or
-# Windows-specific behaviour carry a marker (see the ``_OS_MARKS`` block
-# comment in tests/conftest.py) and are SKIPPED on Linux, because faking
-# ``sys.platform`` on a Linux runner selects the branch under test without
-# reproducing any of the OS behaviour that branch exists for. This workflow
-# is where those markers actually execute:
-#
-#   macos    → ``-m platforms``    on macos-latest
-#   windows  → ``-m platforms``    on windows-latest and windows-11-arm
-#
-# (tests/conftest.py's ``pytest_collection_modifyitems`` hook skips
-# foreign-OS ``platforms(...)`` markers on each host, so one shared ``-m
-# platforms`` expression selects "this host's own marked tests" on either
-# lane — the helper narrows WHICH FILES get imported first.)
-#
-# Native lanes use the canonical per-file runner. macOS and Windows x64
-# partition the marked file list deterministically within their 30m budget;
-# Windows ARM keeps its existing unsliced 60m lane for native wheel builds.
-# Each lane FAILS when it selects zero tests (pytest exit code 5) — a
-# renamed marker or bad selector can never report a green job that ran
-# nothing.
+# Linux tests run in tests.yml. This fork schedules macOS host-specific tests here;
+# the upstream Windows jobs remain disabled below for easier upstream merges.
 
 on:
   workflow_call:
@@ -77,7 +54,7 @@ jobs:
   os-tests:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: ${{ matrix.timeout || 30 }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -91,34 +68,6 @@ jobs:
           - name: macOS-only tests (2/2)
             runner: macos-latest
             marker: macos
-            slice: 2/2
-          # Four slices preserve the full native set at two workers per runner;
-          # setup consumes part of the same 30m job budget on Windows.
-          - name: Windows-only tests (1/4)
-            runner: windows-latest
-            marker: windows
-            slice: 1/4
-          - name: Windows-only tests (2/4)
-            runner: windows-latest
-            marker: windows
-            slice: 2/4
-          - name: Windows-only tests (3/4)
-            runner: windows-latest
-            marker: windows
-            slice: 3/4
-          - name: Windows-only tests (4/4)
-            runner: windows-latest
-            marker: windows
-            slice: 4/4
-          - name: Windows-only tests (arm64)
-            runner: windows-11-arm
-            marker: windows
-            timeout: 60
-            slice: 1/2
-          - name: Windows-only tests (arm64, 2/2)
-            runner: windows-11-arm
-            marker: windows
-            timeout: 60
             slice: 2/2
     steps:
       - name: Checkout code
@@ -138,7 +87,8 @@ jobs:
           # the verified Git pin once, before per-file parallelism; otherwise
           # each isolated PowerShell stage races to download/extract the archive.
           packages: ${{ matrix.marker == 'windows' && 'git,ripgrep' || 'ripgrep' }}
-          extras: '["all", "telegram", "anthropic", "mistral", "fal", "modal", "daytona", "parallel-web"]'
+          # keychain: the vault-key tests run against the host's real Keychain / Credential Manager.
+          extras: '["all", "telegram", "anthropic", "mistral", "fal", "modal", "daytona", "parallel-web", "keychain"]'
           test-environment: 'true'
           prune-python-cache: true
 
@@ -230,18 +180,21 @@ jobs:
         uses: ./.github/actions/check-clean-worktree
 
   install-update-e2e:
+    # This fork supports standard Linux and macOS only.
+    if: ${{ false }}
     # The real scripts/install.ps1 -> `hermes update` HEAD -> NEXT journey on a real Windows
     # host (tests/e2e/core/windows_update): fresh install, gateway across the update,
     # interpreter selection, non-ASCII profile paths and tool ACLs, partial-clone fetch and
     # venv holders. Its own workflow so wine2e-install/** pushes can run it alone.
     name: Windows install + update E2E
-    if: inputs.e2e_upgrade
     uses: ./.github/workflows/windows-install-update-e2e.yml
     with:
       commit: ${{ inputs.commit }}
       strict_acceptance: ${{ inputs.strict_acceptance }}
 
   e2e-windows:
+    # This fork supports standard Linux and macOS only.
+    if: ${{ false }}
     # Real Hermes processes on a real Windows host (tests/e2e/core/windows): hermes.exe,
     # `hermes serve`, `hermes gateway run/stop`, the tui_gateway stdio process, cron script
     # jobs, the terminal tool's Git Bash / PowerShell / cmd children and a ConPTY console,
@@ -255,7 +208,6 @@ jobs:
     # Windows race that passes on retry is still a race. Tracked Windows bugs are strict
     # xfails (per-file KNOWN tables), so a fix turns this job red until the entry goes.
     name: Windows E2E (real processes)
-    if: inputs.e2e
     # Each file spawns real process trees; two file workers leave standard-runner
     # capacity for their children to meet readiness and shutdown deadlines.
     runs-on: windows-latest

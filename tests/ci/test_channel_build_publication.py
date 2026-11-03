@@ -105,10 +105,8 @@ def test_channel_handoff_binds_full_request_and_feed_bytes(tmp_path, r2_server, 
     needs = {name: {"result": "success"} for name in channel_publish.REQUIRED_JOBS}
     manifest, feeds = channel_publish.assemble(request, fetched, needs=needs)
     assert {(p["platform"], p["arch"]) for p in manifest["packages"]} == {
-        (platform, arch) for platform in ("darwin", "win32") for arch in ("arm64", "x64")}
-    xml = ET.parse(next(p for p in feeds if p.suffix == ".appinstaller")).getroot()
-    assert xml.find("{*}UpdateSettings") is None
-    assert xml.find("{*}MainBundle").get("Name") == request["identity"]["msixAppIdWithOrg"]
+        (platform, arch) for platform in ("darwin",) for arch in ("arm64", "x64")}
+    assert not any(p.suffix == ".appinstaller" for p in feeds)
     feed = hermes_yaml.safe_load(next(p for p in feeds if p.suffix == ".yml").read_text(encoding="utf-8"))
     assert feed["version"] == request["version"]
     for file in feed["files"]:
@@ -128,14 +126,14 @@ def test_channel_handoff_binds_full_request_and_feed_bytes(tmp_path, r2_server, 
                 bad[name]["result"] = result
             with pytest.raises(ValueError, match=name):
                 channel_publish.assemble(request, fetched, needs=bad)
-    receipt_path = fetched / "handoff-win32-x64.json"
+    receipt_path = fetched / "handoff-darwin-x64.json"
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     missing = {**receipt, "files": [row for row in receipt["files"] if not row["path"].startswith("metadata-")]}
     receipt_path.write_text(json.dumps(missing), encoding="utf-8")
     with pytest.raises(ValueError, match="omits required"):
         channel_publish.assemble(request, fetched, needs=needs)
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
-    metadata = fetched / "metadata-windows-x64.json"
+    metadata = fetched / "metadata-macos-x64.json"
     metadata.write_text("{}", encoding="utf-8")
     with pytest.raises(ValueError, match="receipt"):
         channel_publish.assemble(request, fetched, needs=needs)

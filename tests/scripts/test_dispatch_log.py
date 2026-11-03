@@ -8,7 +8,7 @@ from scripts.releases import dispatch_log
 from scripts.releases.bundle_env import parse_assignments
 from scripts.releases.channel_build import dispatch_command as channel_dispatch
 from scripts.releases.commit_build import dispatch_command as commit_dispatch
-from scripts.releases.job_groups import ALL_JOBS
+from scripts.releases.job_groups import DEFAULT_JOBS
 from tests.ci.test_desktop_release_tag_admission import _workflow
 
 SHA = "a" * 40
@@ -32,7 +32,7 @@ def env(**values):
         "DISPOSABLE_RECEIVERS": "false",
         "RELEASE_PHASE": "",
         "UPLOAD_RELEASE": "false",
-        "JOBS": ALL_JOBS,
+        "JOBS": DEFAULT_JOBS,
         "TERMUX_UPGRADE_FROM_TAG": "",
         "BUNDLE_ENV_JSON": "{}",
         "R2_DISPOSABLE_RUN": "",
