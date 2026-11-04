@@ -1,13 +1,15 @@
 """Collector integration: bounded reader ownership, post-quiescence transfer, backend validation.
 
 Every test binds the ORIGINAL frozen Receipt module by byte hash; no synthetic
-receipt reimplementation is trusted here. No network, credentials or activation.
+receipt reimplementation is trusted here. The repository fixture is Linux-specific.
+No network, credentials or activation.
 """
 import asyncio
 import contextvars
 import gc
 import hashlib
 import importlib.util
+from importlib.machinery import SourceFileLoader
 import os
 import secrets
 import signal
@@ -23,12 +25,11 @@ from hermes_cli import plugins_turn_evidence_collector as collector_mod
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 from tests.waiting import async_wait_until
 
-ORIGINAL_RECEIPTS = Path(
-    "/home/ubuntu/.hermes/cache/hermes-telemetry-instrumentation-20261101/langfuse/delivery_receipts.py"
-)
+ORIGINAL_RECEIPTS = Path(__file__).parent / "fixtures/turn_evidence/delivery_receipts.py.fixture"
 ORIGINAL_RECEIPTS_SHA256 = "d41cb8b704f03e4f496e8a8816795a73bb0d7649fbbee722fe4ca28a4dab8f52"
 
-_spec = importlib.util.spec_from_file_location("original_delivery_receipts", ORIGINAL_RECEIPTS)
+_loader = SourceFileLoader("original_delivery_receipts", str(ORIGINAL_RECEIPTS))
+_spec = importlib.util.spec_from_loader(_loader.name, _loader)
 receipts = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(receipts)
 
@@ -82,6 +83,7 @@ def verified_payload(world, envelope, binding):
         envelope, expected_binding=binding)
 
 
+@pytest.mark.platforms("linux")
 def test_full_cycle_two_traces_collect_transfer_and_backend_validation(world):
     c = make_collector(world)
     with c.begin_turn():
@@ -103,6 +105,7 @@ def test_full_cycle_two_traces_collect_transfer_and_backend_validation(world):
             receipts=receipts) == "captured_inventory_delivered"
 
 
+@pytest.mark.platforms("linux")
 def test_collect_inside_open_turn_is_unknown_and_does_not_consume(world):
     c = make_collector(world)
     with c.begin_turn():
@@ -111,6 +114,7 @@ def test_collect_inside_open_turn_is_unknown_and_does_not_consume(world):
     assert c.collect()[TID]["status"] == "collected"
 
 
+@pytest.mark.platforms("linux")
 def test_host_helper_deadline_invalidates_permanently(world):
     c = make_collector(world)
     entered, release, ended = threading.Event(), threading.Event(), threading.Event()
@@ -140,6 +144,7 @@ def test_host_helper_deadline_invalidates_permanently(world):
     asyncio.run(scenario())
 
 
+@pytest.mark.platforms("linux")
 def test_late_copied_context_dispatch_after_close_is_unverified(world):
     c = make_collector(world)
     calls = []
@@ -153,6 +158,7 @@ def test_late_copied_context_dispatch_after_close_is_unverified(world):
     assert c.issue_transfer(TID) is None
 
 
+@pytest.mark.platforms("linux")
 def test_registration_generation_change_invalidates(world):
     c = make_collector(world)
     with c.begin_turn():
@@ -161,6 +167,7 @@ def test_registration_generation_change_invalidates(world):
     assert c.collect()[TID]["status"] == "unverified"
 
 
+@pytest.mark.platforms("linux")
 def test_abandoned_context_blocks_transfer_permanently(world):
     c = make_collector(world)
     with c.begin_turn():
@@ -173,6 +180,7 @@ def test_abandoned_context_blocks_transfer_permanently(world):
     assert c.collect()[TID]["status"] == "unverified"
 
 
+@pytest.mark.platforms("linux")
 def test_capacity_eviction_returns_unknown(world):
     c = make_collector(world, max_traces=1)
     with c.begin_turn():
@@ -184,6 +192,7 @@ def test_capacity_eviction_returns_unknown(world):
     assert c.issue_transfer(TID) is None
 
 
+@pytest.mark.platforms("linux")
 def test_retention_expiry_returns_unknown(world):
     clock = {"now": 0.0}
     c = make_collector(world, retention_seconds=10.0, monotonic=lambda: clock["now"])
@@ -194,6 +203,7 @@ def test_retention_expiry_returns_unknown(world):
     assert c.issue_transfer(TID) is None
 
 
+@pytest.mark.platforms("linux")
 def test_expiry_after_collection_drops_proof_before_transfer(world):
     clock = {"now": 0.0}
     c = make_collector(world, retention_seconds=10.0, monotonic=lambda: clock["now"])
@@ -204,6 +214,7 @@ def test_expiry_after_collection_drops_proof_before_transfer(world):
     assert c.issue_transfer(TID) is None
 
 
+@pytest.mark.platforms("linux")
 def test_missing_receipt_snapshot_is_unknown(world):
     c = make_collector(world)
     with c.begin_turn():
@@ -214,6 +225,7 @@ def test_missing_receipt_snapshot_is_unknown(world):
     assert c.collect()[TID]["status"] == "unknown"
 
 
+@pytest.mark.platforms("linux")
 def test_transfer_is_single_use_per_trace(world):
     c = make_collector(world)
     with c.begin_turn():
@@ -225,6 +237,7 @@ def test_transfer_is_single_use_per_trace(world):
     assert c.collect()[TID]["status"] == "transferred"
 
 
+@pytest.mark.platforms("linux")
 def test_issue_requires_collected_proof(world):
     c = make_collector(world)
     with c.begin_turn():
@@ -233,6 +246,7 @@ def test_issue_requires_collected_proof(world):
     assert c.retain(TID) is None  # already retained; double retention refused
 
 
+@pytest.mark.platforms("linux")
 def test_verifier_rejects_forgeries_and_rebinding(world):
     c = make_collector(world)
     with c.begin_turn():
@@ -254,6 +268,7 @@ def test_verifier_rejects_forgeries_and_rebinding(world):
     assert ok.verify(envelope, expected_binding=foreign_producer) is None
 
 
+@pytest.mark.platforms("linux")
 def test_verifier_freshness_and_clock_skew(world):
     c = make_collector(world)
     with c.begin_turn():
@@ -269,6 +284,7 @@ def test_verifier_freshness_and_clock_skew(world):
     assert past_clock.verify(fresh, expected_binding=dict(c.binding(), trace_id=TID2)) is None
 
 
+@pytest.mark.platforms("linux")
 def test_backend_mismatch_and_incomplete_are_not_acceptance(world):
     c = make_collector(world)
     with c.begin_turn():
@@ -285,6 +301,7 @@ def test_backend_mismatch_and_incomplete_are_not_acceptance(world):
     assert collector_mod.validate_backend(payload, missing_child, receipts=receipts) == "mismatch"
 
 
+@pytest.mark.platforms("linux")
 def test_stale_receipt_directory_blocks_reuse_as_unverified(world):
     c = make_collector(world)
     with c.begin_turn():
@@ -303,6 +320,7 @@ def test_stale_receipt_directory_blocks_reuse_as_unverified(world):
     assert c2.collect()[TID]["status"] == "unverified"
 
 
+@pytest.mark.platforms("linux")
 def test_fork_child_cannot_collect_or_transfer(world):
     c = make_collector(world)
     with c.begin_turn():
@@ -324,6 +342,7 @@ def test_fork_child_cannot_collect_or_transfer(world):
     assert c.collect()[TID]["status"] == "collected"
 
 
+@pytest.mark.platforms("linux")
 def test_async_outstanding_work_blocks_until_quiescence(world):
     c = make_collector(world)
 
@@ -351,6 +370,7 @@ def test_async_outstanding_work_blocks_until_quiescence(world):
     asyncio.run(scenario())
 
 
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("after_collect", ["registration", "late_dispatch", "abandonment", "late_started"])
 def test_post_collection_invalidation_blocks_transfer(world, after_collect):
     c = make_collector(world)
@@ -371,6 +391,7 @@ def test_post_collection_invalidation_blocks_transfer(world, after_collect):
     assert c.collect()[TID]["status"] == "unverified"
 
 
+@pytest.mark.platforms("linux")
 def test_caller_cannot_mutate_collected_authority(world):
     c = make_collector(world)
     with c.begin_turn():
@@ -385,6 +406,7 @@ def test_caller_cannot_mutate_collected_authority(world):
     assert c.collect()[TID]["status"] == "unverified"
 
 
+@pytest.mark.platforms("linux")
 def test_failed_retains_do_not_pin_receipts(world):
     c = make_collector(world)
     refs = []
@@ -397,6 +419,7 @@ def test_failed_retains_do_not_pin_receipts(world):
     assert all(r["status"] == "unverified" for r in c.collect().values())
 
 
+@pytest.mark.platforms("linux")
 def test_evicted_reader_releases_custody_at_next_collect(world):
     c = make_collector(world, max_traces=1)
     with c.begin_turn():
@@ -409,6 +432,7 @@ def test_evicted_reader_releases_custody_at_next_collect(world):
     assert ref_first() is None
 
 
+@pytest.mark.platforms("linux")
 def test_expired_reader_releases_custody_at_next_collect(world):
     clock = {"now": 0.0}
     c = make_collector(world, retention_seconds=10.0, monotonic=lambda: clock["now"])
@@ -420,6 +444,7 @@ def test_expired_reader_releases_custody_at_next_collect(world):
     assert ref() is None
 
 
+@pytest.mark.platforms("linux")
 def test_retain_refuses_foreign_boundary(world):
     c = make_collector(world)
     with c.begin_turn():
@@ -431,6 +456,7 @@ def test_retain_refuses_foreign_boundary(world):
     assert c.collect()[TID]["status"] == "unverified"
 
 
+@pytest.mark.platforms("linux")
 def test_verifier_pins_receipt_and_registration_digests(world):
     c = make_collector(world)
     with c.begin_turn():
@@ -446,6 +472,7 @@ def test_verifier_pins_receipt_and_registration_digests(world):
         assert fresh.verify(envelope, expected_binding=pins) is None
 
 
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("mutate", ["invalidate", "registration", "late_dispatch", "abandon"])
 def test_mid_issue_mutation_refuses_transfer(world, monkeypatch, mutate):
     c = make_collector(world)
@@ -481,6 +508,7 @@ def test_mid_issue_mutation_refuses_transfer(world, monkeypatch, mutate):
     assert c.collect()[TID]["status"] == "unverified"
 
 
+@pytest.mark.platforms("linux")
 def test_collect_during_abandonment_reports_unverified_and_latches(world):
     c = make_collector(world)
     with c.begin_turn():
@@ -493,6 +521,7 @@ def test_collect_during_abandonment_reports_unverified_and_latches(world):
     assert c.collect()[TID]["status"] == "unverified"
 
 
+@pytest.mark.platforms("linux")
 def test_duplicate_reopen_disposes_prior_receipts(world):
     c = make_collector(world, max_traces=2)
     refs = []
@@ -508,6 +537,7 @@ def test_duplicate_reopen_disposes_prior_receipts(world):
     assert result[TID]["status"] == "collected"
 
 
+@pytest.mark.platforms("linux")
 def test_duplicate_reopen_under_capacity_pressure_releases_handles(world):
     c = make_collector(world, max_traces=1)
     with c.begin_turn():
@@ -520,6 +550,7 @@ def test_duplicate_reopen_under_capacity_pressure_releases_handles(world):
         assert not boundary._RETAINED
 
 
+@pytest.mark.platforms("linux")
 def test_trace_history_is_bounded(world):
     c = make_collector(world, max_traces=1)
     for i in range(1000):
@@ -530,6 +561,7 @@ def test_trace_history_is_bounded(world):
     assert len(c.collect()) <= 16
 
 
+@pytest.mark.platforms("linux")
 def test_disposed_reader_does_not_pin_collector(world):
     clock = {"now": 0.0}
     c = make_collector(world, retention_seconds=10.0, monotonic=lambda: clock["now"])
@@ -546,6 +578,7 @@ def test_disposed_reader_does_not_pin_collector(world):
     assert ref_expired() is None
 
 
+@pytest.mark.platforms("linux")
 def test_concurrent_death_refreshes_stale_pending_reports(world, monkeypatch):
     c = make_collector(world)
     with c.begin_turn():
@@ -579,6 +612,7 @@ def test_concurrent_death_refreshes_stale_pending_reports(world, monkeypatch):
     assert set(statuses.values()) == {"unverified"}, statuses
 
 
+@pytest.mark.platforms("linux")
 def test_malformed_signatures_are_rejected_not_raised(world):
     c = make_collector(world)
     with c.begin_turn():
@@ -594,6 +628,7 @@ def test_malformed_signatures_are_rejected_not_raised(world):
             forged, expected_binding=binding) is None, bad
 
 
+@pytest.mark.platforms("linux")
 def test_expected_binding_in_fork_child_with_inherited_lock(world):
     c = make_collector(world)
     with c.begin_turn():
