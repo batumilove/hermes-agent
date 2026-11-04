@@ -47,7 +47,7 @@ def test_host_alias_substrings_are_not_target_identity(url):
     assert not hm.is_spark_goat_chat_url(url)
 
 
-def test_unknown_report_never_calls_it_unused_or_nominal():
+def test_unknown_report_separates_routing_advisory_from_service_health():
     snapshot = hm.HonchoSnapshot(services={'api_ok':True,'deriver_up':True,'db_ok':True,'redis_ok':True},
         pipeline=hm.parse_pipeline_env(''), db={},queue={},queue_by_type={},errors={},
         spark_goat={'skipped':True,'routing_unknown':True},deriver={})
@@ -55,6 +55,8 @@ def test_unknown_report_never_calls_it_unused_or_nominal():
     hm._spark_alerts(snapshot,None,alerts)
     assert 'Honcho routing unknown: effective config sources unverified' in alerts
     report=hm.format_report(snapshot)
-    assert 'routing unknown' in report
+    assert 'Inspected configuration: UNKNOWN' in report
+    assert 'Actual request routing: UNKNOWN / UNVERIFIED' in report
+    assert 'not evidence of outage' in report
     assert 'not routed' not in report
     assert 'All nominal' not in report

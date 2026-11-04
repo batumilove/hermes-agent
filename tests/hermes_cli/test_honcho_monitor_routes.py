@@ -34,7 +34,7 @@ def test_unrouted_endpoint_is_not_a_health_dependency(collect, pipeline):
     alerts = []
     hm._spark_alerts(snapshot, None, alerts)
     assert alerts == []
-    assert "⚪ spark-goat chat: not routed (skipped)" in hm.format_report(snapshot)
+    assert "⚪ Provider probe: SKIPPED (not a failed request)" in hm.format_report(snapshot)
 
 
 @pytest.mark.parametrize("stage", ["deriver", "summary", "dream", "dialectic", "embedding"])

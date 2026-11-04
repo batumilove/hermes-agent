@@ -842,10 +842,10 @@ def format_report(snapshot: dict[str, Any] | HonchoSnapshot, previous_state: dic
         spark_icon = "🟠"
     else:
         spark_icon = "🟢"
-    if spark.get("skipped") and spark.get("routing_unknown"):
-        lines.append("⚪ spark-goat chat: routing unknown (probe not run)")
+    if not spark:
+        lines.append("⚪ Provider probe: UNVERIFIED (no probe record)")
     elif spark.get("skipped"):
-        lines.append("⚪ spark-goat chat: not routed (skipped)")
+        lines.append("⚪ Provider probe: SKIPPED (not a failed request)")
     else:
         lines.append(f"{spark_icon} spark-goat chat: {_fmt_s(spark_latency)}{spark_tag}{spark_detail}")
 
@@ -879,10 +879,23 @@ def format_report(snapshot: dict[str, Any] | HonchoSnapshot, previous_state: dic
         )
 
     alerts = build_alerts(snapshot, previous_state=previous_state)
-    if alerts:
-        lines.append(f"⚠️ {len(alerts)}: {'; '.join(alerts)}")
+    # Presentation only: raw alerts and emission/state policy remain unchanged.
+    service_alerts = [
+        alert for alert in alerts
+        if alert != "Honcho routing unknown: effective config sources unverified"
+        and not (not spark and alert == "spark-goat chat failed")
+    ]
+    if snapshot.services.get("ssh_ok") is False:
+        lines.append("  Service/processing checks: UNKNOWN (remote sample stale)")
+    elif service_alerts:
+        lines.append("  Service/processing checks: ALERT")
     else:
-        lines.append("✅ All nominal")
+        lines.append("  Service/processing checks: nominal (sampled checks only; not loss-free processing proof)")
+    lines.append("  Inspected configuration: UNKNOWN (fresh receipt not collected)")
+    lines.append("  Actual request routing: UNKNOWN / UNVERIFIED (no natural dispatch receipt)")
+    if service_alerts:
+        lines.append(f"⚠️ {len(service_alerts)}: {'; '.join(service_alerts)}")
+    lines.append("⚠️ Verification advisory: configuration provenance UNKNOWN; actual traffic UNVERIFIED (not evidence of outage)")
 
     return "\n".join(lines)
 
