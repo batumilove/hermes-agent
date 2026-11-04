@@ -386,12 +386,14 @@ patches:
   retirement: Remove when upstream live-restore tests distinguish durable state from volatile SQLite read marks.
 - id: startup-scheduler-live-status
   kind: core
-  rationale: Bind the startup ticker to the runner so control status reports its actual liveness.
+  rationale: Bind the startup ticker to the runner and refresh durable scheduler health with each heartbeat so both control and file status report current process liveness.
   paths:
   - gateway/run_bootstrap.py
   - tests/gateway/test_bootstrap_scheduler_status.py
+  - tests/gateway/test_housekeeping_scheduler_status.py
+  - gateway/status_components.py
   tests:
-  - scripts/run_tests.sh tests/gateway/test_bootstrap_scheduler_status.py tests/gateway/test_external_drain_control.py
+  - scripts/run_tests.sh tests/gateway/test_bootstrap_scheduler_status.py tests/gateway/test_housekeeping_scheduler_status.py tests/gateway/test_external_drain_control.py
   retirement: Remove when upstream startup and live control status share the same ticker handle.
 - id: mattermost-exact-fleet-mention-routing
   kind: compatibility
@@ -2869,3 +2871,12 @@ patches:
   - scripts/run_tests.sh tests/agent/test_turn_liveness_watchdog.py tests/gateway/test_normalize_empty_agent_response.py
   retirement: Remove when upstream dumps the stalled turn thread ahead of the cap and reports system interruption
     issuers by name with equivalent coverage.
+
+- id: recovery-missing-cli-fixture
+  kind: compatibility
+  rationale: Exercise real SQLite CLI discovery with no executable so cached host refusal diagnostics cannot select the wrong recovery error branch.
+  paths:
+  - tests/hermes_cli/test_session_recovery_lost_and_found.py
+  tests:
+  - scripts/run_tests.sh tests/hermes_cli/test_session_recovery_lost_and_found.py
+  retirement: Remove when upstream missing-CLI tests run actual discovery instead of retaining cached host probe diagnostics.

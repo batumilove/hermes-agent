@@ -231,7 +231,7 @@ def test_unreadable_schema_without_cli_names_the_sqlite3_requirement(
 
     monkeypatch.setattr(laf, "_last_cli_refusal", prior_refusal)
     # Exercise discovery so cached host refusals are cleared as they are in production.
-    monkeypatch.setattr(laf.shutil, "which", lambda _binary: None)
+    monkeypatch.setattr(laf.shutil, "which", lambda name: None)
     with pytest.raises(SessionRecoverySourceError) as excinfo:
         recover_session_database(
             source,

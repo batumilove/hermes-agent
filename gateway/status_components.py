@@ -20,3 +20,19 @@ def apply_component_status(payload, current_record, *, session_store, scheduler)
             "provider": str(value.get("provider") or "unknown"),
             **provenance,
         }
+
+
+def publish_housekeeping_status(cron_thread, cron_provider, stop_event):
+    """Refresh scheduler liveness with the heartbeat instead of inheriting an old PID."""
+    from gateway.run import _write_runtime_status_quiet
+
+    if cron_thread is None:
+        _write_runtime_status_quiet()
+        return
+    state = "stopping" if stop_event.is_set() else (
+        "running" if cron_thread.is_alive() else "failed"
+    )
+    _write_runtime_status_quiet(scheduler={
+        "status": state,
+        "provider": getattr(cron_provider, "name", "unknown"),
+    })
