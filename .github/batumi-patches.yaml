@@ -2792,6 +2792,9 @@ patches:
   - tests/hermes_cli/test_plugin_turn_boundary.py
   - tests/hermes_cli/test_plugin_turn_boundary_async.py
   - tests/hermes_cli/test_turn_evidence_collector.py
+  - tests/hermes_cli/fixtures/turn_evidence/LICENSE.txt
+  - tests/hermes_cli/fixtures/turn_evidence/PROVENANCE.json
+  - tests/hermes_cli/fixtures/turn_evidence/delivery_receipts.py.fixture
   - website/docs/developer-guide/observer-hooks.md
   - website/docs/developer-guide/turn-evidence-collector.md
   tests:
