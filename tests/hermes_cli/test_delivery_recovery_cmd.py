@@ -5,6 +5,7 @@ from pathlib import Path
 import shlex
 import sqlite3
 import subprocess
+import sys
 
 import pytest
 
@@ -18,26 +19,22 @@ def home(tmp_path):
         conn.executescript('''
         CREATE TABLE delivery_obligations (
           obligation_id TEXT PRIMARY KEY, state TEXT, attempts INTEGER,
-          created_at REAL, updated_at REAL, owner_pid INTEGER, owner_started_at INTEGER);
+          created_at REAL, updated_at REAL, owner_pid INTEGER, owner_started_at INTEGER, adapter_profile TEXT);
         CREATE TABLE gateway_post_response_actions (
           obligation_id TEXT, ordinal INTEGER, action_kind TEXT, state TEXT,
           attempts INTEGER, owner_pid INTEGER, owner_started_at INTEGER);
-        INSERT INTO delivery_obligations VALUES ('one','failed',3,1,2,123,456);
-        INSERT INTO delivery_obligations VALUES ('excluded','failed',3,1,2,123,456);
+        INSERT INTO delivery_obligations VALUES ('one','failed',3,1,2,123,456,'default');
+        INSERT INTO delivery_obligations VALUES ('excluded','failed',3,1,2,123,456,'default');
         INSERT INTO gateway_post_response_actions VALUES ('one',0,'finalize_turn','pending',0,NULL,NULL);
         ''')
     return home
 
 
 def cli(home, *args):
-    # Real packaging entrypoint; PYTHONPATH selects only the isolated candidate.
-    # This is test-only routing to a temp DB, never a live recovery command.
-    import shutil
-    entrypoint = shutil.which('hermes')
-    assert entrypoint, 'installed canonical console script required'
-    env = dict(os.environ, HERMES_HOME=str(home), PYTHONPATH=str(ROOT))
-    return subprocess.run([entrypoint, 'delivery-recovery', *args], cwd=ROOT, env=env,
-        capture_output=True, text=True, timeout=40)
+    # Exercise the real source CLI in a fresh interpreter and isolated home.
+    env = dict(os.environ, HERMES_HOME=str(home))
+    return subprocess.run([sys.executable, '-m', 'hermes_cli.main', 'delivery-recovery', *args],
+        cwd=ROOT, env=env, capture_output=True, text=True, check=False, timeout=40)
 
 
 def inspect(home):

@@ -215,7 +215,8 @@ class PostResponseWorker:
         self.store = runner.session_store
         self._wake = threading.Event()
         self._stop = threading.Event()
-        self._recovery_future = None
+        from gateway.delivery_recovery_scheduler import RecoveryScheduler
+        self._recovery = RecoveryScheduler(self)
         # Capture the runner's actual root handle.  In production this is the
         # process HERMES_HOME; taking the handle path also preserves explicit
         # SessionDB pins used by recovery/test harnesses.
@@ -368,17 +369,13 @@ class PostResponseWorker:
     def shutdown(self, timeout: float) -> bool:
         self._stop.set()
         self._wake.set()
+        self._recovery.stop()
         # Leave a small scheduler margin to honour the caller's aggregate
         # shutdown budget rather than consuming it all in Thread.join().
         if self.thread.ident is None:
-            return True
+            return self._recovery.is_idle()
         self.thread.join(max(0.0, float(timeout) - 0.05))
-        # Cancellation is delivered on the owner loop after this synchronous
-        # join returns. The pre-send abandoned fence already protects a crash;
-        # shutdown must also stop a suspended consumer from sending later rows.
-        if self._recovery_future is not None:
-            self._recovery_future.cancel()
-        return not self.thread.is_alive()
+        return not self.thread.is_alive() and self._recovery.is_idle()
 
     @staticmethod
     def _error_token(exc: BaseException) -> str:
@@ -387,28 +384,6 @@ class PostResponseWorker:
         # correlate repeated failures.
         material = f"{type(exc).__name__}:{exc}".encode("utf-8", "replace")
         return "sha256:" + hashlib.sha256(material).hexdigest()
-
-    def _schedule_recovery(self, db_path: Path) -> None:
-        """Coalesce polling into one runner-loop consumer, never a send thread."""
-        import asyncio
-        from gateway.delivery_recovery import consume_requests
-        runner = self.runner
-        loop = getattr(runner, '_gateway_loop', None)
-        if self._stop.is_set() or loop is None or loop.is_closed() or not loop.is_running():
-            return
-        if self._recovery_future is not None:
-            if not self._recovery_future.done():
-                return
-            try:
-                self._recovery_future.result()
-            except BaseException:
-                logger.warning('operator recovery ended without confirmed completion', exc_info=False)
-        coroutine = consume_requests(runner, db_path)
-        try:
-            self._recovery_future = asyncio.run_coroutine_threadsafe(coroutine, loop)
-        except Exception:
-            coroutine.close()
-            raise
 
     def _run(self) -> None:
         # ``__init__`` performs the startup scan before the thread is exposed.
@@ -437,10 +412,11 @@ class PostResponseWorker:
                 deadline = min(next_action_poll_at, next_discovery_at)
                 self._wake.wait(max(0.0, deadline - time.monotonic()))
                 continue
+            paths = self._round_robin_db_paths()
+            self._recovery.poll(paths)
             claimed = None
-            for db_path in self._round_robin_db_paths():
+            for db_path in paths:
                 try:
-                    self._schedule_recovery(db_path)
                     with self._db_scope(db_path) as db:
                         actions = db.claim_ready_post_response_actions(limit=1)
                 except Exception as exc:  # health: allow BLE001 -- Worker retries arbitrary scoped store failures without exposing action payloads in tracebacks.

@@ -5,8 +5,11 @@ import sqlite3
 from types import SimpleNamespace
 
 import pytest
-from tests.gateway.test_delivery_recovery_execution import case, decide, runner_for, state, until
+from tests.gateway.delivery_recovery_fixtures import decide, runner_for, state, until
+
+pytest_plugins = ['tests.gateway.delivery_recovery_fixtures']
 from gateway import delivery_recovery as recovery
+from gateway import delivery_recovery_consumer as consumer
 from gateway import delivery_ledger as ledger
 from gateway.post_response import PostResponseWorker
 
@@ -23,7 +26,7 @@ async def test_real_completed_recovery_prune_does_not_poison_later_short_page(ca
         sends.append(kw)
         return SimpleNamespace(success=True)
     runner = runner_for(case, send)
-    request = decide(case)
+    decide(case)
     with sqlite3.connect(case.db_path) as conn:
         conn.execute("UPDATE delivery_recovery_requests SET request_id='a-orphan'")
     worker = PostResponseWorker(runner)
@@ -35,14 +38,15 @@ async def test_real_completed_recovery_prune_does_not_poison_later_short_page(ca
         assert state(case) == 'delivered'
     finally:
         worker.shutdown(1)
-        await asyncio.sleep(.05)
+        await until(worker._recovery.is_idle)
     # Actual finalizer completion, then actual retention, not manual deletion.
     with sqlite3.connect(case.db_path) as conn:
         assert conn.execute('SELECT state FROM gateway_post_response_actions').fetchone()[0] == 'done'
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
     token = set_hermes_home_override(str(case.db_path.parent))
     try:
-        ledger._prune(now=10**12)
+        with ledger._transaction(db_path=case.db_path) as conn:
+            ledger._prune_unlocked(conn, 10**12)
     finally:
         reset_hermes_home_override(token)
     assert rows(case, 'delivery_obligations') == []
@@ -50,7 +54,7 @@ async def test_real_completed_recovery_prune_does_not_poison_later_short_page(ca
     assert audit[0][0] == 'a-orphan'
     case.create_final_delivery_and_barrier(
         obligation_id='later', session_key='later', session_lineage='later',
-        platform='slack', chat_id='chat', thread_id=None, content='later answer',
+        platform='slack', chat_id='chat', thread_id=None, content='later answer', adapter_profile='default',
         actions=[{'action_kind': 'finalize_turn', 'payload': {'session_key': 'later'}}])
     with sqlite3.connect(case.db_path) as conn:
         conn.execute("UPDATE delivery_obligations SET state='failed' WHERE obligation_id='later'")
@@ -61,7 +65,7 @@ async def test_real_completed_recovery_prune_does_not_poison_later_short_page(ca
         conn.execute("UPDATE delivery_recovery_requests SET request_id='z-valid' WHERE obligation_id='later'")
     runner = runner_for(case, send)
     for _ in range(4):
-        await recovery.consume_requests(runner, case.db_path)
+        await consumer.consume_requests(runner, case.db_path)
     assert len(sends) == 2
     assert sends[-1]['content'].endswith('later answer')
     assert recovery.inspect_obligation(case.db_path, 'later')['state'] == 'delivered'
@@ -91,7 +95,7 @@ async def test_bad_request_isolated_from_later_request_in_same_page(case, monkey
     async def send(**kw):
         sends.append(kw)
         return SimpleNamespace(success=True)
-    await recovery.consume_requests(runner_for(case, send), case.db_path)
+    await consumer.consume_requests(runner_for(case, send), case.db_path)
     assert len(sends) == 1
     assert state(case) == 'delivered'
 
@@ -124,17 +128,17 @@ async def test_completed_send_uncertain_then_fresh_ack_single_resend(case, monke
         return SimpleNamespace(success=True)
     runner = runner_for(case, send)
     decide(case)
-    await recovery.consume_requests(runner, case.db_path)
+    await consumer.consume_requests(runner, case.db_path)
     assert rows(case, 'delivery_obligations') == before['receipt']
     assert rows(case, 'gateway_post_response_actions') == before['actions']
     assert rows(case, 'delivery_recovery_executions')[0][5] == 'uncertain'
     assert state(case) == 'abandoned'
     assert case.has_post_response_barrier('route', 'lineage')
     for _ in range(2):
-        await recovery.consume_requests(runner, case.db_path)
+        await consumer.consume_requests(runner, case.db_path)
     assert len(sends) == 1  # uncertainty never authorizes replay
     decide(case)  # explicit new acknowledgement of the current fingerprint
-    await asyncio.gather(*(recovery.consume_requests(runner, case.db_path) for _ in range(3)))
+    await asyncio.gather(*(consumer.consume_requests(runner, case.db_path) for _ in range(3)))
     assert len(sends) == 2
     assert state(case) == 'delivered'
 
@@ -161,17 +165,17 @@ async def test_exhausted_cleanup_retained_for_later_poll_without_resend(case, mo
         return SimpleNamespace(success=True)
     runner = runner_for(case, send)
     decide(case)
-    await recovery.consume_requests(runner, case.db_path)
+    await consumer.consume_requests(runner, case.db_path)
     assert 1 < writes <= 4  # bounded immediate reconciliation, not an infinite loop
     assert rows(case, 'delivery_recovery_executions')[0][5] == 'sending'
     broken = False
     with pytest.raises(ValueError, match='send still owned'):
         decide(case)  # not yet reconciled; do not admit a concurrent decision
-    await recovery.consume_requests(runner, case.db_path)
+    await consumer.consume_requests(runner, case.db_path)
     assert rows(case, 'delivery_recovery_executions')[0][5] == 'uncertain'
     assert len(sends) == 1
     decide(case)
-    await recovery.consume_requests(runner, case.db_path)
+    await consumer.consume_requests(runner, case.db_path)
     assert len(sends) == 2
     assert state(case) == 'delivered'
 
@@ -193,7 +197,7 @@ async def test_cleanup_never_retires_changed_execution_owner_or_claim(case, monk
         return SimpleNamespace(success=True)
     runner = runner_for(case, send)
     decide(case)
-    await recovery.consume_requests(runner, case.db_path)
+    await consumer.consume_requests(runner, case.db_path)
     assert rows(case, 'delivery_recovery_executions')[0][5] == 'sending'
     assert state(case) == 'abandoned'
     with pytest.raises(ValueError, match='send still owned'):
@@ -212,11 +216,11 @@ async def test_active_send_excluded_during_concurrent_cleanup_polls(case):
         return SimpleNamespace(success=True)
     runner = runner_for(case, send)
     decide(case)
-    task = asyncio.create_task(recovery.consume_requests(runner, case.db_path))
+    task = asyncio.create_task(consumer.consume_requests(runner, case.db_path))
     try:
         await entered.wait()
         for _ in range(3):
-            await recovery.consume_requests(runner, case.db_path)
+            await consumer.consume_requests(runner, case.db_path)
             with pytest.raises(ValueError, match='send still owned'):
                 decide(case)
         assert rows(case, 'delivery_recovery_executions')[0][5] == 'sending'

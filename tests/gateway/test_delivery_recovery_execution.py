@@ -5,72 +5,21 @@ import threading
 from types import SimpleNamespace
 
 import pytest
-from hermes_state import SessionDB
 from gateway import delivery_recovery as recovery
+from gateway import delivery_recovery_consumer as consumer
 from gateway import delivery_ledger as ledger
 from gateway.config import Platform
 from gateway.post_response import PostResponseWorker
 
+from tests.gateway.delivery_recovery_fixtures import decide, runner_for, state, until
 
-@pytest.fixture
-def case(tmp_path):
-    db = SessionDB(db_path=tmp_path / 'state.db')
-    db.create_final_delivery_and_barrier(
-        obligation_id='oid', session_key='route', session_lineage='lineage',
-        platform='slack', chat_id='chat', thread_id='thread', content='answer',
-        actions=[{'action_kind': 'finalize_turn', 'payload': {
-            'session_key': 'route', 'active_turn_token': 'old', 'session_id': 'sid'}}])
-    with sqlite3.connect(db.db_path) as c:
-        c.execute("UPDATE delivery_obligations SET state='failed',attempts=3")
-    yield db
-    db.close()
-
-
-def decide(db):
-    return recovery.request_retry(db.db_path, 'oid',
-        fingerprint=recovery.inspect_obligation(db.db_path, 'oid')['fingerprint'],
-        acknowledge_possible_duplicate=True, operator='test')
-
-
-def state(db):
-    return recovery.inspect_obligation(db.db_path, 'oid')['state']
-
-
-async def until(predicate):
-    for _ in range(200):
-        if predicate():
-            return
-        await asyncio.sleep(.01)
-    assert predicate(), 'worker did not reach expected boundary'
-
-
-def runner_for(db, send):
-    runner = SimpleNamespace()
-    # weakref-able runner, using the actual finalizer for token isolation.
-    from gateway.run import GatewayRunner
-    runner = GatewayRunner.__new__(GatewayRunner)
-    class Store:
-        _db = db
-        token = 'new'
-        def clear_turn_active(self, key, token):
-            if self.token != token:
-                return False
-            self.token = None
-            return True
-        def peek_active_turn_token(self, key):
-            return self.token
-    runner.session_store = Store()
-    runner._rebaseline_agent_cache_message_count_sync = lambda *a: None
-    runner._gateway_loop = asyncio.get_running_loop()
-    runner._running = True
-    runner.adapters = {Platform.SLACK: SimpleNamespace(send=send)}
-    return runner
+pytest_plugins = ['tests.gateway.delivery_recovery_fixtures']
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('outcome', ['success', 'error', 'negative', 'cancel'])
 async def test_real_worker_consumer_claim_send_settlement(case, outcome):
-    assert hasattr(recovery, 'consume_requests'), 'missing working owner-loop consumer'
+    assert hasattr(consumer, 'consume_requests'), 'missing working owner-loop consumer'
     sends = []
     loop_thread = threading.get_ident()
     async def send(**kw):
@@ -95,7 +44,7 @@ async def test_real_worker_consumer_claim_send_settlement(case, outcome):
     worker.start()
     try:
         await until(lambda: bool(sends))
-        await asyncio.sleep(.1)
+        await until(worker._recovery.is_idle)
         assert len(sends) == 1
         assert runner.session_store.token == 'new'
         if outcome == 'success':
@@ -112,7 +61,7 @@ async def test_real_worker_consumer_claim_send_settlement(case, outcome):
 
 @pytest.mark.asyncio
 async def test_racing_consumers_and_inflight_decision(case):
-    assert hasattr(recovery, 'consume_requests'), 'missing working owner-loop consumer'
+    assert hasattr(consumer, 'consume_requests'), 'missing working owner-loop consumer'
     entered, release = asyncio.Event(), asyncio.Event()
     sends = []
     async def send(**kw):
@@ -122,11 +71,11 @@ async def test_racing_consumers_and_inflight_decision(case):
         return SimpleNamespace(success=True)
     runner = runner_for(case, send)
     decide(case)
-    first = asyncio.create_task(recovery.consume_requests(runner, case.db_path))
+    first = asyncio.create_task(consumer.consume_requests(runner, case.db_path))
     await entered.wait()
     with pytest.raises(ValueError):
         decide(case)
-    await recovery.consume_requests(runner, case.db_path)
+    await consumer.consume_requests(runner, case.db_path)
     assert len(sends) == 1
     release.set()
     await first
@@ -144,14 +93,14 @@ async def test_crash_claim_not_replayed_and_requires_new_decision(case, monkeypa
         sends.append(kw)
         return SimpleNamespace(success=True)
     runner = runner_for(case, send)
-    await recovery.consume_requests(runner, case.db_path)
+    await consumer.consume_requests(runner, case.db_path)
     assert not sends
     monkeypatch.setattr(ledger, '_owner_alive', lambda *a: False)
     # Simulate a new process identity; receipt and execution retain dead owner.
     original = recovery._owner_stamp()
     monkeypatch.setattr(recovery, '_owner_stamp', lambda: (original[0], original[1] + 1))
     decide(case)
-    await recovery.consume_requests(runner, case.db_path)
+    await consumer.consume_requests(runner, case.db_path)
     assert len(sends) == 1
     assert state(case) == 'delivered'
 
@@ -159,7 +108,7 @@ async def test_crash_claim_not_replayed_and_requires_new_decision(case, monkeypa
 @pytest.mark.asyncio
 @pytest.mark.parametrize('mutation', ['receipt', 'action', 'settlement'])
 async def test_stale_identity_never_sends_or_finalizes(case, mutation):
-    assert hasattr(recovery, 'consume_requests'), 'missing working owner-loop consumer'
+    assert hasattr(consumer, 'consume_requests'), 'missing working owner-loop consumer'
     sends = []
     async def send(**kw):
         sends.append(kw)
@@ -173,7 +122,7 @@ async def test_stale_identity_never_sends_or_finalizes(case, mutation):
             c.execute("UPDATE delivery_obligations SET content='changed'")
         elif mutation == 'action':
             c.execute("UPDATE gateway_post_response_actions SET payload_json='{}'")
-    await recovery.consume_requests(runner, case.db_path)
+    await consumer.consume_requests(runner, case.db_path)
     assert len(sends) == (1 if mutation == 'settlement' else 0)
     assert state(case) != 'delivered'
     assert case.has_post_response_barrier('route', 'lineage')
@@ -195,7 +144,7 @@ async def test_stale_request_history_cannot_starve_valid_decision(case):
         return SimpleNamespace(success=True)
     runner = runner_for(case, send)
     for _ in range(4):
-        await recovery.consume_requests(runner, case.db_path)
+        await consumer.consume_requests(runner, case.db_path)
     assert len(sends) == 1
     assert state(case) == 'delivered'
 
@@ -214,27 +163,26 @@ async def test_shutdown_cancels_inflight_recovery_without_retry(case):
     worker.start()
     try:
         await asyncio.wait_for(entered.wait(), 2)
-        assert worker.shutdown(1)
-        await asyncio.sleep(.05)
-        assert worker._recovery_future is not None
-        assert worker._recovery_future.done()
+        assert not worker.shutdown(1)
+        await until(worker._recovery.is_idle)
+        assert worker.shutdown(0)
         assert state(case) == 'abandoned'
         assert case.has_post_response_barrier('route', 'lineage')
     finally:
-        if worker._recovery_future is not None:
-            worker._recovery_future.cancel()
-        await asyncio.sleep(.01)
+        worker.shutdown(1)
+        await until(worker._recovery.is_idle)
 
 
 def test_startup_sweep_and_prune_preserve_crash_fence(case, monkeypatch):
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
     request = decide(case)
-    claim = recovery.claim_retry(case.db_path, request['request_id'])
+    recovery.claim_retry(case.db_path, request['request_id'])
     monkeypatch.setattr(ledger, '_owner_alive', lambda *a: False)
     token = set_hermes_home_override(str(case.db_path.parent))
     try:
         assert ledger.sweep_recoverable(now=10**12) == []
-        ledger._prune(now=10**12)
+        with ledger._transaction(db_path=case.db_path) as conn:
+            ledger._prune_unlocked(conn, 10**12)
         assert state(case) == 'abandoned'
         assert case.has_post_response_barrier('route', 'lineage')
         assert recovery.claim_retry(case.db_path, request['request_id']) is None

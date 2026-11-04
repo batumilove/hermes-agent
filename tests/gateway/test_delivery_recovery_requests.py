@@ -3,6 +3,7 @@ import concurrent.futures
 import importlib
 import importlib.util
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -16,21 +17,21 @@ class RecoveryRequestsTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.path = Path(self.tmp.name) / 'state.db'
+        self.path = Path(self.tmp.name).resolve() / 'state.db'
         with sqlite3.connect(self.path) as c:
             c.executescript('''
                 CREATE TABLE delivery_obligations (
                     obligation_id TEXT PRIMARY KEY, session_key TEXT, platform TEXT,
                     chat_id TEXT, thread_id TEXT, content TEXT, state TEXT,
                     attempts INTEGER, created_at REAL, updated_at REAL,
-                    owner_pid INTEGER, owner_started_at INTEGER, last_error TEXT);
+                    owner_pid INTEGER, owner_started_at INTEGER, last_error TEXT, adapter_profile TEXT);
                 CREATE TABLE gateway_post_response_actions (
                     obligation_id TEXT, ordinal INTEGER, action_key TEXT,
                     action_kind TEXT, payload_json TEXT, state TEXT, attempts INTEGER,
                     owner_pid INTEGER, owner_started_at INTEGER);
                 INSERT INTO delivery_obligations VALUES
                     ('oid','private-route','telegram','private-chat','private-thread',
-                     'private-answer','failed',3,1,2,123,456,'private-error');
+                     'private-answer','failed',3,1,2,123,456,'private-error','default');
                 INSERT INTO gateway_post_response_actions VALUES
                     ('oid',0,'action','finalize_turn',
                      '{"session_key":"private-route","active_turn_token":"old"}',
@@ -174,17 +175,18 @@ class RecoveryRequestsTest(unittest.TestCase):
         self.assertEqual(self.rows(), before)
 
     def test_cli_dry_run_and_explicit_request_never_resend(self):
-        command = [sys.executable, '-m', 'gateway.delivery_recovery', '--db', str(self.path)]
+        command = [sys.executable, '-m', 'hermes_cli.main', 'delivery-recovery']
+        env = dict(os.environ, HERMES_HOME=str(self.path.parent))
         before = self.rows()
-        inspected = subprocess.run(command + ['inspect', 'oid'], capture_output=True, text=True)
+        inspected = subprocess.run(command + ['inspect', 'oid', '--expect-home', str(self.path.parent)], capture_output=True, text=True, check=False, env=env, timeout=20)
         self.assertEqual(inspected.returncode, 0, inspected.stderr)
         fingerprint = json.loads(inspected.stdout)['fingerprint']
-        args = ['request-retry', 'oid', '--fingerprint', fingerprint,
+        args = ['request-retry', 'oid', '--expect-home', str(self.path.parent), '--fingerprint', fingerprint,
                 '--operator', 'cli-test', '--acknowledge-possible-duplicate']
-        dry = subprocess.run(command + args, capture_output=True, text=True)
+        dry = subprocess.run(command + args, capture_output=True, text=True, check=False, env=env, timeout=20)
         self.assertEqual(dry.returncode, 0, dry.stderr)
         self.assertEqual(json.loads(dry.stdout)['status'], 'dry_run')
-        applied = subprocess.run(command + args + ['--apply'], capture_output=True, text=True)
+        applied = subprocess.run(command + args + ['--apply'], capture_output=True, text=True, check=False, env=env, timeout=20)
         self.assertEqual(applied.returncode, 0, applied.stderr)
         self.assertEqual(json.loads(applied.stdout)['status'], 'requested')
         self.assertTrue(json.loads(applied.stdout)['execution_available'])

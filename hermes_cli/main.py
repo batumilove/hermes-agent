@@ -3047,9 +3047,6 @@ def _build_cli_parser():
     build_lifecycle_lease_parser(
         subparsers, cmd_lifecycle_lease=run_lifecycle_lease_command
     )
-    from hermes_cli.delivery_recovery_cmd import register_cli as register_recovery_cli
-
-    register_recovery_cli(subparsers)
     build_model_parser(subparsers, cmd_model=cmd_model)
     build_moa_parser(subparsers)
     build_fallback_parser(subparsers)

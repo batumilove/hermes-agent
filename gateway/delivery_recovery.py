@@ -4,15 +4,12 @@ CLI requests are consumed by the owning gateway's post-response worker on its
 async event loop. Only an acknowledged decision may resend existing content;
 no model replay is performed. Cancellation is explicitly unavailable.
 
-CLI: python -m gateway.delivery_recovery --db /exact/profile/state.db inspect ID
-     python -m gateway.delivery_recovery --db /exact/profile/state.db request-retry ID
-       --fingerprint SHA256 --operator LABEL --acknowledge-possible-duplicate
-By default request-retry is a read-only dry run; --apply authorizes one resend.
+Use ``hermes delivery-recovery`` to inspect or request one acknowledged retry.
+The canonical command is read-only unless the operator supplies ``--apply``.
 No state DB is created, no SessionDB startup/migration is invoked by inspection.
 """
 from __future__ import annotations
 
-import argparse
 from contextlib import contextmanager
 import hashlib
 import json
@@ -29,6 +26,8 @@ def _path(db_path):
         raise ValueError("an existing non-symlink state DB is required")
     if path.resolve() != path:
         raise ValueError("state DB path must be canonical")
+    from hermes_constants import assert_named_profile_home_live
+    assert_named_profile_home_live(path)
     return path
 
 
@@ -100,6 +99,9 @@ def inspect_obligation(db_path, obligation_id):
 
 
 def _eligible(receipt, actions):
+    profile = receipt.get('adapter_profile')
+    if not isinstance(profile, str) or not profile.strip():
+        raise ValueError('receipt has no durable delivery adapter owner')
     if receipt['state'] not in ('failed', 'abandoned'):
         raise ValueError('only failed or abandoned receipts permit explicit retry requests')
     remaining = [a for a in actions if a['state'] != 'done']
@@ -271,26 +273,6 @@ def _retire_completed(db_path, claim):
                 (time.time(), claim['request_id']))
 
 
-def _reconcile_completed(runner, db_path):
-    """Bounded owner-side retry; never infer completion from PID liveness.
-
-    Entries originate only after adapter return/exception. Keep failed cleanup
-    discoverable on the runner for future polls; durable sending still excludes
-    new acknowledgements until cleanup succeeds (or that owner process dies).
-    """
-    pending = getattr(runner, '_delivery_recovery_completed', {})
-    matching = [(key, claim) for key, claim in pending.items() if key[0] == str(db_path)]
-    for key, claim in matching[:32]:
-        for _ in range(3):
-            try:
-                _retire_completed(db_path, claim)
-            except (sqlite3.Error, OSError, ValueError):
-                continue
-            pending.pop(key, None)
-            break
-    return any(key[0] == str(db_path) for key in pending)
-
-
 def settle_retry(db_path, claim, *, delivered):
     """Exact full-row/action CAS; never turn an unproved outcome into delivery."""
     with _connection(db_path, write=True) as (path, conn):
@@ -308,126 +290,3 @@ def settle_retry(db_path, claim, *, delivered):
         conn.execute('''UPDATE delivery_recovery_executions SET status=?,updated_at=? WHERE request_id=?''',
             ('delivered' if delivered else 'uncertain', time.time(), claim['request_id']))
         return True
-
-
-async def consume_requests(runner, db_path):
-    """Bounded send-only consumer. Must execute on the owning gateway loop.
-
-    No turn replay, no direct finalization, no automatic repeat. Even task
-    cancellation settles uncertain; process death leaves the durable fence.
-    """
-    import asyncio
-    from gateway.config import Platform
-    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
-    if asyncio.get_running_loop() is not getattr(runner, '_gateway_loop', None):
-        raise ValueError('recovery must run on the owning gateway event loop')
-    if not getattr(runner, '_running', False):
-        return
-    token = set_hermes_home_override(str(Path(db_path).parent))
-    try:
-        if _reconcile_completed(runner, db_path):
-            return  # bound retained cleanup; do not accumulate more sends
-        with _connection(db_path) as (_, conn):
-            if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='delivery_recovery_requests'").fetchone():
-                return
-            # Keyset pagination keeps each poll bounded without allowing stale
-            # or spent history to hide a valid decision forever. This cursor is
-            # only a scheduling aid: claim_retry remains the durable CAS gate.
-            cursors = getattr(runner, '_delivery_recovery_cursors', None)
-            if cursors is None:
-                cursors = runner._delivery_recovery_cursors = {}
-            key = str(db_path)
-            has_executions = conn.execute("SELECT 1 FROM sqlite_master WHERE name='delivery_recovery_executions'").fetchone()
-            unspent = ('''AND NOT EXISTS (SELECT 1 FROM delivery_recovery_executions e
-                WHERE e.request_id=r.request_id)''' if has_executions else '')
-            requests = conn.execute('''SELECT r.request_id, r.obligation_id
-                FROM delivery_recovery_requests r
-                JOIN delivery_obligations o ON o.obligation_id=r.obligation_id
-                WHERE r.request_id > ? ''' + unspent + '''
-                ORDER BY r.request_id LIMIT 32''',
-                (cursors.get(key, ''),)).fetchall()
-            cursors[key] = requests[-1]['request_id'] if len(requests) == 32 else ''
-        for request in requests:
-            controller = getattr(runner, '_post_response_controller', None)
-            if (not getattr(runner, '_running', False)
-                    or (controller is not None and controller._stop.is_set())):
-                return
-            try:
-                with _connection(db_path) as (path, conn):
-                    receipt, _, _ = _snapshot(path, conn, request['obligation_id'])
-                adapter = runner.adapters.get(Platform(receipt['platform']))
-                if adapter is None:
-                    continue  # no send claim spent while adapter unavailable
-                claim = claim_retry(db_path, request['request_id'])
-            except (ValueError, sqlite3.Error, OSError):
-                continue  # a pruned/stale/broken request must not abort this page
-            if claim is None:
-                continue
-            receipt = claim['receipt']
-            delivered = False
-            try:
-                result = await adapter.send(
-                    chat_id=receipt['chat_id'],
-                    content='♻️ Operator-requested retry — possible duplicate:\n\n' + receipt['content'],
-                    metadata={'thread_id': receipt['thread_id']} if receipt['thread_id'] else None)
-                delivered = result is not None and getattr(result, 'success', False) is True
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                pass  # ambiguous network failure; retain barrier, no retry
-            finally:
-                # This entry is created only after the adapter has unwound, not
-                # at claim time. Other consumers cannot retire an active send.
-                pending = getattr(runner, '_delivery_recovery_completed', None)
-                if pending is None:
-                    pending = runner._delivery_recovery_completed = {}
-                completed_key = (str(db_path), claim['request_id'])
-                pending[completed_key] = claim
-                settled = False
-                try:
-                    settled = settle_retry(db_path, claim, delivered=delivered)
-                except (ValueError, sqlite3.Error, OSError):
-                    pass  # uncertainty cleanup must not promote delivery
-                if settled:
-                    pending.pop(completed_key, None)
-                else:
-                    _reconcile_completed(runner, db_path)
-            if settled and delivered:
-                controller = getattr(runner, '_post_response_controller', None)
-                if controller is not None:
-                    controller.wake()
-            if pending:
-                return  # retry cleanup on a later poll before spending more claims
-    finally:
-        reset_hermes_home_override(token)
-
-
-def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--db', required=True, type=Path)
-    sub = parser.add_subparsers(dest='command', required=True)
-    inspect = sub.add_parser('inspect')
-    inspect.add_argument('obligation_id')
-    request = sub.add_parser('request-retry')
-    request.add_argument('obligation_id')
-    request.add_argument('--fingerprint', required=True)
-    request.add_argument('--operator', required=True)
-    request.add_argument('--acknowledge-possible-duplicate', action='store_true')
-    request.add_argument('--apply', action='store_true', help='authorize one resend by the owning gateway; may duplicate')
-    args = parser.parse_args(argv)
-    try:
-        if args.command == 'inspect':
-            result = inspect_obligation(args.db, args.obligation_id)
-        else:
-            result = request_retry(args.db, args.obligation_id, fingerprint=args.fingerprint,
-                operator=args.operator, acknowledge_possible_duplicate=args.acknowledge_possible_duplicate,
-                dry_run=not args.apply)
-    except (ValueError, sqlite3.Error, OSError):
-        # DB error text can include paths, triggers or private payload data.
-        parser.exit(2, 'Recovery refused; inspect the exact obligation and review its owner/state.\n')
-    print(json.dumps(result, sort_keys=True))
-    return 0
-
-
-if __name__ == '__main__':
-    raise SystemExit(main())
