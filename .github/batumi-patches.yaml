@@ -13,8 +13,10 @@ patches:
   - gateway/run_bootstrap.py
   - gateway/run_bootstrap_cleanup.py
   - tests/gateway/test_bootstrap_identity_cleanup.py
+  - tests/gateway/test_startup_restart_race.py
+  - tests/gateway/test_reload_signal_logs_graceful_restart.py
   tests:
-  - scripts/run_tests.sh tests/gateway/test_bootstrap_identity_cleanup.py tests/gateway/test_shutdown_residual_lifecycle.py tests/gateway/test_active_agent_status_persistence.py tests/gateway/test_shutdown_aggregate_budget_contract.py
+  - scripts/run_tests.sh tests/gateway/test_bootstrap_identity_cleanup.py tests/gateway/test_shutdown_residual_lifecycle.py tests/gateway/test_active_agent_status_persistence.py tests/gateway/test_shutdown_aggregate_budget_contract.py tests/gateway/test_startup_restart_race.py tests/gateway/test_reload_signal_logs_graceful_restart.py
   retirement: Remove when upstream preserves after-drain identity cleanup through control failures
     and cancellation, with a nonblocking final release and native writer-exclusion coverage.
 - id: bounded-config-explanation
