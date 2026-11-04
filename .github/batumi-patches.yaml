@@ -2366,6 +2366,30 @@ patches:
   - scripts/run_tests.sh tests/tools/test_live_state_db_guard.py tests/tools/test_terminal_tool.py tests/hermes_cli/test_state_db_cmd.py
   retirement: Remove when upstream provides equivalent non-approvable live-database ownership enforcement
     and a bounded canonical read-only inspection path.
+- id: acknowledged-final-delivery-recovery
+  kind: core
+  rationale: Recover one explicitly acknowledged saved final through its durable bot owner,
+    with profile-scoped database consumers, one-shot ambiguity fences, and shutdown writer custody.
+  paths:
+  - gateway/delivery_recovery.py
+  - gateway/delivery_recovery_consumer.py
+  - gateway/delivery_recovery_scheduler.py
+  - gateway/post_response.py
+  - hermes_cli/delivery_recovery_cmd.py
+  - hermes_cli/state_db_cmd.py
+  - hermes_cli/main.py
+  - docs/delivery-recovery-cli.md
+  - tests/gateway/delivery_recovery_fixtures.py
+  - tests/gateway/test_delivery_recovery_execution.py
+  - tests/gateway/test_delivery_recovery_requests.py
+  - tests/gateway/test_delivery_recovery_v3.py
+  - tests/gateway/test_delivery_recovery_profiles.py
+  - tests/gateway/test_delivery_recovery_lifecycle.py
+  - tests/hermes_cli/test_delivery_recovery_cmd.py
+  tests:
+  - scripts/run_tests.sh tests/gateway/test_delivery_recovery_requests.py tests/gateway/test_delivery_recovery_execution.py tests/gateway/test_delivery_recovery_v3.py tests/gateway/test_delivery_recovery_profiles.py tests/gateway/test_delivery_recovery_lifecycle.py tests/hermes_cli/test_delivery_recovery_cmd.py
+  retirement: Remove when upstream supplies equivalent explicit per-obligation consent,
+    durable bot routing, ambiguity handling and multi-database shutdown regression contracts.
 - id: durable-post-response-barrier
   kind: core
   rationale: Persist a final delivery obligation and its ordered session-scoped post-response barrier

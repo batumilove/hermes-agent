@@ -115,3 +115,7 @@ def register_cli(subparsers) -> None:
         default=_DEFAULT_MAX_ROWS,
         help=f"Maximum rows to return (default {_DEFAULT_MAX_ROWS}, max {_MAX_ALLOWED_ROWS})",
     )
+
+    from hermes_cli.delivery_recovery_cmd import register_cli as register_recovery_cli
+
+    register_recovery_cli(subparsers)

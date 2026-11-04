@@ -215,6 +215,8 @@ class PostResponseWorker:
         self.store = runner.session_store
         self._wake = threading.Event()
         self._stop = threading.Event()
+        from gateway.delivery_recovery_scheduler import RecoveryScheduler
+        self._recovery = RecoveryScheduler(self)
         # Capture the runner's actual root handle.  In production this is the
         # process HERMES_HOME; taking the handle path also preserves explicit
         # SessionDB pins used by recovery/test harnesses.
@@ -367,12 +369,13 @@ class PostResponseWorker:
     def shutdown(self, timeout: float) -> bool:
         self._stop.set()
         self._wake.set()
+        self._recovery.stop()
         # Leave a small scheduler margin to honour the caller's aggregate
         # shutdown budget rather than consuming it all in Thread.join().
         if self.thread.ident is None:
-            return True
+            return self._recovery.is_idle()
         self.thread.join(max(0.0, float(timeout) - 0.05))
-        return not self.thread.is_alive()
+        return not self.thread.is_alive() and self._recovery.is_idle()
 
     @staticmethod
     def _error_token(exc: BaseException) -> str:
@@ -409,8 +412,10 @@ class PostResponseWorker:
                 deadline = min(next_action_poll_at, next_discovery_at)
                 self._wake.wait(max(0.0, deadline - time.monotonic()))
                 continue
+            paths = self._round_robin_db_paths()
+            self._recovery.poll(paths)
             claimed = None
-            for db_path in self._round_robin_db_paths():
+            for db_path in paths:
                 try:
                     with self._db_scope(db_path) as db:
                         actions = db.claim_ready_post_response_actions(limit=1)
