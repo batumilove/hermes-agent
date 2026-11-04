@@ -213,9 +213,14 @@ def test_probe_populated_edge_caps_synthetic_domain(tmp_path: Path) -> None:
 # ── lost_and_found lane: unreadable table schemas ───────────────────────────
 
 
+@pytest.mark.parametrize('prior_refusal', [
+    {'reason': 'missing'},
+    {'reason': 'wal_reset_vulnerable', 'detail': 'synthetic cached vulnerable shell'},
+])
 def test_unreadable_schema_without_cli_names_the_sqlite3_requirement(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    prior_refusal: dict,
 ) -> None:
     """Without a sqlite3 CLI the refusal must say exactly what to install."""
     source = tmp_path / "schemaless.db"
@@ -224,7 +229,9 @@ def test_unreadable_schema_without_cli_names_the_sqlite3_requirement(
 
     import hermes_cli.session_lost_and_found as laf
 
-    monkeypatch.setattr(laf, "find_sqlite3_cli", lambda: None)
+    monkeypatch.setattr(laf, "_last_cli_refusal", prior_refusal)
+    # Exercise discovery so cached host refusals are cleared as they are in production.
+    monkeypatch.setattr(laf.shutil, "which", lambda _binary: None)
     with pytest.raises(SessionRecoverySourceError) as excinfo:
         recover_session_database(
             source,
@@ -233,6 +240,7 @@ def test_unreadable_schema_without_cli_names_the_sqlite3_requirement(
             allow_partial=True,
         )
     message = str(excinfo.value)
+    assert laf.find_sqlite3_cli_refusal() == {"reason": "missing"}
     assert "sessions" in message and "messages" in message
     assert "sqlite3" in message
     assert ".recover" in message
