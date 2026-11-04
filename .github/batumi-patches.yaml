@@ -5,6 +5,18 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: bootstrap-final-identity-custody
+  kind: core
+  rationale: Attempt the final PID and runtime-lock handoff after control cleanup errors or
+    cancellation, without waiting behind stalled status writes or releasing surviving writer custody.
+  paths:
+  - gateway/run_bootstrap.py
+  - gateway/run_bootstrap_cleanup.py
+  - tests/gateway/test_bootstrap_identity_cleanup.py
+  tests:
+  - scripts/run_tests.sh tests/gateway/test_bootstrap_identity_cleanup.py tests/gateway/test_shutdown_residual_lifecycle.py tests/gateway/test_active_agent_status_persistence.py tests/gateway/test_shutdown_aggregate_budget_contract.py
+  retirement: Remove when upstream preserves after-drain identity cleanup through control failures
+    and cancellation, with a nonblocking final release and native writer-exclusion coverage.
 - id: bounded-config-explanation
   kind: core
   rationale: Explain one non-secret approval boolean without config bootstrap or unrelated value expansion.

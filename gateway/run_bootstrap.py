@@ -770,7 +770,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             and not await _start_gateway_replace_existing_instance(existing_pid, replace)):
         return False
 
-    from gateway.status import remove_pid_file, release_gateway_runtime_lock
+    from gateway.status import release_gateway_runtime_lock
     if not _start_gateway_reserve_profiles(profile_homes):
         return False
     # Freeze discovery: later profile additions must restart and reserve before opening stores.
@@ -922,7 +922,5 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         finally:
             if _planned_stop_watcher_stop is not None:
                 _planned_stop_watcher_stop.set()
-            if _control_server is not None:
-                await _control_server.stop()
-            remove_pid_file()
-            release_gateway_runtime_lock()
+            from gateway.run_bootstrap_cleanup import finalize_runtime_identity
+            await finalize_runtime_identity(_control_server)
