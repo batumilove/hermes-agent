@@ -131,6 +131,8 @@ class PluginLedgerMixin:
         return True
 
     def _remove_callback(self, mapping: dict[str, list[Callable]], key: str, callback: Callable) -> None:
+        if mapping is self._hooks:
+            self._hook_evidence_generation += 1
         callbacks = mapping.get(key)
         if callbacks is None:
             return
