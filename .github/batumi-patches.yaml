@@ -5,6 +5,15 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: watchdog-early-thread-attribution
+  kind: core
+  rationale: Attribute pre-prompt watchdog diagnostics to the admitted scheduling owner without resetting interrupt state.
+  paths:
+  - agent/turn_liveness.py
+  - tests/agent/test_watchdog_early_thread_attribution.py
+  tests:
+  - scripts/run_tests.sh tests/agent/test_watchdog_early_thread_attribution.py tests/agent/test_turn_liveness_watchdog.py tests/agent/test_turn_liveness.py
+  retirement: Remove when upstream captures the admitted watchdog owner before prompt preparation with equivalent interrupt-preservation tests.
 - id: bootstrap-final-identity-custody
   kind: core
   rationale: Attempt the final PID and runtime-lock handoff after control cleanup errors or
