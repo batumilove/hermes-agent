@@ -5,6 +5,15 @@ description: How to verify you are using genuine Hermes Agent resources, and how
 
 # Official Domains & Phishing Safety
 
+:::note Upstream sources and this fork
+This page identifies Nous Research's upstream services. This fork is maintained at
+[batumilove/hermes-agent](https://github.com/batumilove/hermes-agent); its installer,
+release artifacts and update feed are separate. Use the [fork installation guide](./installation.md)
+and [platform policy](./platform-support.md). Native Windows and Android/Termux
+are unsupported here, even when upstream offers downloads for them.
+:::
+
+
 Hermes Agent's popularity has attracted impersonation campaigns: fake "Hermes" websites, GitHub accounts that mass-mention contributors with shortlinks, and cold emails offering "credits" on lookalike products. This page lists the official sources so you can check anything that claims to be Hermes Agent.
 
 ## Official sources
@@ -26,7 +35,7 @@ Outside `nousresearch.com`:
 - **X (Twitter):** [@NousResearch](https://x.com/NousResearch)
 - **Discord:** [discord.gg/NousResearch](https://discord.gg/NousResearch)
 
-## Installing from an official source
+## Installing upstream Hermes from an official source
 
 The script installers are served from `hermes-agent.nousresearch.com`:
 
@@ -40,7 +49,7 @@ curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 ```
 
-The other supported routes also stay on official sources: Desktop packages download from the [Hermes website](https://hermes-agent.nousresearch.com/), Termux uses the signed APT repository on `hermes-assets.nousresearch.com` (see the [Termux guide](./termux.md), not the script above), Nix builds from the GitHub repository (see [Nix & NixOS](./nix-setup.md)), and Docker pulls `nousresearch/hermes-agent` from Docker Hub. Some guides fetch `install.ps1` straight from the repository at `raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1`; it is the same script.
+Upstream's other distribution routes also stay on official sources: Desktop packages download from the [Hermes website](https://hermes-agent.nousresearch.com/), Termux uses the signed APT repository on `hermes-assets.nousresearch.com` (see the [Termux guide](./termux.md), not the script above), Nix builds from the GitHub repository (see [Nix & NixOS](./nix-setup.md)), and Docker pulls `nousresearch/hermes-agent` from Docker Hub. Some guides fetch `install.ps1` straight from the repository at `raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1`; it is the same script.
 
 If an installer, download, image, or "portal" is hosted anywhere other than the sources listed on this page, treat it as untrusted.
 

@@ -9,7 +9,7 @@ Thank you for contributing to Hermes Agent! This guide covers everything you nee
 We value contributions in this order:
 
 1. **Bug fixes** — crashes, incorrect behavior, data loss. Always top priority.
-2. **Cross-platform compatibility** — macOS, different Linux distros, and WSL2 on Windows. We want Hermes to work everywhere.
+2. **Cross-platform compatibility** — macOS, different Linux distros, and WSL2 on Windows. This fork supports standard Linux/macOS on x86_64 and ARM64; native Windows and Android/Termux are unsupported.
 3. **Security hardening** — shell injection, prompt injection, path traversal, privilege escalation. See [Security](#security-considerations).
 4. **Performance and robustness** — retry logic, error handling, graceful degradation.
 5. **New skills** — but only broadly useful ones. See [Should it be a Skill or a Tool?](#should-it-be-a-skill-or-a-tool)
@@ -716,8 +716,13 @@ See `hermes_cli/skin_engine.py` for the full schema and existing skins as exampl
 
 ## Cross-Platform Compatibility
 
-Hermes runs on Linux, macOS, and native Windows (plus WSL2). When writing code
-that touches the OS, assume *any* platform can hit your code path.
+This fork supports standard Linux and macOS on x86_64 and ARM64, including
+Linux inside WSL2. Native Windows and Android/Termux are unsupported; see
+[Platform Support](website/docs/getting-started/platform-support.md).
+
+The Windows compatibility rules below apply to retained upstream implementation
+and historical formats. Keep these safeguards when touching shared code; they
+do not expand this fork's supported hosts or enable Windows CI/release lanes.
 
 > **Before you PR:** run `scripts/check-windows-footguns.py` to catch the
 > common Windows-unsafe patterns in your diff. It's grep-based and cheap;
