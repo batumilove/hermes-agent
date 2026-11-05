@@ -2704,6 +2704,8 @@ patches:
   - tests/scripts/test_release_channels.py
   - tests/scripts/test_release_entrypoint.py
   - tests/scripts/test_release_lanes.py
+  - tests/scripts/test_release_artifacts.py
+  - tests/scripts/test_release_darwin.py
   - tests/scripts/test_render_builds_binding.py
   - tests/scripts/test_stable_release.py
   - tests/scripts/test_supported_release_platforms.py
@@ -2716,7 +2718,7 @@ patches:
   - scripts/bundles/release_artifacts.py
   tests:
   - scripts/run_tests.sh tests/hermes_platform tests/scripts/test_supported_release_platforms.py tests/scripts/install/test_install_sh_termux_refusal.py
-  - scripts/run_tests.sh tests/scripts/test_job_groups.py tests/scripts/test_release_lanes.py tests/scripts/test_release_entrypoint.py tests/scripts/test_release_channels.py tests/scripts/test_stable_release.py
+  - scripts/run_tests.sh tests/scripts/test_job_groups.py tests/scripts/test_release_lanes.py tests/scripts/test_release_entrypoint.py tests/scripts/test_release_channels.py tests/scripts/test_stable_release.py tests/scripts/test_release_artifacts.py tests/scripts/test_release_darwin.py
   - scripts/run_tests.sh tests/ci/test_stable_release_graph.py tests/ci/test_protected_canary_publication.py tests/ci/test_channel_build_publication.py tests/ci/test_tag_builds_summary.py tests/ci/test_workflow_job_graph.py tests/ci/test_desktop_bundle_smoke.py
   - scripts/run_tests.sh tests/ci/test_update_ci_routing.py tests/ci/test_update_transitive_routing.py tests/ci/test_classify_changes.py tests/ci/test_commit_build_staging.py tests/ci/test_desktop_release_tag_admission.py tests/ci/test_termux_input_archive.py
   - scripts/run_tests.sh tests/scripts/test_release_sequencer.py tests/scripts/test_dispatch_log.py tests/scripts/test_render_builds_binding.py tests/scripts/test_render_builds_publication.py tests/scripts/install/test_install_clone_throttle_fallback.py tests/scripts/install/test_install_diverged_rescue_ref.py
