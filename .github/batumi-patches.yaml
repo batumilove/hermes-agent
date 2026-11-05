@@ -109,10 +109,12 @@ patches:
   - .github/scripts/run-ui-lane.mjs
   - .github/workflows/js-tests.yml
   - scripts/ci/required_results.py
+  - tests/ci/test_js_tests_vitest_history.py
   - tests/ci/test_ui_required_results.py
   tests:
   - node --test .github/scripts/ui-sharding.test.mjs .github/scripts/ui-discovery.test.mjs
   - scripts/run_tests.sh tests/ci/test_ui_required_results.py tests/ci/test_required_results.py
+  - scripts/run_tests.sh tests/ci/test_js_tests_vitest_history.py
   retirement: Remove when upstream provides equivalent isolated sharding and fail-closed exact-once coverage.
 - id: local-npm-source-cache-identity
   kind: compatibility
