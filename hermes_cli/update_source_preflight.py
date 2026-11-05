@@ -22,3 +22,13 @@ def storage_refusal(paths, *, required_bytes=512 * 1024 * 1024, required_inodes=
         if stat is not None and stat.f_files and stat.f_favail < required_inodes:
             return f"insufficient free inodes for update at {parent} (need {required_inodes})"
     return None
+
+
+def refuse_insufficient_storage(paths):
+    """Refuse before update mutation when the installation lacks capacity."""
+    from hermes_cli.update_cmd import _record_stop
+
+    if reason := storage_refusal(paths):
+        _record_stop("storage_preflight_refused")
+        print(f"✗ {reason}")
+        raise SystemExit(1)

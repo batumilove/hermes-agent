@@ -66,7 +66,6 @@
     "source-map-js": "1.2.2",
     "http-cache-semantics": "4.3.0",
     "braces": "$braces",
-    "katex": "0.18.4",
     "postcss-selector-parser": "7.1.6",
     "follow-redirects": "1.16.2",
     "launch-editor": "2.14.2",

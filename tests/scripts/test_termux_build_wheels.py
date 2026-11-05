@@ -19,6 +19,38 @@ _PIP_URL = (
 )
 _PIP_SHA256 = "71138adf1f4ca900cdb7d289c21b7494329f2332b6d85f0e1c42108c0384ed3e"
 
+# A PEP 517 backend that lives in the fixture's own source tree: the wheel build needs nothing
+# from an index (the setuptools backend it replaces was fetched from PyPI on every run). It
+# packages ``source_fixture.py`` as checked out, so the pinned commit still decides the content.
+_IN_TREE_BACKEND = '''\
+import base64, hashlib, zipfile
+from pathlib import Path
+
+_DIST, _VERSION = "hermes_source_fixture", "8.0.0"
+
+
+def get_requires_for_build_wheel(config_settings=None):
+    return []
+
+
+def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
+    info = f"{_DIST}-{_VERSION}.dist-info"
+    files = {
+        "source_fixture.py": Path("source_fixture.py").read_bytes(),
+        f"{info}/METADATA": b"Metadata-Version: 2.1\\nName: hermes-source-fixture\\nVersion: 8.0.0\\n",
+        f"{info}/WHEEL": b"Wheel-Version: 1.0\\nGenerator: fixture\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n",
+    }
+    record = "".join(
+        f"{name},sha256={base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b'=').decode()},{len(data)}\\n"
+        for name, data in files.items()) + f"{info}/RECORD,,\\n"
+    files[f"{info}/RECORD"] = record.encode()
+    name = f"{_DIST}-{_VERSION}-py3-none-any.whl"
+    with zipfile.ZipFile(Path(wheel_directory) / name, "w") as archive:
+        for path, data in files.items():
+            archive.writestr(path, data)
+    return name
+'''
+
 
 @pytest.mark.parametrize("bom", [b"", b"\xef\xbb\xbf"])
 def test_requirement_readers_preserve_pins_and_reject_malformed_rows(tmp_path, bom):
@@ -37,13 +69,14 @@ def test_requirement_readers_preserve_pins_and_reject_malformed_rows(tmp_path, b
         builder.load_entries(resolved)
 
 
-def test_source_pin_survives_resolution_build_and_offline_install(tmp_path):
+@pytest.mark.allow_network
+def test_source_pin_survives_resolution_build_and_offline_install(tmp_path, monkeypatch):
     repo = tmp_path / "source"
     repo.mkdir()
     (repo / "pyproject.toml").write_text(
-        '[build-system]\nrequires = ["setuptools>=75.3.4"]\n'
-        'build-backend = "setuptools.build_meta"\n'
+        '[build-system]\nrequires = []\nbuild-backend = "backend"\nbackend-path = ["."]\n'
         '[project]\nname = "hermes-source-fixture"\nversion = "8.0.0"\n', encoding="utf-8")
+    (repo / "backend.py").write_text(_IN_TREE_BACKEND, encoding="utf-8")
     (repo / "source_fixture.py").write_text('VALUE = "from pinned source"\n', encoding="utf-8")
     subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
     subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
