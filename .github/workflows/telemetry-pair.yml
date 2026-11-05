@@ -34,6 +34,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ env.CORE_SHA }}
+          fetch-depth: 0
           persist-credentials: false
       - name: Check out the exact plugin candidate
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -56,6 +57,34 @@ jobs:
           test-environment: 'true'
           save-tools-cache: 'false'
           save-python-cache: 'false'
+      - name: Fetch the core's pinned imported-release proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$HERMES_PYTHON" - <<'PYPROOF'
+          import json, os, subprocess
+          from pathlib import Path
+          from scripts.check_fork_delta import DEFAULT_MANIFEST, fetch_provenance_source
+          from hermes_cli.version_provenance import IMPORTED_RELEASE
+          version, tag_object, release_commit = IMPORTED_RELEASE
+          ref = "refs/tags/v" + version
+          subprocess.run(["git", "fetch", "--no-tags",
+                          "https://github.com/NousResearch/hermes-agent.git",
+                          ref + ":" + ref], check=True)
+          def git(*args):
+              return subprocess.check_output(["git", *args], text=True).strip()
+          assert git("rev-parse", ref) == tag_object, "pinned release tag mismatch"
+          assert git("rev-parse", ref + "^{commit}") == release_commit, "release commit mismatch"
+          fetch_provenance_source(DEFAULT_MANIFEST, cwd=Path.cwd())
+          from hermes_cli.version_info import get_version_info
+          from hermes_cli.plugins_manifest import requires_hermes_error
+          info = get_version_info()
+          assert info.commit == os.environ["CORE_SHA"], "executing source identity mismatch"
+          error = requires_hermes_error({"requires_hermes": ">=0.21.7"})
+          assert error is None, error
+          print(json.dumps({"core_sha": info.commit, "base_version": info.base_version,
+                            "identity_source": info.source}))
+          PYPROOF
       - name: Run plugin and core custody contracts without credentials
         shell: bash
         env:
