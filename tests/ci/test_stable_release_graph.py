@@ -52,21 +52,21 @@ def test_release_reuses_whole_ci_and_docker_before_publication():
     # The acceptance join requires CI, so a slow gate cannot delay a build.
     for parallel in ("docker", "nix", "pm-bundle", "termux-checks", "windows-live", "install-e2e"):
         assert direct_needs(jobs, parallel) == ["admit"], parallel
-    candidate_calls = ["candidates-darwin-arm64", "candidates-win32-arm64",
+    candidate_calls = ["candidates-darwin-arm64", "candidates-darwin-x64", "candidates-win32-arm64",
                        "candidates-win32-x64", "candidates-win32-bundle", "candidates-termux"]
     # The Windows bundle group is the only candidate that waits on a peer.
     for call in candidate_calls:
         assert set(direct_needs(jobs, call)) <= {
             "admit", "candidates-win32-arm64", "candidates-win32-x64"}, call
     required = {"ci", "docker", "nix", "pm-bundle", "install-e2e", "windows-packaged",
-                "macos-packaged-arm64", "termux-checks", "windows-live",
-                "candidate-manifest", "transitions-darwin-arm64",
+                "macos-packaged-arm64", "macos-packaged-x64", "termux-checks", "windows-live",
+                "candidate-manifest", "transitions-darwin-arm64", "transitions-darwin-x64",
                 "transitions-win32", "bootstrap-version", *candidate_calls}
     assert required <= ancestors(jobs, "acceptance")
     # B3: stable calls one build group at a time; the bundle group waits for
     # both Windows arches, and the Linux groups are not called at all.
     assert "candidates" not in jobs
-    for name, group in zip(candidate_calls, ("darwin-arm64", "win32-arm64",
+    for name, group in zip(candidate_calls, ("darwin-arm64", "darwin-x64", "win32-arm64",
                                             "win32-x64", "win32-bundle", "termux"), strict=True):
         call = jobs[name]
         assert call["uses"] == "./.github/workflows/desktop-bundled-release.yml"
@@ -83,6 +83,7 @@ def test_release_reuses_whole_ci_and_docker_before_publication():
         {"admit", *candidate_calls}
     for receipt, call, packaged, matrix in (
             ("transitions-darwin-arm64", "candidates-darwin-arm64", "macos-packaged-arm64", "macos"),
+            ("transitions-darwin-x64", "candidates-darwin-x64", "macos-packaged-x64", "macos"),
             ("transitions-win32", "candidates-win32-bundle", "windows-packaged", "windows")):
         assert jobs[receipt]["needs"] == ["admit", call]
         # The packaged leg names the claim commit, so it reads admit directly.
