@@ -29,8 +29,6 @@ jobs:
     env:
       CORE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       PLUGIN_SHA: 393e950384cc266016676564b78c509c33c70f64
-      HERMES_HOME: ${{ runner.temp }}/telemetry-home
-      HERMES_RUNTIME_DIR: ${{ runner.temp }}/telemetry-tools
     steps:
       - name: Check out the exact core head
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
