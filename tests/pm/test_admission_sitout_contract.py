@@ -95,3 +95,19 @@ def test_staged_publication_sits_out_only_unrelated_members(homes, tmp_path, mon
         assert selection.active
         assert selection.members == {good.resolve(): staged.resolve()}
     assert (profile / "config.yaml").read_bytes() == before
+
+
+@pytest.mark.parametrize("new", [False, True])
+def test_core_package_constraint_applies_alongside_manifest_sitout(homes, new):
+    default, _profile, good, _bad = homes
+    (good / "pyproject.toml").write_text(
+        '[project]\nname="hermes-plugin-good"\nversion="1.0.0"\n'
+        'dependencies=["hermes-agent>=99,<100"]\n')
+    if new:
+        (default / "config.yaml").write_text("plugins:\n  enabled: []\n")
+        with pytest.raises(ValueError, match="hermes-agent"):
+            candidate_members(proposed_home=default, enabled=["good"], disabled=[])
+    else:
+        before = (default / "config.yaml").read_bytes()
+        assert candidate_members() == []
+        assert (default / "config.yaml").read_bytes() == before

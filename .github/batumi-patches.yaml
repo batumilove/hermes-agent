@@ -5,6 +5,29 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: watchdog-early-thread-attribution
+  kind: core
+  rationale: Attribute pre-prompt watchdog diagnostics to the admitted scheduling owner without resetting interrupt state.
+  paths:
+  - agent/turn_liveness.py
+  - tests/agent/test_watchdog_early_thread_attribution.py
+  tests:
+  - scripts/run_tests.sh tests/agent/test_watchdog_early_thread_attribution.py tests/agent/test_turn_liveness_watchdog.py tests/agent/test_turn_liveness.py
+  retirement: Remove when upstream captures the admitted watchdog owner before prompt preparation with equivalent interrupt-preservation tests.
+- id: bootstrap-final-identity-custody
+  kind: core
+  rationale: Attempt the final PID and runtime-lock handoff after control cleanup errors or
+    cancellation, without waiting behind stalled status writes or releasing surviving writer custody.
+  paths:
+  - gateway/run_bootstrap.py
+  - gateway/run_bootstrap_cleanup.py
+  - tests/gateway/test_bootstrap_identity_cleanup.py
+  - tests/gateway/test_startup_restart_race.py
+  - tests/gateway/test_reload_signal_logs_graceful_restart.py
+  tests:
+  - scripts/run_tests.sh tests/gateway/test_bootstrap_identity_cleanup.py tests/gateway/test_shutdown_residual_lifecycle.py tests/gateway/test_active_agent_status_persistence.py tests/gateway/test_shutdown_aggregate_budget_contract.py tests/gateway/test_startup_restart_race.py tests/gateway/test_reload_signal_logs_graceful_restart.py
+  retirement: Remove when upstream preserves after-drain identity cleanup through control failures
+    and cancellation, with a nonblocking final release and native writer-exclusion coverage.
 - id: bounded-config-explanation
   kind: core
   rationale: Explain one non-secret approval boolean without config bootstrap or unrelated value expansion.
@@ -86,10 +109,12 @@ patches:
   - .github/scripts/run-ui-lane.mjs
   - .github/workflows/js-tests.yml
   - scripts/ci/required_results.py
+  - tests/ci/test_js_tests_vitest_history.py
   - tests/ci/test_ui_required_results.py
   tests:
   - node --test .github/scripts/ui-sharding.test.mjs .github/scripts/ui-discovery.test.mjs
   - scripts/run_tests.sh tests/ci/test_ui_required_results.py tests/ci/test_required_results.py
+  - scripts/run_tests.sh tests/ci/test_js_tests_vitest_history.py
   retirement: Remove when upstream provides equivalent isolated sharding and fail-closed exact-once coverage.
 - id: local-npm-source-cache-identity
   kind: compatibility
@@ -162,7 +187,6 @@ patches:
   - vendor/npm/minimatch-compat/index.cjs
   - vendor/npm/minimatch-compat/README.md
   - tests-js/dependency-glob-compatibility.test.mjs
-  - plugins/platforms/google_chat/oauth.py
   - tests/gateway/test_google_chat_pyasn1_security.py
   tests:
   - npm exec --workspace tests-js -- vitest run dependency-glob-compatibility.test.mjs patched-glob-consumers.test.mjs
@@ -447,9 +471,6 @@ patches:
   - package-lock.json
   - website/package.json
   - website/package-lock.json
-  - apps/bootstrap-installer/package.json
-  - apps/desktop/package.json
-  - web/package.json
   - pm/AGENTS.md
   - pm/workspace.py
   - pm/vendor/README.md
@@ -488,6 +509,7 @@ patches:
   rationale: Require verified runtime homes even for PID-file hints and user units; discover
     profile-before-gateway units and preserve unmerged index custody rather than reset it.
   paths:
+  - tests/hermes_cli/test_update_autostash.py
   - hermes_cli/update_fleet_scope.py
   - hermes_cli/update_cmd_fleet.py
   - hermes_cli/update_cmd_stash.py
@@ -600,52 +622,6 @@ patches:
   - python3 scripts/check
   retirement: Remove when upstream instructions require equivalent supported updater routing
     and no longer permit operational skills to impose custom deployment controllers by default.
-- id: upstream-catalog-admission-split
-  kind: operations
-  rationale: Retain the previously accepted catalog while upstream code is reviewed separately.
-    The deferred upstream entries land in a data-only follow-up PR under the unchanged
-    catalog admission gate, without mixing entry pins and executable validation code.
-  paths:
-  - plugin-catalog/account-pool.yaml
-  - plugin-catalog/agent-janitor.yaml
-  - plugin-catalog/alans-way-computer.yaml
-  - plugin-catalog/alans-way.yaml
-  - plugin-catalog/anatomy-museum.yaml
-  - plugin-catalog/author-feed.yaml
-  - plugin-catalog/aux-ledger.yaml
-  - plugin-catalog/birkin-mnemosyne.yaml
-  - plugin-catalog/gmail.yaml
-  - plugin-catalog/hermes-aac.yaml
-  - plugin-catalog/hermes-activity.yaml
-  - plugin-catalog/hermes-agent-mixer.yaml
-  - plugin-catalog/hermes-insight.yaml
-  - plugin-catalog/hermes-lang-ko.yaml
-  - plugin-catalog/hermes-lang-pt-br.yaml
-  - plugin-catalog/huddo.yaml
-  - plugin-catalog/jp-egov-law.yaml
-  - plugin-catalog/kiwi.yaml
-  - plugin-catalog/kumiho-memory.yaml
-  - plugin-catalog/lightningai-rate-limit.yaml
-  - plugin-catalog/lightningai.yaml
-  - plugin-catalog/model-router.yaml
-  - plugin-catalog/nexus.yaml
-  - plugin-catalog/nvidia-app.yaml
-  - plugin-catalog/nvidia-broadcast.yaml
-  - plugin-catalog/openinvest.yaml
-  - plugin-catalog/plan-mode.yaml
-  - plugin-catalog/qdrant-memory.yaml
-  - plugin-catalog/secure-env-ingress.yaml
-  - plugin-catalog/showly.yaml
-  - plugin-catalog/speechify.yaml
-  - plugin-catalog/switchbot-control.yaml
-  - plugin-catalog/teamorouter.yaml
-  - plugin-catalog/telegram-client.yaml
-  - plugin-catalog/tinyfish.yaml
-  - plugin-catalog/wait-ledger.yaml
-  tests:
-  - python scripts/check_fork_delta.py
-  retirement: Remove after the data-only catalog follow-up is merged and the catalog matches
-    the accepted upstream baseline; the shared-daemon migration can retire this split record.
 - id: producer-generation-pythonpath-isolation
   kind: extension
   rationale: Keep successfully activated producer generations out of unrelated Python children after
@@ -788,12 +764,9 @@ patches:
   paths:
   - pm/AGENTS.md
   - tests/test_packaging_metadata.py
-  - apps/bootstrap-installer/package.json
   - .npmrc
-  - apps/desktop/package.json
   - nix/lib.nix
   - nix/checks.nix
-  - nix/python.nix
   - nix/node-gyp-11-4-0-package-lock.json
   - nix/node-gyp-overrides.json
   - nix/node-gyp-11-4-0.nix
@@ -804,15 +777,11 @@ patches:
   - pyproject.toml
   - scripts/whatsapp-bridge/package-lock.json
   - scripts/whatsapp-bridge/package.json
-  - tests-js/package.json
   - tests/test_npm_security_policy.py
   - tests/plugins/test_chronos_security_compatibility.py
   - tests/tools/test_lazy_deps.py
   - tests/tools/test_mcp_oauth_manager.py
-  - tools/lazy_deps.py
-  - ui-tui/package.json
   - uv.lock
-  - web/package.json
   - website/.npmrc
   - website/package-lock.json
   - website/package.json
@@ -825,8 +794,6 @@ patches:
   - tests-js/patched-glob-consumers.test.mjs
   - plugins/platforms/photon/sidecar/package.json
   - plugins/platforms/photon/sidecar/package-lock.json
-  - website/tests/braces-security.test.*
-  - apps/desktop/electron/git-review-ops.ts
   - apps/desktop/electron/git-review-ops.test.ts
   - tests/e2e/core/upgrade/network/test_mirrors.py
   - tests/pm/test_update_request_reuse.py
@@ -987,14 +954,6 @@ patches:
   - .github/workflows/stack-ci-shadow.yml
   - .github/workflows/staging-telegram-socket-diagnostics.yml
   - .github/workflows/upstream-sync.yml
-  - contributors/emails/1396641434@qq.com
-  - contributors/emails/brooklyn@nousresearch.com
-  - contributors/emails/dcdexhome@gmail.com
-  - contributors/emails/muhammedeminkamay92@gmail.com
-  - contributors/emails/rroveri@nvidia.com
-  - contributors/emails/tom@spoct.com
-  - contributors/emails/agent@Agents-Mac-mini.local
-  - contributors/emails/agent@agents-Mac-mini.local
   - contributors/emails/aleman@batumi.works
   - contributors/emails/audit@batumi.works
   - contributors/emails/hermes@local
@@ -1032,6 +991,7 @@ patches:
   - scripts/ci/prepare_upgrade_source.py
   - tests/scripts/test_upgrade_source_checkout.py
   - tests/scripts/test_code_health_cli.py
+  - docs/fork-patch-audit-2026-11-05.md
   tests:
   - scripts/run_tests.sh tests/scripts/test_check_fork_delta.py tests/scripts/test_ci_workflow.py tests/scripts/test_install_batumi_components.py
     tests/scripts/test_upstream_sync_workflow.py tests/test_hermes_ops_pull_budget_pin.py tests/scripts/test_ops_pull_budget_manifest.py
@@ -1043,7 +1003,6 @@ patches:
   rationale: Restore archived POSIX rwx permissions during Hermes imports while streaming ZIP members
     in bounded chunks and retaining secret-mode hardening.
   paths:
-  - hermes_cli/backup.py
   - tests/hermes_cli/test_backup.py
   - hermes_cli/backup_restore.py
   - tests/hermes_cli/test_backup_restore_permissions.py
@@ -1166,14 +1125,11 @@ patches:
   - gateway/AGENTS.md
   - hermes_cli/update_cmd_git.py
   - tests/hermes_cli/test_cmd_update.py
-  - hermes_cli/plugins_loader.py
   - tests/hermes_cli/test_plugins_module_eviction.py
   - tests/plugins/model_providers/test_commandcode_profile.py
   - tests/plugins/image_gen/test_openrouter_compat_provider.py
   - tests/e2e/core/parity/_helpers.py
-  - tests/e2e/core/parity/_drive_cli.py
   - tests/e2e/core/parity/test_entrypoint_parity.py
-  - agent/lsp/client.py
   - apps/desktop/src/app/chat/composer/focus-chord.test.ts
   - apps/desktop/src/app/chat/right-rail/preview-browser-bar.test.tsx
   - apps/desktop/src/app/chat/right-rail/preview-browser-bar.tsx
@@ -1183,10 +1139,7 @@ patches:
   - apps/desktop/src/app/session/hooks/use-session-actions.test.tsx
   - apps/desktop/src/app/shell/model-menu-panel.test.tsx
   - apps/desktop/src/lib/keybinds/chords.ts
-  - tests/tools/test_local_setsid_descendant_sweep.py
   - tests/tools/test_mcp_stability.py
-  - tests/tools/test_mcp_tool.py
-  - tools/mcp_tool.py
   - tools/mcp_tool_handlers.py
   - tools/mcp_tool_health.py
   - tools/mcp_tool_lifecycle.py
@@ -1236,30 +1189,23 @@ patches:
   - tui_gateway/contracts/sessions.py
   - agent/agent_init.py
   - apps/bootstrap-installer/src/routes/progress.tsx
-  - apps/desktop/src/plugins/hermes-bots/tests/session-workspace.test.mjs
-  - apps/desktop/src/styles.css
   - contributors/emails/uperLu@users.noreply.github.com
   - evals/compaction/results/SCORECARD-2026-08-15.md
-  - hermes_cli/bang_shell.py
   - nix/desktop.nix
   - optional-skills/mlops/pytorch-fsdp/references/common-patterns.md
-  - skills/research/research-paper-writing/references/phase5-paper-drafting.md
-  - tests/hermes_cli/test_bang_shell_mode.py
   - tests/gateway/test_branch_routing_columns.py
   - tests/hermes_cli/test_auth_store_windows_encoding.py
-  - tests/hermes_cli/test_model_switch_context_offload.py
   - tests/test_batch_runner_exit_code.py
-  - tests/test_install_sh_node_npm_check.py
-  - tests/tools/test_toolsets.py
-  - tests/tools/test_file_operations.py
-  - tests/tools/test_session_search.py
-  - tests/tools/test_windows_agent_loop_papercuts.py
   - website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/features/image-generation.md
   - optional-skills/research/research-paper-writing/references/phase5-paper-drafting.md
   - tests/hermes_state/test_fts_sanitizer.py
   - tests/hermes_state/test_message_lineage_contracts.py
   - tests/hermes_state/test_performance_pragmas.py
   - tests/hermes_state/test_readonly_fts_decode_error.py
+  - apps/desktop/src/plugins/hermes-bots/canonical-group-activity.tsx
+  - apps/desktop/src/plugins/hermes-bots/group-room-ui.tsx
+  - tests/gateway/test_media_release_after_delivery.py
+  - tests/pm/test_workspace.py
   tests:
   - git diff --check $(cat .github/upstream-base)..HEAD
   - python -m py_compile agent/agent_init.py
@@ -1295,8 +1241,6 @@ patches:
   - tests/cron/test_cron_context_from.py
   - cron/scheduler_prompt.py
   - cron/scheduler_worktree.py
-  - tests/cron/test_worktree_maintenance_isolation.py
-  - tests/hermes_cli/test_worktree_pushed_tier.py
   - website/docs/user-guide/features/cron.md
   tests:
   - scripts/run_tests.sh tests/cron/test_cron_context_from.py
@@ -1313,7 +1257,6 @@ patches:
   - gateway/platforms/api_server.py
   - tests/gateway/test_api_server_active_work_drain.py
   - gateway/platforms/api_server_admission.py
-  - tests/gateway/test_api_server_runs.py
   tests:
   - scripts/run_tests.sh tests/gateway/test_api_server_active_work_drain.py
   - python -m py_compile gateway/platforms/api_server.py
@@ -1324,7 +1267,6 @@ patches:
   rationale: Allow auxiliary agents without a context compressor to complete the post-tool loop without
     a hidden NoneType failure or outer-loop error.
   paths:
-  - agent/conversation_loop.py
   - tests/agent/test_post_tool_compression_attempt_cap.py
   - agent/turn_preflight.py
   tests:
@@ -1337,7 +1279,6 @@ patches:
     and the long-context / context-length error handlers by skipping compression instead of failing the
     turn.
   paths:
-  - agent/conversation_loop.py
   - tests/agent/test_context_engine_midturn_detach.py
   - agent/turn_usage.py
   - agent/turn_context_compaction.py
@@ -1362,7 +1303,6 @@ patches:
     owner shutdown.
   paths:
   - agent/background_review.py
-  - agent/conversation_loop.py
   - run_agent.py
   - tests/agent/test_background_review.py
   - tests/agent/test_compression_budget_refund.py
@@ -1413,11 +1353,11 @@ patches:
   rationale: Prevent reserved fixture hostnames from escaping tests into libc DNS while preserving ordinary
     DNS behavior for tests that explicitly require it.
   paths:
+  - tests/scripts/test_termux_build_wheels.py
   - test_support/__init__.py
   - test_support/dns_guard.py
   - tests/conftest.py
   - tests/test_dns_isolation.py
-  - tests/plugins/image_gen/test_xai_provider.py
   tests:
   - scripts/run_tests.sh tests/test_dns_isolation.py
   - scripts/run_tests.sh tests/plugins/image_gen/test_xai_provider.py
@@ -1434,7 +1374,6 @@ patches:
   - tests/hermes_state/test_default_db_profile_fixture.py
   - tests/hermes_home_isolation_probe.py
   - tests/test_log_isolation.py
-  - tests/gateway/test_multiplex_busy_input_mode.py
   - tests/gateway/test_multiplex_primary_token_scope.py
   - tests/hermes_cli/test_update_pause_unmapped_home_proof.py
   tests:
@@ -1500,14 +1439,11 @@ patches:
   - website/docs/developer-guide/agent-loop.md
   - tests/gateway/test_agent_cache_memory_lifecycle.py
   - gateway/run.py
-  - plugins/memory/honcho/__init__.py
-  - plugins/memory/honcho/session.py
   - run_agent.py
   - tests/agent/test_context_engine_lifecycle.py
   - tests/agent/test_memory_async_sync.py
   - tests/gateway/test_agent_cache.py
   - tests/gateway/test_shutdown_cache_cleanup.py
-  - tests/honcho_plugin/test_async_memory.py
   - tests/agent/test_memory_provider_init.py
   - gateway/run_agent_cache.py
   - agent/agent_init_state.py
@@ -1532,7 +1468,6 @@ patches:
   - gateway/lifecycle_counters.py
   - gateway/run.py
   - gateway/slash_commands.py
-  - tests/gateway/test_agents_command_delegations.py
   - tests/gateway/test_lifecycle_counters.py
   - gateway/slash_commands_diagnostics.py
   - gateway/slash_commands_status.py
@@ -1560,7 +1495,6 @@ patches:
     full SQLite integrity scans for explicit repair runs and preserving schema, read, FTS read, and rolled-back
     write-health probes.
   paths:
-  - hermes_cli/doctor.py
   - tests/hermes_cli/test_doctor.py
   - hermes_cli/doctor_state.py
   - hermes_state_repair.py
@@ -1700,19 +1634,15 @@ patches:
   - cron/scheduler.py
   - cron/scheduler_provider.py
   - hermes_cli/cron.py
-  - plugins/cron_providers/chronos/__init__.py
   - tests/cron/test_claim_job_for_fire.py
   - tests/cron/test_execution_ledger.py
   - tests/cron/test_jobs.py
-  - tests/cron/test_parallel_pool.py
   - tests/cron/test_scheduler_provider.py
   - tests/cron/test_terminal_job_rearm.py
   - tests/monitoring/test_cron_health_export.py
   - tests/plugins/test_chronos_cron.py
   - tests/tools/test_cronjob_run_immediate.py
-  - tests/tools/test_cronjob_tools.py
   - tools/cronjob_tools.py
-  - tests/cron/conftest.py
   - tests/cron/test_run_one_job.py
   - cron/scheduler_tick.py
   - tests/cron/test_reconciled_trigger_dispatch.py
@@ -1735,12 +1665,10 @@ patches:
   rationale: Preserve fail-open tracing, payload capture, token and cost accounting after moving Langfuse
     to the pinned official catalog plugin and PM-owned SDK selection.
   paths:
-  - plugin-catalog/langfuse.yaml
   - scripts/install_batumi_components.py
   - tests/plugins/external/fixtures/langfuse-e1f1614/**
   - tests/plugins/external/langfuse_fixture.py
   - tests/plugins/external/test_langfuse*.py
-  - hermes_cli/tools_config.py
   - tests/plugins/external/fixtures/langfuse-e1f1614/LICENSE
   - tests/plugins/external/fixtures/langfuse-e1f1614/README.md
   - tests/plugins/external/fixtures/langfuse-e1f1614/SOURCE.json
@@ -1750,7 +1678,6 @@ patches:
   - tests/plugins/external/test_langfuse_dependencies.py
   - tests/plugins/external/test_langfuse_plugin.py
   - tests/plugins/external/test_langfuse_tracing.py
-  - tests/plugins/test_langfuse_plugin.py
   tests:
   - scripts/run_tests.sh tests/plugins/external/test_langfuse_plugin.py tests/plugins/external/test_langfuse_tracing.py
     tests/plugins/external/test_langfuse_dependencies.py
@@ -1766,9 +1693,7 @@ patches:
   - tools/environments/registry.py
   - tools/terminal_tool.py
   - tests/tools/test_environment_registry.py
-  - website/docs/developer-guide/plugins/index.md
   - hermes_cli/plugins_roles.py
-  - hermes_cli/tools_config.py
   - tools/terminal_tool_config.py
   - tools/terminal_tool_backends.py
   tests:
@@ -1781,7 +1706,6 @@ patches:
   paths:
   - agent/turn_finalizer.py
   - tests/agent/test_transform_llm_output_context.py
-  - website/docs/user-guide/features/hooks.md
   - agent/turn_final_response.py
   tests:
   - scripts/run_tests.sh tests/agent/test_transform_llm_output_context.py
@@ -1811,7 +1735,6 @@ patches:
   - hermes_state_messages.py
   - tests/hermes_state/test_side_effect_evidence_roundtrip.py
   - hermes_cli/session_schema_history.py
-  - tests/hermes_cli/test_session_schema_history.py
   - hermes_cli/session_lost_and_found.py
   - tests/hermes_cli/test_session_recovery_fork_layouts.py
   - tests/hermes_state/test_session_id_recognition_recovery.py
@@ -1831,14 +1754,9 @@ patches:
   paths:
   - agent/agent_runtime_helpers.py
   - agent/chat_completion_helpers.py
-  - agent/conversation_loop.py
   - gateway/run.py
   - hermes_cli/plugins.py
   - tests/hermes_cli/test_plugins.py
-  - tests/run_agent/test_24996_fallback_exhaustion_cooldown.py
-  - tests/agent/test_primary_runtime_restore.py
-  - website/docs/developer-guide/plugins/index.md
-  - website/docs/user-guide/features/hooks.md
   - agent/fallback_observers.py
   - agent/fallback_notifications.py
   - agent/primary_runtime_restore.py
@@ -1856,7 +1774,6 @@ patches:
     and provider fallback occur immediately.
   paths:
   - agent/error_classifier.py
-  - tests/agent/test_error_classifier.py
   - tests/agent/test_kimi_billing_limit.py
   tests:
   - scripts/run_tests.sh tests/agent/test_error_classifier.py
@@ -1942,7 +1859,6 @@ patches:
     the fallback transport rotates the sticky IP and resets the wedged pool.
   paths:
   - plugins/platforms/telegram/telegram_network.py
-  - tests/gateway/test_telegram_fallback_pool_release_71593.py
   - tests/gateway/test_telegram_network.py
   - tests/gateway/test_telegram_request_phase_real_socket.py
   - tests/gateway/test_telegram_terminal_close_regression.py
@@ -1965,7 +1881,6 @@ patches:
   - gateway/run.py
   - plugins/platforms/telegram/adapter.py
   - tests/gateway/test_delivery_ledger.py
-  - tests/gateway/test_delivery_ledger_fd_leak.py
   - tests/gateway/test_delivery_ledger_producer.py
   - tests/gateway/test_api_server_active_work_drain.py
   - tests/gateway/test_gateway_shutdown.py
@@ -1998,6 +1913,7 @@ patches:
   - gateway/run_delivery_recovery.py
   - tests/gateway/test_durable_delivery_recovery.py
   - hermes_cli/sqlite_util.py
+  - gateway/run_adapters_recovery.py
   tests:
   - scripts/run_tests.sh tests/gateway/test_delivery_ledger.py tests/gateway/test_delivery_ledger_fd_leak.py
     tests/gateway/test_delivery_ledger_producer.py tests/gateway/test_gateway_shutdown.py tests/gateway/test_restart_drain.py
@@ -2036,7 +1952,6 @@ patches:
   - gateway/drain_control.py
   - gateway/status.py
   - hermes_cli/bounded_restart.py
-  - hermes_cli/web_server.py
   - tests/cron/test_scheduler.py
   - tests/cron/test_scheduler_provider.py
   - tests/gateway/test_restart_interrupt_notice.py
@@ -2075,7 +1990,6 @@ patches:
     or empty output.
   paths:
   - agent/agent_init.py
-  - agent/conversation_loop.py
   - agent/tool_executor.py
   - agent/tool_guardrails.py
   - agent/turn_context.py
@@ -2129,16 +2043,13 @@ patches:
   - gateway/platforms/api_server.py
   - gateway/platforms/base.py
   - gateway/run.py
-  - gateway/session_db_recovery.py
   - gateway/session.py
   - gateway/slash_commands.py
   - gateway/status.py
   - hermes_state.py
   - tests/agent/test_async_utils.py
   - tests/gateway/test_active_agent_status_persistence.py
-  - tests/gateway/test_64674_multiplex_primary_token_scope.py
   - tests/gateway/test_adapter_connect_classification.py
-  - tests/gateway/test_async_session_store.py
   - tests/gateway/test_async_session_db.py
   - tests/gateway/test_clarify_thread_followup_not_swallowed.py
   - tests/gateway/test_external_drain_control.py
@@ -2146,7 +2057,6 @@ patches:
   - tests/gateway/test_gateway_process_exit.py
   - tests/gateway/test_handoff_watcher_async_db.py
   - tests/gateway/test_multiplex_adapter_registry.py
-  - tests/gateway/test_api_server.py
   - tests/gateway/test_platform_reconnect.py
   - tests/gateway/test_restart_resume_pending.py
   - tests/gateway/test_scale_to_zero_watcher.py
@@ -2159,13 +2069,14 @@ patches:
   - tests/gateway/test_title_command.py
   - tests/gateway/test_turn_lease.py
   - tests/hermes_cli/test_pre_command_hook.py
+  - tests/hermes_cli/test_shared_metrics_busy.py
   - gateway/status_sequence.py
   - gateway/status_components.py
   - tests/gateway/test_status_sequence.py
-  - tests/agent/_profile_probe.py
   - tests/agent/test_serial_daemon_reservations.py
   - tests/gateway/test_control_socket_status_io.py
   - tests/gateway/test_runtime_listener_supervision.py
+  - gateway/run_turn_logging.py
   tests:
   - scripts/run_tests.sh tests/agent/test_async_utils.py tests/gateway/test_external_drain_control.py
     tests/gateway/test_restart_resume_pending.py tests/gateway/test_platform_reconnect.py tests/gateway/test_startup_restart_race.py
@@ -2175,6 +2086,7 @@ patches:
     tests/gateway/test_gateway_command_dispatch_minimal.py tests/gateway/test_shutdown_aggregate_budget_contract.py
     tests/gateway/test_shutdown_cache_cleanup.py tests/gateway/test_status.py tests/gateway/test_stuck_loop.py
     tests/gateway/test_title_command.py tests/gateway/test_turn_lease.py tests/hermes_cli/test_pre_command_hook.py
+    tests/hermes_cli/test_shared_metrics_busy.py
   - python -m py_compile agent/async_utils.py gateway/platforms/api_server.py gateway/platforms/base.py
     gateway/run.py gateway/session.py gateway/session_db_recovery.py gateway/slash_commands.py gateway/status.py
     hermes_state.py
@@ -2190,7 +2102,6 @@ patches:
   - gateway/drain_attribution.py
   - gateway/platforms/api_server.py
   - gateway/run.py
-  - gateway/shutdown_forensics.py
   - gateway/shutdown_watchdog.py
   - tests/cron/test_running_job_attribution.py
   - tests/gateway/test_api_server_active_work_drain.py
@@ -2330,13 +2241,10 @@ patches:
   paths:
   - agent/auxiliary_client.py
   - agent/credential_pool.py
-  - hermes_cli/auth.py
-  - hermes_cli/proxy/adapters/nous_portal.py
   - run_agent.py
   - tests/agent/test_auxiliary_client.py
   - tests/agent/test_credential_pool_nous_refresh_stampede.py
   - tests/hermes_cli/test_proxy.py
-  - website/docs/user-guide/features/credential-pools.md
   - agent/credential_pool_leases.py
   - agent/auxiliary_credentials.py
   - agent/client_lifecycle.py
@@ -2404,25 +2312,20 @@ patches:
   - hermes_state_schema.py
   - gateway/delivery_ledger.py
   - gateway/platforms/base.py
-  - gateway/platforms/signal.py
   - gateway/post_response.py
   - gateway/run.py
   - gateway/session.py
-  - tests/gateway/test_42039_duplicate_user_message.py
   - tests/gateway/test_first_turn_session_meta_rebaseline.py
-  - tests/gateway/test_internal_notification_marker_82888.py
   - tests/gateway/test_multiplex_session_db_profile_scope.py
   - tests/gateway/test_post_response_actions.py
   - tests/gateway/test_post_response_delivery.py
   - tests/gateway/test_signal.py
-  - tests/state/test_session_git_metadata_generation.py
   - hermes_state_post_response.py
   - tests/gateway/test_delivery_dead_owner.py
   - tests/hermes_cli/test_gateway_snapshot_restore_live.py
   - gateway/post_response_delivery.py
   - hermes_cli/auth_zai_kimi.py
   - tests/hermes_cli/test_zai_configured_endpoint.py
-  - gateway/control_socket.py
   - tests/gateway/test_control_socket_peer_security.py
   - tests/hermes_cli/test_gitlock.py
   - gateway/session_retained.py
@@ -2480,7 +2383,6 @@ patches:
     task) after spawn failure and after real complete_task, pinned against memory-pressure vacuity.'
   paths:
   - tests/hermes_cli/test_kanban_cli_dispatch_passthrough.py
-  - tests/hermes_cli/test_kanban_db.py
   - hermes_cli/kanban_db_dispatch.py
   - tests/hermes_cli/test_kanban_dispatch_races.py
   - tests/hermes_cli/test_kanban_goal_mode_worker_log.py
@@ -2507,7 +2409,6 @@ patches:
   - tests/hermes_cli/test_kanban_launch_protocol.py
   - tests/hermes_cli/test_kanban_profiles.py
   - tests/hermes_cli/test_kanban_route_contract.py
-  - tests/hermes_cli/test_kanban_wired_dispatcher.py
   - tests/hermes_cli/test_kanban_stage3_harness.py
   - tests/hermes_cli/test_kanban_terminal_handoff.py
   - hermes_cli/kanban_db_dispatch.py
@@ -2565,7 +2466,6 @@ patches:
   rationale: Preserve fork delivery, cache cleanup, claim fencing, bounded shutdown and startup ownership handoff contracts in the shared daemon owners.
   paths:
   - tests/gateway/fixtures/native_reply_crash_daemon.py
-  - tests/hermes_cli/test_gateway_chat_native.py
   - tests/e2e/core/windows/test_prompt_paths.py
   - tests/hermes_cli/test_plugin_uninstall_windows_live.py
   - tests/gateway/test_reset_tip_unknown_barrier.py
@@ -2632,19 +2532,6 @@ patches:
   tests:
   - nix build .#checks.x86_64-linux.managed-guard
   retirement: Remove when upstream's managed guard check drains command output under pipefail.
-- id: brotlicffi-decoder-security-fix
-  kind: operations
-  rationale: Pin brotlicffi 1.2.1.0 to fix PYSEC-2026-4323 with the user-approved
-    package-specific release cooldown exception; preserve the global three-day policy.
-  paths:
-  - pyproject.toml
-  - uv.lock
-  - pm/AGENTS.md
-  - tests/test_packaging_metadata.py
-  tests:
-  - python -m pm.build_env --source . --check-lock
-  - scripts/run_tests.sh tests/test_packaging_metadata.py
-  retirement: Remove when the accepted upstream baseline includes the fixed decoder release.
 - id: october-lockfile-advisory-remediation
   kind: operations
   rationale: Keep lockfile, build and npm workspace dependencies outside the October 24
@@ -2655,9 +2542,6 @@ patches:
   - package.json
   - package-lock.json
   - .npmrc
-  - apps/desktop/package.json
-  - ui-tui/package.json
-  - tests-js/package.json
   - tests-js/security-lock-floors.test.ts
   - website/package.json
   - website/package-lock.json
@@ -2666,8 +2550,6 @@ patches:
   - scripts/whatsapp-bridge/package-lock.json
   - plugins/platforms/photon/sidecar/package.json
   - plugins/platforms/photon/sidecar/package-lock.json
-  - scripts/termux/build_config.sh
-  - scripts/termux/build_wheels.py
   - tests/test_packaging_metadata.py
   tests:
   - scripts/run_tests.sh tests/test_packaging_metadata.py tests/pm/test_project_relock.py
@@ -2818,6 +2700,7 @@ patches:
   - tests/ci/test_termux_input_archive.py
   - tests/ci/test_update_ci_routing.py
   - tests/hermes_platform/test_support.py
+  - tests/hermes_cli/test_shared_metrics_harness.py
   - tests/scripts/install/test_install_clone_throttle_fallback.py
   - tests/scripts/install/test_install_diverged_rescue_ref.py
   - tests/scripts/install/test_install_sh_termux_refusal.py
@@ -2826,15 +2709,21 @@ patches:
   - tests/scripts/test_release_channels.py
   - tests/scripts/test_release_entrypoint.py
   - tests/scripts/test_release_lanes.py
+  - tests/scripts/test_release_artifacts.py
+  - tests/scripts/test_release_darwin.py
   - tests/scripts/test_render_builds_binding.py
   - tests/scripts/test_stable_release.py
   - tests/scripts/test_supported_release_platforms.py
   - tui_gateway/entry.py
   - website/docs/getting-started/installation.md
   - website/docs/getting-started/platform-support.md
+  - scripts/releases/desktop_targets.py
+  - scripts/releases/darwin.py
+  - scripts/releases/r2.py
+  - scripts/bundles/release_artifacts.py
   tests:
-  - scripts/run_tests.sh tests/hermes_platform tests/scripts/test_supported_release_platforms.py tests/scripts/install/test_install_sh_termux_refusal.py
-  - scripts/run_tests.sh tests/scripts/test_job_groups.py tests/scripts/test_release_lanes.py tests/scripts/test_release_entrypoint.py tests/scripts/test_release_channels.py tests/scripts/test_stable_release.py
+  - scripts/run_tests.sh tests/hermes_platform tests/scripts/test_supported_release_platforms.py tests/scripts/install/test_install_sh_termux_refusal.py tests/hermes_cli/test_shared_metrics_harness.py
+  - scripts/run_tests.sh tests/scripts/test_job_groups.py tests/scripts/test_release_lanes.py tests/scripts/test_release_entrypoint.py tests/scripts/test_release_channels.py tests/scripts/test_stable_release.py tests/scripts/test_release_artifacts.py tests/scripts/test_release_darwin.py
   - scripts/run_tests.sh tests/ci/test_stable_release_graph.py tests/ci/test_protected_canary_publication.py tests/ci/test_channel_build_publication.py tests/ci/test_tag_builds_summary.py tests/ci/test_workflow_job_graph.py tests/ci/test_desktop_bundle_smoke.py
   - scripts/run_tests.sh tests/ci/test_update_ci_routing.py tests/ci/test_update_transitive_routing.py tests/ci/test_classify_changes.py tests/ci/test_commit_build_staging.py tests/ci/test_desktop_release_tag_admission.py tests/ci/test_termux_input_archive.py
   - scripts/run_tests.sh tests/scripts/test_release_sequencer.py tests/scripts/test_dispatch_log.py tests/scripts/test_render_builds_binding.py tests/scripts/test_render_builds_publication.py tests/scripts/install/test_install_clone_throttle_fallback.py tests/scripts/install/test_install_diverged_rescue_ref.py

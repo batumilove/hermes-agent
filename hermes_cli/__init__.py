@@ -55,7 +55,7 @@ def _config_explain_argv(argv):
 
     parser = GateParser(add_help=False, exit_on_error=False)
     for flags in (
-        ('-z', '--oneshot'), ('--usage-file',), ('-m', '--model'),
+        ('-z', '--oneshot'), ('--usage-file',), ('--cpu-profile',), ('-m', '--model'),
         ('--provider',), ('--reasoning',), ('-t', '--toolsets'),
         ('--resume', '-r'), ('--in',), ('--skills', '-s'),
     ):

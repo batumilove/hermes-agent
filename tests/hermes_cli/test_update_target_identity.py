@@ -134,6 +134,8 @@ def test_branch_update_uses_real_refs_and_completion_request(update_tree, monkey
     if case.startswith('fork-late'):
         local.write_bytes(local_work)
     run = subprocess.run
+    from hermes_cli import update_custody
+    run_git = update_custody.run_git
     pushes = []
 
     def _upstream_sha():
@@ -142,7 +144,8 @@ def test_branch_update_uses_real_refs_and_completion_request(update_tree, monkey
                     capture_output=True, text=True, encoding='utf-8')
         return found.stdout.strip() or '<no upstream>'
 
-    def fault(command, *args, **kwargs):
+    def fault(git_cmd, git_args, **kwargs):
+        command = [*git_cmd, *git_args]
         assert Path(command[0]).name.lower() in {'git', 'git.exe'} or command[0] == sys.executable, command
         assert Path(kwargs['cwd']).resolve() in {t.clone, t.origin}, command
         # The upstream sync's tree move (`pull upstream main` on older updaters, a local merge of
@@ -153,13 +156,13 @@ def test_branch_update_uses_real_refs_and_completion_request(update_tree, monkey
         if 'merge' in command and '--ff-only' in command and not upstream_move:
             if case == 'no-move':
                 return subprocess.CompletedProcess(command, 0, stdout='', stderr='')
-            result = run(command, *args, **kwargs)
+            result = run_git(git_cmd, git_args, **kwargs)
             if case in {'wrong-branch', 'fork-upstream-wrong-branch'}:
                 run(['git', 'checkout', '-qb', 'wrong'], cwd=t.clone, check=True, capture_output=True)
             if case == 'fork-upstream-reverted':
                 run(['git', 'reset', '--hard', t.base], cwd=t.clone, check=True, capture_output=True)
             return result
-        result = run(command, *args, **kwargs)
+        result = run_git(git_cmd, git_args, **kwargs)
         if upstream_move and case.startswith('fork-late'):
             if case.endswith('wrong-branch'):
                 run(['git', 'checkout', '-qb', 'wrong'], cwd=t.clone, check=True, capture_output=True)
@@ -169,7 +172,7 @@ def test_branch_update_uses_real_refs_and_completion_request(update_tree, monkey
             pushes.append(result.returncode)
         return result
 
-    monkeypatch.setattr(subprocess, 'run', fault)
+    monkeypatch.setattr(update_custody, 'run_git', fault)
     fails = case in {'missing', 'check-missing', 'no-move', 'wrong-branch',
                      'fork-upstream-wrong-branch', 'fork-upstream-reverted',
                      'fork-late-wrong-branch', 'fork-late-reverted'}

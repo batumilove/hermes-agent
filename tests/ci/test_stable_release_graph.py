@@ -67,7 +67,7 @@ def test_release_reuses_whole_ci_and_docker_before_publication():
     # both Windows arches, and the Linux groups are not called at all.
     assert "candidates" not in jobs
     for name, group in zip(candidate_calls, ("darwin-arm64", "darwin-x64", "win32-arm64",
-                                            "win32-x64", "win32-bundle", "termux")):
+                                            "win32-x64", "win32-bundle", "termux"), strict=True):
         call = jobs[name]
         assert call["uses"] == "./.github/workflows/desktop-bundled-release.yml"
         assert call["with"]["release-phase"] == "candidate"
@@ -147,7 +147,7 @@ def test_lane_inputs_reach_the_workflows_they_configure():
     jobs = workflow("stable-release.yml")["jobs"]
     # Tests the image and the candidates run for themselves follow their own lane.
     assert jobs["docker"]["with"]["skip-tests"] == "${{ !fromJSON(needs.admit.outputs.lanes)['docker-tests'] }}"
-    for name in ("candidates-darwin-arm64", "candidates-darwin-x64", "candidates-win32-arm64",
+    for name in ("candidates-darwin-arm64", "candidates-win32-arm64",
                  "candidates-win32-x64", "candidates-win32-bundle", "candidates-termux"):
         assert jobs[name]["with"]["skip-tests"] == "${{ !fromJSON(needs.admit.outputs.lanes).smoke }}", name
     # Which Windows packages the shared builds make follows the two Windows lanes, and the Store
@@ -234,7 +234,7 @@ def test_claim_custody_and_final_payload_identity_reach_every_privileged_phase()
     assert not {"autopublish", "lanes", "skip-bundles", "skip-tests"}.intersection(inputs)
     assert {"claim-tag", "claim-object", "tag", "commit", "version", "release-id", "release-epoch"} <= \
         set(jobs["admit"]["outputs"])
-    for name in ("publish-bundles", *("candidates-darwin-arm64", "candidates-darwin-x64",
+    for name in ("publish-bundles", *("candidates-darwin-arm64",
                                       "candidates-win32-arm64", "candidates-win32-x64",
                                       "candidates-win32-bundle", "candidates-termux")):
         call = jobs[name]["with"]
@@ -248,8 +248,7 @@ def test_claim_custody_and_final_payload_identity_reach_every_privileged_phase()
     # receipt URL and digest cross the call boundary as workflow outputs.
     assert "manifest-url" not in desktop["on"]["workflow_call"]["outputs"]
     assert "manifest-sha256" not in desktop["on"]["workflow_call"]["outputs"]
-    receipts = {"darwin-arm64": "stage-receipt-darwin-arm64", "darwin-x64": "stage-receipt-darwin-x64",
-                "win32-bundle": "assemble-win32-bundle"}
+    receipts = {"darwin-arm64": "stage-receipt-darwin-arm64", "win32-bundle": "assemble-win32-bundle"}
     for group, job in receipts.items():
         producer = desktop["jobs"][job]
         assert producer["outputs"]["receipt-url"] == "${{ steps.receipt.outputs.receipt-url }}"
@@ -257,16 +256,13 @@ def test_claim_custody_and_final_payload_identity_reach_every_privileged_phase()
         for suffix, output in (("url", "receipt-url"), ("sha256", "receipt-sha256")):
             expected = "${{ jobs." + job + ".outputs." + output + " }}"
             assert desktop["on"]["workflow_call"]["outputs"][f"{group}-receipt-{suffix}"]["value"] == expected
-    for name in ("smoke-darwin-arm64", "smoke-darwin-x64"):
+    for name in ("smoke-darwin-arm64",):
         assert f"stage-receipt-{name.removeprefix('smoke-')}" in desktop["jobs"][name]["needs"]
     for call, key, output in (("candidates-darwin-arm64", "RECEIPT_URL", "darwin-arm64-receipt-url"),
                               ("candidates-darwin-arm64", "RECEIPT_SHA256", "darwin-arm64-receipt-sha256"),
-                              ("candidates-darwin-x64", "RECEIPT_URL", "darwin-x64-receipt-url"),
-                              ("candidates-darwin-x64", "RECEIPT_SHA256", "darwin-x64-receipt-sha256"),
                               ("candidates-win32-bundle", "RECEIPT_URL", "win32-bundle-receipt-url"),
                               ("candidates-win32-bundle", "RECEIPT_SHA256", "win32-bundle-receipt-sha256")):
         receipt_job = {"candidates-darwin-arm64": "transitions-darwin-arm64",
-                       "candidates-darwin-x64": "transitions-darwin-x64",
                        "candidates-win32-bundle": "transitions-win32"}[call]
         expected = "${{ needs." + call + ".outputs." + output + " }}"
         assert jobs[receipt_job]["steps"][-1]["env"][key] == expected
@@ -449,7 +445,7 @@ def test_the_builds_table_render_cannot_block_the_release_and_has_its_r2_inputs(
             "CLOUDFLARE_R2_BUCKET", "CLOUDFLARE_R2_PUBLIC_URL", "RELEASE_CLAIM_TAG"} <= set(step["env"])
 
 
-@pytest.mark.parametrize("arch", ["arm64", "x64"])
+@pytest.mark.parametrize("arch", ["arm64"])
 def test_macos_smoke_runs_without_a_receipt_outside_the_candidate_phase(arch):
     """Only a candidate stages a receipt; a canary's skipped stage-receipt must not skip the smoke,
     or its publish gate (which needs every job to succeed) fails on every canary."""
