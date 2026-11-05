@@ -10,6 +10,24 @@ import pytest
 from hermes_cli import honcho_monitor as hm
 
 
+def test_unbound_completion_is_unknown_without_ingestion_alarm():
+    activity = hm.classify_local_ingestion_activity([
+        {"role": "user", "platform_message_id": "123"},
+        {"role": "assistant", "finish_reason": "stop"},
+    ])
+    assert activity["status"] == "unknown"
+    assert activity["local_latest_ts"] is None
+    alerts = []
+    snapshot = hm.HonchoSnapshot({}, {}, {}, {}, {}, {}, {}, {}, ingestion=activity)
+    hm._ingestion_alerts(snapshot, alerts)
+    assert alerts == []
+
+
+def test_empty_truncated_activity_does_not_prove_idle():
+    assert hm.classify_local_ingestion_activity([])["status"] == "idle"
+    assert hm.classify_local_ingestion_activity([], truncated=True)["status"] == "unknown"
+
+
 def test_short_host_maps_both_dgx_spark_nodes():
     assert hm.short_host("http://192.168.10.211:8001/v1") == "spark-goat"
     assert hm.short_host("http://100.69.54.37:8001/v1") == "spark-goat"
@@ -118,7 +136,7 @@ def test_format_report_shows_loaded_config_dimensions_latency_and_alerts(tmp_pat
     assert report.startswith("🩺 Honcho —")
     assert "Embedding: text-embedding-3-small @ openai" in report
     assert "Embedding env: model=text-embedding-3-small base_url=https://api.openai.com/v1" in report
-    assert "Embedding DB: docs 89/94 dims=768 · messages 80/80 dims=768" in report
+    assert "Embedding DB: docs 89/94 dims=768 · message-embedding rows 80/80 (global) dims=768" in report
     assert "Δ since previous sample: representation +5 · reconciler +5 · webhook +0 · dream +0 · docs +3" in report
     assert "Recent errors: save-repr=2 · 401=1" in report
     assert "spark-goat chat: 1.2s" in report
@@ -994,7 +1012,7 @@ def test_ssh_failure_report_reuses_last_valid_remote_sample():
     assert "⚪ API ⚪ Deriver ⚪ DB ⚪ Redis" in report
     assert "Remote sample: stale (SSH unavailable; last valid counters/config shown)" in report
     assert "Embedding: qwen3-embedding-8b-1536 @ spark-goat" in report
-    assert "Embedding DB: docs 187307/187307 dims=1536 · messages 19529/19532 dims=1536" in report
+    assert "Embedding DB: docs 187307/187307 dims=1536 · message-embedding rows 19529/19532 (global) dims=1536" in report
     assert "Queue: 509 pending · 43 done" in report
 
 
