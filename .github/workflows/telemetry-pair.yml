@@ -1,0 +1,75 @@
+name: Telemetry paired-core contract
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/telemetry-pair.yml
+      - .github/batumi-patches.yaml
+      - hermes_cli/plugins*.py
+      - agent/plugin_stream_hooks.py
+      - agent/turn_facade.py
+      - tests/hermes_cli/*turn*evidence*.py
+      - tests/hermes_cli/test_plugin_turn_boundary*.py
+      - tests/hermes_cli/fixtures/turn_evidence/**
+      - tests/agent/test_*evidence*.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: telemetry-pair-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-receipts:
+    name: Linux receipt interoperability
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      CORE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      PLUGIN_SHA: 393e950384cc266016676564b78c509c33c70f64
+      HERMES_HOME: ${{ runner.temp }}/telemetry-home
+      HERMES_RUNTIME_DIR: ${{ runner.temp }}/telemetry-tools
+    steps:
+      - name: Check out the exact core head
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ env.CORE_SHA }}
+          persist-credentials: false
+      - name: Check out the exact plugin candidate
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: batumilove/hermes-official-plugins
+          ref: ${{ env.PLUGIN_SHA }}
+          path: paired-plugin
+          persist-credentials: false
+      - name: Verify and record both source identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CORE_SHA"
+          test "$(git -C paired-plugin rev-parse HEAD)" = "$PLUGIN_SHA"
+          printf 'Core: `%s`\nPlugin: `%s`\nLinux offline interoperability; no SDK export or backend delivery claim.\n' "$CORE_SHA" "$PLUGIN_SHA" >> "$GITHUB_STEP_SUMMARY"
+      - name: Build the locked core test environment
+        uses: ./.github/actions/setup-pm
+        with:
+          toolchain: python
+          test-environment: 'true'
+          save-tools-cache: 'false'
+          save-python-cache: 'false'
+      - name: Run plugin and core custody contracts without credentials
+        shell: bash
+        env:
+          HERMES_TEST_WORKERS: '2'
+          HERMES_TEST_FILE_RETRIES: '0'
+        run: |
+          set -euo pipefail
+          scripts/run_tests.sh \
+            "$GITHUB_WORKSPACE/paired-plugin/langfuse/tests" \
+            tests/hermes_cli/test_turn_evidence_collector.py \
+            tests/hermes_cli/test_plugin_turn_boundary.py \
+            tests/hermes_cli/test_plugin_turn_boundary_async.py \
+            tests/agent/test_plugin_stream_evidence.py \
+            tests/agent/test_turn_evidence_boundary.py \
+            --file-timeout 120

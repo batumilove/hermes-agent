@@ -2778,6 +2778,7 @@ patches:
     fork custody, and bind bounded local collectors to one host turn. Collected local proof does not establish
     remote backend delivery or authorize activation.
   paths:
+  - .github/workflows/telemetry-pair.yml
   - agent/plugin_stream_hooks.py
   - agent/turn_facade.py
   - hermes_cli/plugin_isolation.py
