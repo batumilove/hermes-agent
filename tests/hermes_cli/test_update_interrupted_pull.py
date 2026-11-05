@@ -626,7 +626,8 @@ def test_an_empty_head_answer_keeps_the_marker(tmp_path, monkeypatch, capsys):
     root, pre, target = _broken_release(tmp_path, 5)
     marker = _rollback_marker(root, pre, target)
     stub = tmp_path / "silent-git"
-    stub.write_text("", encoding="utf-8")
+    stub.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    stub.chmod(0o700)
     monkeypatch.setattr(er, "_git_executable", lambda recorded="": str(stub))
     real_run = subprocess.run
 

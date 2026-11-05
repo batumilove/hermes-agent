@@ -256,28 +256,26 @@ class TestRetainedAuxiliaryCredentials:
 
 
 class TestNousTagsScoping:
-    def test_tags_injected_when_provider_is_nous(self, monkeypatch):
+    def test_tags_injected_when_provider_is_nous(self):
         import agent.auxiliary_client as aux
 
-        monkeypatch.setattr(aux, "auxiliary_is_nous", False)
-
-        kwargs = aux._build_call_kwargs(
-            provider="nous",
-            model="hermes-4",
-            messages=[{"role": "user", "content": "hi"}],
-        )
+        with aux.scoped_runtime_main({"provider": "gemini"}):
+            kwargs = aux._build_call_kwargs(
+                provider="nous",
+                model="hermes-4",
+                messages=[{"role": "user", "content": "hi"}],
+            )
 
         assert kwargs["extra_body"]["tags"] == aux._nous_portal_tags()
 
-    def test_tags_not_injected_for_gemini_when_main_is_nous(self, monkeypatch):
+    def test_tags_not_injected_for_gemini_when_main_is_nous(self):
         import agent.auxiliary_client as aux
 
-        monkeypatch.setattr(aux, "auxiliary_is_nous", True)
-
-        kwargs = aux._build_call_kwargs(
-            provider="gemini",
-            model="gemini-2.5-flash",
-            messages=[{"role": "user", "content": "hi"}],
-        )
+        with aux.scoped_runtime_main({"provider": "nous"}):
+            kwargs = aux._build_call_kwargs(
+                provider="gemini",
+                model="gemini-2.5-flash",
+                messages=[{"role": "user", "content": "hi"}],
+            )
 
         assert "extra_body" not in kwargs

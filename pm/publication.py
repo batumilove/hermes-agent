@@ -37,6 +37,7 @@ def _admitted_member(source: Path, *, sitout: bool) -> bool:
 
     from hermes_cli.plugins_manifest import requires_hermes_error
     from pm.plugin_declarations import manifest_version_error, read_python_declaration
+    from pm.workspace import core_requirement_error
 
     declaration = read_python_declaration(source)
     reason = manifest_version_error(declaration.manifest, source.name, allow_hermes_sitout=sitout)
@@ -47,6 +48,10 @@ def _admitted_member(source: Path, *, sitout: bool) -> bool:
         print(f"Left existing plugin '{source.name}' out of this selection: "
               f"{hermes}; it stays enabled and rejoins when compatible",
               file=sys.stderr, flush=True)
+        return False
+    if core := core_requirement_error(declaration):
+        if not sitout:
+            raise ValueError(f"Plugin '{source.name}' {core}")
         return False
     return declaration.installs_packages
 
@@ -74,12 +79,15 @@ def selection_snapshot() -> dict[Path, bytes | None]:
 
 def validate_manifest(source: Path) -> dict:
     from pm.plugin_declarations import read_python_declaration, manifest_version_error
+    from pm.workspace import core_requirement_error
 
-    manifest = read_python_declaration(source).manifest
-    reason = manifest_version_error(manifest, source.name)
+    declaration = read_python_declaration(source)
+    reason = manifest_version_error(declaration.manifest, source.name)
+    if not reason and (core := core_requirement_error(declaration)):
+        reason = f"Plugin '{source.name}' {core}"
     if reason:
         raise ValueError(reason)
-    return manifest
+    return declaration.manifest
 
 
 class PluginSelection:
