@@ -120,13 +120,17 @@ def test_rejects_broken_legs_instead_of_publishing(kind):
         merge_mac_feeds(legs, "v0.28.0")
 
 
-def test_an_intel_leg_is_refused_because_no_intel_build_ships():
+def test_partial_feed_requires_explicit_arm64_selection():
     legs, _bytes = _inputs()
-    intel = legs["arm64-stable-mac.yml"].replace("mac-arm64", "mac-x64")
-    with pytest.raises(ValueError, match="ARM64"):
-        merge_mac_feeds({**legs, "x64-stable-mac.yml": intel}, "v0.28.0")
-    with pytest.raises(ValueError, match="ARM64"):
-        merge_mac_feeds({"x64-stable-mac.yml": intel}, "v0.28.0")
+    partial = {'arm64-stable-mac.yml': legs['arm64-stable-mac.yml']}
+    with pytest.raises(ValueError, match="ARM64 and one x64"):
+        merge_mac_feeds(partial, "v0.28.0")
+    plan = merge_mac_feeds(partial, "v0.28.0", arches=('arm64',))
+    assert [entry['url'] for entry in plan['files']] == [
+        '/releases/tag/v0.28.0/HermesBundled-0.28.0-mac-arm64.zip']
+    with pytest.raises(ValueError, match='need the arm64 leg'):
+        merge_mac_feeds({'x64-stable-mac.yml': legs['x64-stable-mac.yml']},
+                        'v0.28.0', arches=('x64',))
 
 
 def test_semver_grammar_rejects_non_release_versions():
