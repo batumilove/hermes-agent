@@ -102,13 +102,13 @@ scripts/run_tests.sh -v --tb=long             # pass-through pytest flags
   that disposable environment before regeneration.
 - The runner probes repository `.venv`, `venv`, and the standard source-install
   venv before falling back to `HERMES_PYTHON`. Each candidate must contain pytest.
-- **Windows:** run the same wrapper through Git Bash. See `references/windows-quirks.md`.
+- **Supported hosts:** standard Linux/macOS on x86_64 and ARM64, including WSL2. Native Windows and Android/Termux are unsupported in this fork. Retained upstream Windows compatibility notes are historical; see `references/windows-quirks.md`.
 - After editing `pyproject.toml`, run `hermes pm lock`, re-source `./activate`, and
   commit `pyproject.toml` with `uv.lock`.
   Do not mutate Hermes environments with raw pip or uv commands.
 
 Host-specific tests run on the real host. Use one `@pytest.mark.platforms(...)`
-marker per test, such as `@pytest.mark.platforms("windows", arch="arm64")`.
+marker per test, such as `@pytest.mark.platforms("macos", arch="arm64")`.
 Do not fake the host by patching `sys.platform` or platform probes.
 
 ### System prompt's execution-environment block

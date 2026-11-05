@@ -1,10 +1,9 @@
 # Windows-Specific Quirks
 
-Hermes runs natively on Windows (PowerShell, cmd, Windows Terminal, git-bash
-mintty, VS Code integrated terminal). Most of it just works, but a handful
-of differences between Win32 and POSIX have bitten us — document new ones
-here as you hit them so the next person (or the next session) doesn't
-rediscover them from scratch.
+Native Windows is unsupported in this fork; use standard Linux inside WSL2.
+The notes below describe retained upstream implementation and historical
+installations. They do not provide a supported installation or test route for
+this fork.
 
 ### Input / Keybindings
 
