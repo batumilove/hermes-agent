@@ -112,12 +112,16 @@ class TurnLivenessWatchdog:
         self._deactivate_turn = deactivate_turn
         # A sleeping host is not a stalled turn: time asleep never counts toward the bound.
         self._awake_idle = AwakeIdleMeter()
+        self._turn_thread_id: Optional[int] = None
 
     def schedule(self):
         """Start polling via the shared periodic scheduler; returns the cancel handle.
         Scheduled at turn entry, after the turn-active flag and activity clock are stamped."""
         from agent.periodic_scheduler import schedule
 
+        # Scheduled by the admitted turn owner before prompt preparation/compaction.
+        # Keep diagnostic identity local: binding the interrupt scope here would reset signals.
+        self._turn_thread_id = threading.get_ident()
         return schedule(self._tick, self._poll_s)
 
     def _tick(self):
@@ -173,7 +177,7 @@ class TurnLivenessWatchdog:
             frames = sys._current_frames()
             lines = ["## All thread stacks at turn stall (watchdog dump)"]
             by_ident = {t.ident: t for t in threading.enumerate() if t.ident}
-            turn_ident = getattr(self._agent, "_execution_thread_id", None)
+            turn_ident = self._turn_thread_id or getattr(self._agent, "_execution_thread_id", None)
             # The turn thread is dumped FIRST, before the cap: a crowded process otherwise drops it
             # from the capture, and its frame is the only direct evidence localizing the wedge.
             idents = sorted(frames, key=lambda ident: ident != turn_ident)
