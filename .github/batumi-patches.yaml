@@ -5,6 +5,14 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: process-registry-rewrite-test-isolation
+  kind: core
+  rationale: Keep command-rewrite assertions scoped to the terminal job rather than unrelated supervisor subprocesses.
+  paths:
+  - tests/tools/test_process_registry.py
+  tests:
+  - scripts/run_tests.sh tests/tools/test_process_registry.py
+  retirement: Drop when upstream scopes the rewrite regression to the registry job-spawn seam.
 - id: watchdog-early-thread-attribution
   kind: core
   rationale: Attribute pre-prompt watchdog diagnostics to the admitted scheduling owner without resetting interrupt state.
