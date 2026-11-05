@@ -31,15 +31,19 @@ def test_update_preserves_local_work_and_rescues_orphan_before_reset(
     git(t.clone, '-c', 'commit.gpgsign=false', 'commit', '-qm', 'local history')
     before = git(t.clone, 'rev-parse', 'HEAD')
     (t.clone / 'untracked.txt').write_text('local edit\n', encoding='utf-8')
+    tracked = t.clone / '.gitignore'
+    clean_tracked = tracked.read_text(encoding='utf-8')
+    tracked.write_text(clean_tracked + '# local edit\n', encoding='utf-8')
     t.args.channel, t.args.keep_stash = 'main', keep
     monkeypatch.setattr(hermes_main, '_sync_with_upstream_if_needed', update_cmd._sync_with_upstream_if_needed)
     monkeypatch.setattr(update_cmd, '_UPDATE_CRITICAL_MODULES', ())
-    original = subprocess.run
+    from hermes_cli import update_custody
+    original = update_custody.run_git
     resets = []
 
-    def fault(command, *args, **kwargs):
+    def fault(git_cmd, command, **kwargs):
         if 'reset' in command and '--hard' in command:
-            refs = original(['git', 'for-each-ref', '--format=%(objectname)',
+            refs = subprocess.run(['git', 'for-each-ref', '--format=%(objectname)',
                              'refs/hermes-update-backups/'], cwd=t.clone,
                             check=True, capture_output=True, text=True).stdout.split()
             assert refs == ([before] if failure not in {'ref', 'head'} else [])
@@ -47,9 +51,9 @@ def test_update_preserves_local_work_and_rescues_orphan_before_reset(
         if ((failure == 'ref' and 'update-ref' in command and '-d' not in command)
                 or (failure == 'reset' and 'reset' in command and '--hard' in command)):
             return subprocess.CompletedProcess(command, 128, stdout='', stderr='fixture I/O refusal')
-        return original(command, *args, **kwargs)
+        return original(git_cmd, command, **kwargs)
 
-    monkeypatch.setattr(subprocess, 'run', fault)
+    monkeypatch.setattr(update_custody, 'run_git', fault)
     if failure == 'head':
         monkeypatch.setattr(update_cmd, '_capture_head_sha', lambda *_: None)
     if failure == 'reset':
@@ -58,16 +62,18 @@ def test_update_preserves_local_work_and_rescues_orphan_before_reset(
         assert error.value.code == 1
         assert not t.requests
         assert git(t.clone, 'rev-parse', 'HEAD') == before
-        assert not (t.clone / 'untracked.txt').exists()
+        assert tracked.read_text(encoding='utf-8') == clean_tracked
     else:
         hermes_main.cmd_update(t.args)
         assert len(t.requests) == 1
         assert git(t.clone, 'rev-parse', 'HEAD') == t.newer
-        assert (t.clone / 'untracked.txt').exists() is (not keep)
+        assert tracked.read_text(encoding='utf-8') == clean_tracked + ('' if keep else '# local edit\n')
+    assert (t.clone / 'untracked.txt').exists() is (not keep and failure != 'reset')
     assert len(resets) == 1
     stashes = git(t.clone, 'stash', 'list')
     assert bool(stashes) is (keep or failure == 'reset')
     if stashes:
+        assert git(t.clone, 'show', 'stash@{0}:.gitignore') == (clean_tracked + '# local edit\n').strip()
         assert git(t.clone, 'show', 'stash@{0}^3:untracked.txt') == 'local edit'
     output = capsys.readouterr().out
     if failure == 'ref':

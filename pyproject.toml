@@ -208,7 +208,7 @@ dependencies = [
   # Hence the ``sys_platform == 'win32'`` marker: the dep (and its portalocker
   # / pywin32 tree) ships only where it's actually used.
   "concurrent-log-handler==0.9.30; sys_platform == 'win32' and python_version >= '3.14'",
-  # First-party lifecycle and shared-metrics runtime. Relay 0.10 is the supported
+  # First-party lifecycle and shared-metrics runtime. Relay 0.11 is the supported
   # native runtime and provider-codec baseline. Managed calls pass request and
   # response data through this native module in-process; shared metrics installs
   # no network exporter and consumes only its bounded projection. This marker
@@ -222,7 +222,7 @@ dependencies = [
   # 738 CPython reports sys_platform == 'android' and never matched.) Pre-GKI
   # devices can still slip through; they get the same resolution failure as
   # before, worked around by installing with `--no-deps` or an older release.
-  "nemo-relay>=0.10,<0.11; ((sys_platform == 'darwin' and platform_machine == 'arm64') or (sys_platform == 'linux' and platform_machine == 'x86_64' and 'android' not in platform_release) or (sys_platform == 'linux' and platform_machine == 'aarch64' and 'android' not in platform_release) or (sys_platform == 'win32' and platform_machine == 'AMD64') or (sys_platform == 'win32' and platform_machine == 'ARM64')) and python_version >= '3.14'",]
+  "nemo-relay>=0.11,<0.12; ((sys_platform == 'darwin' and platform_machine == 'arm64') or (sys_platform == 'linux' and platform_machine == 'x86_64' and 'android' not in platform_release) or (sys_platform == 'linux' and platform_machine == 'aarch64' and 'android' not in platform_release) or (sys_platform == 'win32' and platform_machine == 'AMD64') or (sys_platform == 'win32' and platform_machine == 'ARM64')) and python_version >= '3.14'",]
 
 [project.optional-dependencies]
 # Locked spreadsheet dependency for the bundled DCF workbook skill.
@@ -688,10 +688,9 @@ override-dependencies = [
 # (#135589). Exact pins follow the same 3-day rule. The one exemption is CA
 # trust stores: a release that revokes or distrusts a compromised CA must reach
 # the lock the day it ships, because holding it back keeps the bad root trusted.
-# The fork additionally admits the explicitly approved decoder fix below.
+# Only packages whose job is CA trust belong in exclude-newer-package.
 exclude-newer = "3 days"
-# User-approved fixed decoder security release; retain the global cooldown.
-exclude-newer-package = { certifi = false, brotlicffi = "2026-10-23T00:00:00Z" }
+exclude-newer-package = { certifi = false }
 
 [tool.uv.sources]
 browser-harness = { path = "pm/vendor/browser_harness-0.1.13+hermes.1-py3-none-any.whl" }

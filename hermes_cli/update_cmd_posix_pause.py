@@ -707,3 +707,14 @@ def resume_paused_set(token: dict) -> None:
 def already_restarted() -> dict:
     """What the early resume restarted on the new code in this process (for the fleet restart)."""
     return _RESTARTED
+
+
+def arm_platform_pause(opts):
+    """Windows pauses here (venv locks); Linux/macOS only arm a pause the commit point performs."""
+    from hermes_cli import update_cmd as facade
+    try:
+        return facade._m()._pause_windows_gateways_for_update() or arm_pause(
+            no_gateway_restart=opts.no_gateway_restart)
+    except RuntimeError:  # update_cmd_windows._abort_on_error / ServicePauseFailed: nothing moved
+        facade._record_stop("gateway_pause_failed")
+        raise
