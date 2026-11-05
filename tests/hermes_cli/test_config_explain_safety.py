@@ -204,6 +204,8 @@ def test_platform_default_identity(tmp_path):
     ('-p', 'default', '-mfoo'), ('--profile=default', '--model=foo'),
     ('--',), ('--reasoning', 'high'), ('-w', '-mfoo'),
     ('--continue=session',), ('--continue', '--'),
+    pytest.param(('--cpu-profile', 'trace'), id='cpu_profile_separate'),
+    pytest.param(('--cp=trace',), id='cpu_profile_abbreviated_equals'),
 ])
 def test_parser_supported_globals_remain_filesystem_readonly(tmp_path, flags):
     from hermes_cli._parser import build_top_level_parser
