@@ -6,7 +6,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 
+
+@pytest.mark.platforms("posix")
 def test_secure_home_ignores_permissive_inherited_umask(tmp_path: Path) -> None:
     """Synthetic Kanban homes stay private without changing process umask."""
     script = f"""
