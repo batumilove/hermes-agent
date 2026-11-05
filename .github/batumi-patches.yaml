@@ -2067,6 +2067,7 @@ patches:
   - tests/gateway/test_title_command.py
   - tests/gateway/test_turn_lease.py
   - tests/hermes_cli/test_pre_command_hook.py
+  - tests/hermes_cli/test_shared_metrics_busy.py
   - gateway/status_sequence.py
   - gateway/status_components.py
   - tests/gateway/test_status_sequence.py
@@ -2083,6 +2084,7 @@ patches:
     tests/gateway/test_gateway_command_dispatch_minimal.py tests/gateway/test_shutdown_aggregate_budget_contract.py
     tests/gateway/test_shutdown_cache_cleanup.py tests/gateway/test_status.py tests/gateway/test_stuck_loop.py
     tests/gateway/test_title_command.py tests/gateway/test_turn_lease.py tests/hermes_cli/test_pre_command_hook.py
+    tests/hermes_cli/test_shared_metrics_busy.py
   - python -m py_compile agent/async_utils.py gateway/platforms/api_server.py gateway/platforms/base.py
     gateway/run.py gateway/session.py gateway/session_db_recovery.py gateway/slash_commands.py gateway/status.py
     hermes_state.py
@@ -2696,6 +2698,7 @@ patches:
   - tests/ci/test_termux_input_archive.py
   - tests/ci/test_update_ci_routing.py
   - tests/hermes_platform/test_support.py
+  - tests/hermes_cli/test_shared_metrics_harness.py
   - tests/scripts/install/test_install_clone_throttle_fallback.py
   - tests/scripts/install/test_install_diverged_rescue_ref.py
   - tests/scripts/install/test_install_sh_termux_refusal.py
@@ -2717,7 +2720,7 @@ patches:
   - scripts/releases/r2.py
   - scripts/bundles/release_artifacts.py
   tests:
-  - scripts/run_tests.sh tests/hermes_platform tests/scripts/test_supported_release_platforms.py tests/scripts/install/test_install_sh_termux_refusal.py
+  - scripts/run_tests.sh tests/hermes_platform tests/scripts/test_supported_release_platforms.py tests/scripts/install/test_install_sh_termux_refusal.py tests/hermes_cli/test_shared_metrics_harness.py
   - scripts/run_tests.sh tests/scripts/test_job_groups.py tests/scripts/test_release_lanes.py tests/scripts/test_release_entrypoint.py tests/scripts/test_release_channels.py tests/scripts/test_stable_release.py tests/scripts/test_release_artifacts.py tests/scripts/test_release_darwin.py
   - scripts/run_tests.sh tests/ci/test_stable_release_graph.py tests/ci/test_protected_canary_publication.py tests/ci/test_channel_build_publication.py tests/ci/test_tag_builds_summary.py tests/ci/test_workflow_job_graph.py tests/ci/test_desktop_bundle_smoke.py
   - scripts/run_tests.sh tests/ci/test_update_ci_routing.py tests/ci/test_update_transitive_routing.py tests/ci/test_classify_changes.py tests/ci/test_commit_build_staging.py tests/ci/test_desktop_release_tag_admission.py tests/ci/test_termux_input_archive.py

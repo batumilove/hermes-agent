@@ -260,7 +260,7 @@ def test_an_auto_resumed_chat_counts_toward_its_owning_profiles_peak(tmp_path, m
 
     async def resume():
         runner._run_startup_resume_event = lambda *a, **k: asyncio.sleep(0)
-        assert runner._schedule_resume_pending_sessions() == 1
+        assert await runner._schedule_resume_pending_sessions() == 1
         await asyncio.sleep(0)
 
     asyncio.run(resume())
