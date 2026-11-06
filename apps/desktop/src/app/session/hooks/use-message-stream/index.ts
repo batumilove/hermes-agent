@@ -794,6 +794,7 @@ export function useMessageStream({
               status === 'interrupted' ? extendInterruptedReply(state.messages, text, occurredAt) : state.messages,
               persistedTurn
             ),
+            reconnectHistoryPending: false,
             awaitingResponse: false,
             busy: false,
             needsInput: false,
@@ -1134,6 +1135,7 @@ export function useMessageStream({
           ...state,
           messages: nextMessages,
           adoptedRunningTurn: false,
+          reconnectHistoryPending: false,
           heartbeatSettledStreamId: null,
           streamId: null,
           pendingBranchGroup: null,
