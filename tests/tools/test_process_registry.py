@@ -11,6 +11,7 @@ import threading
 import time
 import pytest
 from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
 
 from tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_FORCE_PREFIX
 from tools.process_registry import (
@@ -874,7 +875,7 @@ class TestSpawnEnvSanitization:
     def test_spawn_local_strips_blocked_vars_from_background_env(self, registry):
         captured = {}
 
-        def fake_popen(cmd, **kwargs):
+        def fake_spawn_job(_session, cmd, _persist_on_release, **kwargs):
             captured["env"] = kwargs["env"]
             proc = MagicMock()
             proc.pid = 4321
@@ -882,8 +883,6 @@ class TestSpawnEnvSanitization:
             proc.stdin = MagicMock()
             proc.poll.return_value = None
             return proc
-
-        fake_thread = MagicMock()
 
         with patch.dict(os.environ, {
             "PATH": "/usr/bin:/bin",
@@ -893,8 +892,8 @@ class TestSpawnEnvSanitization:
             "FIRECRAWL_API_KEY": "fc-secret",
         }, clear=True), \
             patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
-            patch("subprocess.Popen", side_effect=fake_popen), \
-            patch("threading.Thread", return_value=fake_thread), \
+            patch.object(registry, "_spawn_job", side_effect=fake_spawn_job), \
+            patch.object(registry, "_track_started"), \
             patch.object(registry, "_write_checkpoint"):
             registry.spawn_local(
                 "echo hello",
@@ -1133,12 +1132,15 @@ class TestPopenLeakOnSetupFailure:
         def boom(*args, **kwargs):
             raise RuntimeError("Thread creation failed")
 
+        registry_threads = SimpleNamespace(**vars(threading))
+        registry_threads.Thread = MagicMock(side_effect=boom)
+
         # The orphan path terminates through _terminate_host_pid, which
         # revalidates the recorded kernel start time before signalling, so a
         # MagicMock pid can never reach a real killpg/os.kill.
         with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
-             patch("subprocess.Popen", return_value=proc), \
-             patch("threading.Thread", side_effect=boom), \
+             patch.object(registry, "_spawn_job", return_value=proc), \
+             patch("tools.process_registry.threading", registry_threads), \
              patch.object(ProcessRegistry, "_terminate_host_pid") as terminate, \
              patch.object(registry, "_write_checkpoint"):
             with pytest.raises(RuntimeError, match="Thread creation failed"):
@@ -1152,68 +1154,6 @@ class TestPopenLeakOnSetupFailure:
 # =========================================================================
 
 
-class TestSpawnRewriteCompoundBackground:
-    """Verify that spawn_local rewrites `A && B &` patterns to avoid subshell deadlocks.
-
-    Issue #68915: when bash parses ``A && B &`` it forks a subshell ``(A && B) &``.
-    If B is a long-running server, the subshell never exits and holds the stdout
-    pipe open, causing a permanent deadlock. The rewriter wraps the tail to
-    ``A && { B & }`` so no subshell fork occurs.
-    """
-
-    def test_compound_and_background_gets_rewritten(self, registry):
-        """A && B & must be rewritten to A && { B & } before Popen."""
-        captured_cmd = []
-
-        def fake_popen(args, **kwargs):
-            captured_cmd.append(args)
-            proc = MagicMock()
-            proc.pid = 1111
-            proc.stdout = MagicMock()
-            return proc
-
-        fake_thread = MagicMock()
-        fake_thread.daemon = False
-
-        with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
-             patch("subprocess.Popen", side_effect=fake_popen), \
-             patch("threading.Thread", return_value=fake_thread), \
-             patch.object(registry, "_write_checkpoint"):
-            registry.spawn_local("cd /app && node server.js &>/tmp/srv.log &", cwd="/tmp")
-
-        assert len(captured_cmd) == 1
-        shell_cmd = captured_cmd[0]
-        # The command passed to Popen should be the REWRITTEN version
-        assert "&& { node server.js &>/tmp/srv.log & }" in shell_cmd[2]
-
-
-    def test_pty_path_uses_rewritten_command(self, registry):
-        """PTY spawn path must also use the rewritten command (issue #68915)."""
-        mock_pty_proc = MagicMock()
-        mock_pty_proc.pid = 5555
-
-        mock_pty_module = MagicMock()
-        mock_pty_module.PtyProcess.spawn = MagicMock(return_value=mock_pty_proc)
-
-        fake_thread = MagicMock()
-        fake_thread.daemon = False
-
-        with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
-             patch.dict("sys.modules", {"ptyprocess": mock_pty_module}), \
-             patch("threading.Thread", return_value=fake_thread), \
-             patch.object(registry, "_write_checkpoint"):
-            session = registry.spawn_local(
-                "cd /app && node server.js &",
-                cwd="/tmp",
-                use_pty=True,
-            )
-
-        assert mock_pty_module.PtyProcess.spawn.called, \
-            "PTY spawn should have been attempted"
-        pty_args = mock_pty_module.PtyProcess.spawn.call_args[0][0]
-        assert "&& { node server.js & }" in pty_args[2], \
-            f"PTY path should use rewritten command, got: {pty_args[2]}"
-        assert session.command == "cd /app && node server.js &"
 
 
 # =========================================================================
@@ -2267,9 +2207,12 @@ class TestSystemdCgroupIsolation:
             lambda environ=None: False,
         )
 
+        # Fake handles have no real ownership group; test the detached launch.
+        spawn_module = SimpleNamespace(Popen=MagicMock(side_effect=fake_popen))
         with (
-            patch("subprocess.Popen", side_effect=fake_popen),
-            patch("threading.Thread", return_value=MagicMock()),
+            patch.object(registry, "_owns_job", return_value=False),
+            patch("tools.process_registry_ownership.subprocess", spawn_module),
+            patch.object(registry, "_track_started"),
             patch.object(registry, "_write_checkpoint"),
         ):
             registry.spawn_local("echo hello", cwd="/tmp")
@@ -2296,13 +2239,16 @@ class TestSystemdCgroupIsolation:
         )
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
 
+        # No fake PID may enter host process-group bookkeeping.
+        monkeypatch.setattr(registry, "_owns_job", lambda _persist: False)
+
         if use_pty:
             from ptyprocess import PtyProcess
 
             fake_pty = MagicMock(pid=4321)
             with (
                 patch.object(PtyProcess, "spawn", return_value=fake_pty) as pty_spawn,
-                patch("threading.Thread", return_value=MagicMock()),
+                patch.object(registry, "_track_started"),
                 patch.object(registry, "_write_checkpoint"),
             ):
                 session = registry.spawn_local("codex", cwd="/tmp", use_pty=True)
@@ -2311,9 +2257,10 @@ class TestSystemdCgroupIsolation:
             ]
         else:
             fake_popen, captured = self._fake_popen_capture()
+            spawn_module = SimpleNamespace(Popen=MagicMock(side_effect=fake_popen))
             with (
-                patch("subprocess.Popen", side_effect=fake_popen),
-                patch("threading.Thread", return_value=MagicMock()),
+                patch("tools.process_registry_ownership.subprocess", spawn_module),
+                patch.object(registry, "_track_started"),
                 patch.object(registry, "_write_checkpoint"),
             ):
                 session = registry.spawn_local("echo hello", cwd="/tmp")
@@ -2347,13 +2294,16 @@ class TestSystemdCgroupIsolation:
         )
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
 
+        # Fake handles must not enter owner-death supervisor bookkeeping.
+        monkeypatch.setattr(registry, "_owns_job", lambda _persist: False)
+
         if use_pty:
             from ptyprocess import PtyProcess
 
             fake_pty = MagicMock(pid=4321)
             with (
                 patch.object(PtyProcess, "spawn", return_value=fake_pty) as pty_spawn,
-                patch("threading.Thread", return_value=MagicMock()),
+                patch.object(registry, "_track_started"),
                 patch.object(registry, "_write_checkpoint"),
             ):
                 session = registry.spawn_local("codex", cwd="/tmp", use_pty=True)
@@ -2362,9 +2312,10 @@ class TestSystemdCgroupIsolation:
             ]
         else:
             fake_popen, captured = self._fake_popen_capture()
+            spawn_module = SimpleNamespace(Popen=MagicMock(side_effect=fake_popen))
             with (
-                patch("subprocess.Popen", side_effect=fake_popen),
-                patch("threading.Thread", return_value=MagicMock()),
+                patch("tools.process_registry_ownership.subprocess", spawn_module),
+                patch.object(registry, "_track_started"),
                 patch.object(registry, "_write_checkpoint"),
             ):
                 session = registry.spawn_local("echo hello", cwd="/tmp")

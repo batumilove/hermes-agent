@@ -2813,3 +2813,16 @@ patches:
   retirement: Remove when upstream provides equivalent bounded host-turn custody and collector attachment
     with original-reader freshness, callback lifetime, process/profile/registration binding and concurrent
     single-admission regression coverage.
+- id: process-registry-test-mock-isolation
+  kind: compatibility
+  rationale: Keep command-rewrite, environment, scope-routing and orphan-cleanup unit mocks
+    on the tested registry boundaries. Fake process IDs must not enter host owner-death
+    supervisor bookkeeping, and reader-thread mocks must not replace global threading.
+    Preserve the existing behavioral assertions and split rewrite cases to obey file caps.
+  paths:
+  - tests/tools/test_process_registry.py
+  - tests/tools/test_process_registry_spawn_rewrite.py
+  tests:
+  - scripts/run_tests.sh tests/tools/test_process_registry.py tests/tools/test_process_registry_spawn_rewrite.py
+  retirement: Remove when upstream provides equivalent isolated registry unit mocks
+    without coupling assertions to supervisor state or host process IDs.
