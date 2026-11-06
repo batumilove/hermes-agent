@@ -1501,7 +1501,11 @@ patches:
   - tests/gateway/test_lifecycle_counters.py
   - gateway/slash_commands_diagnostics.py
   - gateway/slash_commands_status.py
+  - gateway/run_shutdown.py
+  - gateway/run_shutdown_cache.py
+  - tests/gateway/test_lifecycle_observer_transitions.py
   tests:
+  - scripts/run_tests.sh tests/gateway/test_lifecycle_observer_transitions.py
   - scripts/run_tests.sh tests/gateway/test_lifecycle_counters.py tests/gateway/test_agents_command_delegations.py
   retirement: Remove when upstream provides equivalent opt-in, fixed-cardinality gateway lifecycle diagnostics
     with privacy and cleanup-outcome coverage.
@@ -1794,8 +1798,11 @@ patches:
   - tests/agent/test_fallback_exhaustion_cooldown.py
   - tests/agent/test_tool_call_guardrail_runtime.py
   - tests/hermes_cli/test_plugin_fallback_lifecycle.py
+  - gateway/run_config_loaders.py
+  - tests/gateway/test_lifecycle_observer_transitions.py
+  - website/docs/user-guide/features/hooks.md
   tests:
-  - scripts/run_tests.sh tests/run_agent/test_24996_fallback_exhaustion_cooldown.py tests/agent/test_primary_runtime_restore.py
+  - scripts/run_tests.sh tests/gateway/test_lifecycle_observer_transitions.py tests/agent/test_fallback_exhaustion_cooldown.py tests/agent/test_primary_runtime_restore.py
     tests/hermes_cli/test_plugins.py
   retirement: Remove when upstream provides equivalent observer hooks and episode reset.
 - id: kimi-billing-classification
