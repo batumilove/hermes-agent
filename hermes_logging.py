@@ -348,6 +348,30 @@ def _adopt_secondary_home(home: Path) -> bool:
     return enable_profile_log_routing([*sorted(known), resolved])
 
 
+def _default_log_handlers_ready(home: Path) -> bool:
+    """Recognize an already-served home without filesystem or configuration reads."""
+    def path_key(path):
+        return os.path.normcase(os.path.abspath(os.fspath(path)))
+
+    home_key = path_key(home)
+    filenames = set()
+    with _queue_state_lock:
+        for handler in _queued_file_handlers:
+            if getattr(handler, "_closed", False):
+                continue
+            if isinstance(handler, _ProfileRoutingFileHandler):
+                with handler._profile_handlers_lock:
+                    served = {path_key(h) for h in handler._profile_homes}
+                    served.add(path_key(handler._default_home))
+                    if not handler._router_closed and home_key in served:
+                        filenames.add(handler._filename)
+            elif isinstance(handler, RotatingFileHandler):
+                log_path = Path(handler.baseFilename)
+                if path_key(log_path.parent.parent) == home_key:
+                    filenames.add(log_path.name)
+    return {"agent.log", "errors.log"} <= filenames
+
+
 def setup_logging(
     *,
     hermes_home: Optional[Path] = None,
@@ -366,13 +390,23 @@ def setup_logging(
     global _logging_initialized
     global _fallback_warned
     home = hermes_home or get_hermes_home()
-    log_dir = mkdir_under_hermes_home(home / "logs")
+    log_dir = home / "logs"
 
     # Stdout is block-buffered when piped (no TTY); line-buffer it so a
     # headless supervisor's log stream tracks the agent loop incrementally
     # (#92281). Runs before the initialized check so every entry mode that
     # reaches this function gets it; a no-op once this stdout is line-buffered.
     _line_buffer_piped_stdout()
+
+    # Default per-agent setup is a no-op once this home has both writers. Explicit
+    # setup still refreshes policy and components; a new home must first adopt routing.
+    if (
+        _logging_initialized and not force and mode is None
+        and log_level is None and max_size_mb is None and backup_count is None
+        and _default_log_handlers_ready(home)
+    ):
+        return log_dir
+    log_dir = mkdir_under_hermes_home(log_dir)
 
     # A second Hermes home in a process that already logs for another one — a dashboard or
     # ``hermes serve`` backend building agents for several profiles, a multiplexed gateway —

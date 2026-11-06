@@ -79,6 +79,25 @@ def liveness_clock(monkeypatch):
     return advance
 
 
+@pytest.mark.parametrize("routed", [False, True], ids=["static", "profile-router"])
+def test_initialized_default_setup_skips_directory_and_config_io(hermes_home, tmp_path, monkeypatch, routed):
+    hermes_logging.setup_logging(hermes_home=hermes_home)
+    homes = [hermes_home]
+    if routed:
+        other_home = tmp_path / "another-profile"
+        hermes_logging.setup_logging(hermes_home=other_home)
+        homes.append(other_home)
+
+    def unexpected_io(*_args, **_kwargs):
+        pytest.fail("repeated default setup must not perform directory or config I/O")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(hermes_logging, "mkdir_under_hermes_home", unexpected_io)
+        scoped.setattr(hermes_logging, "_read_logging_config", unexpected_io)
+        for home in homes:
+            assert hermes_logging.setup_logging(hermes_home=home) == home / "logs"
+
+
 @pytest.mark.parametrize("mode,component", [("cli", None), ("gateway", "gateway.log"), ("gui", "gui.log")])
 @pytest.mark.parametrize("configured,explicit,minimum", [(None, None, logging.INFO), ("DEBUG", "WARNING", logging.WARNING), ("DEBUG", None, logging.DEBUG)])
 def test_repeated_setup_routes_records_once(hermes_home, mode, component, configured, explicit, minimum):
