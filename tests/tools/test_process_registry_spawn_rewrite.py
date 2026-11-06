@@ -24,7 +24,7 @@ class TestSpawnRewriteCompoundBackground:
     """
 
     def test_compound_and_background_gets_rewritten(self, registry):
-        """A && B & must be rewritten to A && { B & } before Popen."""
+        """A && B & must be rewritten to A && { B & } before spawning the job."""
         captured_cmd = []
 
         def fake_spawn_job(_session, args, _persist_on_release, **kwargs):

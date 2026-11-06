@@ -5,6 +5,18 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: process-registry-rewrite-test-isolation
+  kind: core
+  rationale: Keep command-rewrite, environment, scope-routing and orphan-cleanup assertions
+    scoped to the terminal registry job rather than unrelated supervisor subprocesses.
+    Fake process IDs must not enter host supervision; reader-thread mocks stay local.
+    Split command-rewrite cases to respect the existing test file-size cap.
+  paths:
+  - tests/tools/test_process_registry.py
+  - tests/tools/test_process_registry_spawn_rewrite.py
+  tests:
+  - scripts/run_tests.sh tests/tools/test_process_registry.py tests/tools/test_process_registry_spawn_rewrite.py
+  retirement: Drop when upstream provides equivalent registry launch/thread mock isolation.
 - id: watchdog-early-thread-attribution
   kind: core
   rationale: Attribute pre-prompt watchdog diagnostics to the admitted scheduling owner without resetting interrupt state.
@@ -2391,6 +2403,8 @@ patches:
   - hermes_cli/kanban_route_contract.py
   - hermes_cli/kanban_wired_dispatcher.py
   - tests/hermes_cli/kanban_harness_invariants.py
+  - tests/hermes_cli/kanban_test_helpers.py
+  - tests/hermes_cli/test_kanban_secure_home_fixture.py
   - tests/hermes_cli/test_kanban_admission_policy.py
   - tests/hermes_cli/test_kanban_dispatch_wiring.py
   - tests/hermes_cli/test_kanban_launch_protocol.py
@@ -2813,16 +2827,3 @@ patches:
   retirement: Remove when upstream provides equivalent bounded host-turn custody and collector attachment
     with original-reader freshness, callback lifetime, process/profile/registration binding and concurrent
     single-admission regression coverage.
-- id: process-registry-test-mock-isolation
-  kind: compatibility
-  rationale: Keep command-rewrite, environment, scope-routing and orphan-cleanup unit mocks
-    on the tested registry boundaries. Fake process IDs must not enter host owner-death
-    supervisor bookkeeping, and reader-thread mocks must not replace global threading.
-    Preserve the existing behavioral assertions and split rewrite cases to obey file caps.
-  paths:
-  - tests/tools/test_process_registry.py
-  - tests/tools/test_process_registry_spawn_rewrite.py
-  tests:
-  - scripts/run_tests.sh tests/tools/test_process_registry.py tests/tools/test_process_registry_spawn_rewrite.py
-  retirement: Remove when upstream provides equivalent isolated registry unit mocks
-    without coupling assertions to supervisor state or host process IDs.
