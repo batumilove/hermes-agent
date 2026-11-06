@@ -5,6 +5,35 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: ui-lane-failure-diagnostics
+  kind: operations
+  rationale: Keep normal Vitest failure details visible in hosted lane logs alongside the JSON
+    reporter consumed by exact file-coverage receipts; a failed shard must remain diagnosable.
+  paths:
+  - .github/scripts/run-ui-lane.mjs
+  tests:
+  - node --test .github/scripts/ui-sharding.test.mjs .github/scripts/ui-discovery.test.mjs
+  retirement: Remove when upstream preserves human-readable failure diagnostics alongside machine
+    receipts without changing lane selection, coverage validation or gate outcomes.
+- id: buzz-attachment-auth-and-quoted-parent
+  kind: compatibility
+  rationale: Authenticate canonical relay attachment downloads with short-lived
+    Blossom read tokens and preserve authorized same-conversation quoted images.
+    Keep exact request-origin validation, anonymous third-party downloads, bounded
+    transfer integrity checks and shared current/parent attachment limits.
+    Extract the useful behavior from PR440 into the attachment sibling.
+  paths:
+  - plugins/platforms/buzz/adapter.py
+  - plugins/platforms/buzz/attachments.py
+  - plugins/platforms/buzz/nostr_auth.py
+  - tests/gateway/test_buzz_adapter.py
+  - tests/gateway/test_buzz_attachment_auth_regression.py
+  - tests/gateway/test_buzz_quoted_parent_regression.py
+  - website/docs/user-guide/messaging/buzz.md
+  tests:
+  - scripts/run_tests.sh tests/gateway/test_buzz_attachment_auth_regression.py tests/gateway/test_buzz_quoted_parent_regression.py tests/gateway/test_buzz_adapter.py
+  retirement: Remove when upstream provides authenticated native attachment reads
+    and authorized quoted-parent context with equivalent routing and integrity checks.
 - id: cron-strict-topic-recovery
   kind: core
   rationale: Preserve explicitly scheduled Telegram destinations through durable reconnect
