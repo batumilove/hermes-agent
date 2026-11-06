@@ -14,11 +14,14 @@ patches:
   - agent/turn_context.py
   - agent/turn_context_compaction.py
   - agent/turn_facade.py
+  - agent/turn_facade_cleanup.py
   - agent/turn_facade_lease.py
   - agent/turn_finalizer.py
   - tools/interrupt.py
   - tests/agent/test_periodic_scheduler_retention.py
   - tests/agent/test_turn_invocation_cleanup.py
+  - tests/agent/test_turn_finalizer_interrupt_alternation.py
+  - tests/agent/test_turn_finalizer_iteration_limit_exit.py
   tests:
   - scripts/run_tests.sh tests/agent/test_turn_invocation_cleanup.py tests/agent/test_turn_facade_lease.py tests/agent/test_periodic_scheduler_retention.py tests/agent/test_periodic_scheduler.py
   retirement: Remove when upstream preserves owned early-preflight stop/watchdog cancellation, confirmed timer cessation, unconditional invocation unlock and explicit quarantine on holder cleanup failure with equivalent fault regressions; requires the matching plugin scan-cancellation change.
@@ -1473,6 +1476,7 @@ patches:
   - tests/hermes_state/test_session_db_read_path_split.py
   - agent/client_lifecycle.py
   - agent/turn_facade.py
+  - agent/turn_facade_cleanup.py
   - hermes_state_titles.py
   tests:
   - scripts/run_tests.sh tests/hermes_state/test_session_db_read_path_split.py tests/agent/test_request_client_reuse.py
