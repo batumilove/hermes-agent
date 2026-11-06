@@ -176,9 +176,21 @@ class GatewayRecoveryMixin(GatewayDurableDeliveryRecoveryMixin):
             content = row["content"]
             if row.get("needs_marker"):
                 content = row.get("marker", RECOVERED_MARKER) + content
-            metadata = (
-                {"thread_id": row["thread_id"]} if row.get("thread_id") else None
-            )
+            metadata = dict(row.get("routing_metadata") or {})
+            if row.get("thread_id"):
+                metadata["thread_id"] = row["thread_id"]
+            metadata = metadata or None
+            # Pre-metadata cron receipts cannot prove whether a Telegram topic
+            # was a forum thread or native DM topic. Never guess and risk root
+            # fallback; interactive receipts retain their existing recovery.
+            if (platform == Platform.TELEGRAM and row.get("thread_id")
+                    and str(row.get("session_key") or "").startswith("cron:")
+                    and not (row.get("routing_metadata") or {}).get("strict_topic")):
+                await _receipt_ledger_call(self, row, mark_failed,
+                    row["obligation_id"], "scheduled_topic_route_missing",
+                    expected_attempts=row["attempts"])
+                claimed.remove(row)
+                continue
 
             try:
                 transitioned = await _receipt_ledger_call(self, row,

@@ -72,7 +72,7 @@ resolve_update_ref() {
 
 run_source_installer() {
   local repo="$1" work="$2" logs="$3" ref="$4" label="$5" desktop="${6:-}"
-  local script="$work/install-$label.sh" text help_text rc=0
+  local script="$work/install-$label.sh" text help_text rc=0 installer_path="$PATH"
   # Buffer before grep: git show | grep -q can lose to SIGPIPE under pipefail.
   text="$(git -C "$repo" show "$ref:scripts/install.sh")" || return
   git -C "$repo" show "$ref:scripts/install.sh" > "$script" || return
@@ -91,7 +91,12 @@ run_source_installer() {
       || { fail "ref $ref does not support --include-desktop; this leg cannot mean what it claims"; return 1; }
     flags+=(--include-desktop)
   fi
-  bash "$script" "${flags[@]}" < /dev/null 2>&1 | ts_prefix > "$logs/install-$label.log" || rc=$?
+  # Old Playwright's macOS extraction hangs under Node 26. The workflow
+  # supplies Node 22 for pre-PM installs; current code keeps its locked tools.
+  if ! grep -qF 'pm.cli' <<< "$text" && [ -n "${HERMES_E2E_LEGACY_NODE_BIN:-}" ]; then
+    installer_path="$HERMES_E2E_LEGACY_NODE_BIN:$PATH"
+  fi
+  PATH="$installer_path" bash "$script" "${flags[@]}" < /dev/null 2>&1 | ts_prefix > "$logs/install-$label.log" || rc=$?
   log_group "install.sh ($label) transcript" "$logs/install-$label.log"
   [ "$rc" -eq 0 ] || { fail "install.sh ($label) exited $rc; log at $logs/install-$label.log"; return "$rc"; }
 }

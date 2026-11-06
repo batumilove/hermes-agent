@@ -34,7 +34,8 @@ This is a source update; it does not activate code on a running installation.
 ## Move capability out of core
 
 The source sync did not repoint installed consumers. The first extraction below was subsequently
-packaged and migrated separately; the remaining items are proposals.
+packaged and migrated separately. The November 6 reconciliation below resolves the remaining
+extraction proposals; see [completion decisions](fork-delta-completion-2026-11-06.md).
 
 1. **Honcho monitor and queue diagnostic → `batumilove/hermes-ops` (first).**
    [Operations PR #12](https://github.com/batumilove/hermes-ops/pull/12) packages the monitor and
@@ -49,18 +50,25 @@ packaged and migrated separately; the remaining items are proposals.
    These are execution receipts, not a claim of Telegram delivery. This follow-up removes the
    application copies and tests without internal import shims. The independent `.mailmap` alias
    remains under `fork-automation-attribution`. No new core hook is necessary.
-2. **Provider telemetry → an external observer plugin.**
-   The consumer in `evidence/provider_telemetry_fixed.py` already registers `post_api_request`.
-   Move collector/export logic, fixtures and operations evidence to the plugin. Keep generic
-   runtime-role attribution, profile ownership and health correctness in core. Coordinate with
-   draft core PR #475 and companion `hermes-official-plugins` PR #1, rather than duplicating their
-   evidence-lifetime work. Require overlapping-turn, profile and callback-quiescence contracts.
-3. **Side-effect policy wording/classification → `batumi-policy`.**
-   Move the product policy in `agent/side_effect_evidence.py` through the existing
-   `transform_llm_output` surface. Core must continue to own trusted current-turn tool evidence,
-   durable tool identity and persistence. Before extraction, prove output-hook ordering before
-   decoration, replay isolation, overlapping turns and per-profile behavior. The current generic
-   event lifetime does not alone establish that the policy is safe to move.
+2. **Provider telemetry → its existing external observer repository.**
+   [Telemetry PR #2](https://github.com/batumilove/hermes-provider-telemetry/pull/2)
+   reconciles bounded state, owning-profile configuration and callback quiescence into
+   `batumilove/hermes-provider-telemetry`. The selected VM's installed source was verified
+   byte-identical to that repository's base, so it has no runtime dependency on the core fixture.
+   Remove the older core collector, consumer tests and historical integration artifacts. Keep
+   generic runtime-role/discovery contracts and stable platform-health gauges. Preserve scalar
+   runtime-role/capability properties across process isolation, rather than exposing them as
+   truthy callable proxies. Settings and
+   legacy key registration are declared by the external plugin. This source cleanup does not
+   install its new version or activate either telemetry receipt PR #475 / official-plugins #1.
+3. **Side-effect policy → retain its mandatory final core guard.**
+   The installed `batumi-policy` already supplies optional evidence/workspace wording. It cannot
+   replace `agent/side_effect_evidence.py` through today's `transform_llm_output`: that hook
+   selects the first nonempty rewrite, and another plugin can introduce a success claim. The
+   core check runs after all rewrites, using trusted pre-decoration current-turn evidence;
+   its delivery-only warning stays out of durable model context. Existing finalizer tests
+   prove that boundary. Extraction stays conditional on equivalent ordered final validation,
+   replay isolation, overlapping turns and owning-profile behavior; no speculative hook is added.
 
 Environment backend products, Langfuse, and restart-policy skills already have external homes.
 Retain only their generic registries, ownership/admission mechanisms and compatibility contracts.
@@ -217,12 +225,12 @@ behavior or a measure of code complexity. Shared ownership can count a file more
 | `gateway-expiry-routing-log-precision` | retain | 3 | Retain remaining owned delta; retirement requires the behavior contracts recorded in the patch manifest. |
 | `gateway-channel-directory-routing-projection` | retain | 4 | Retain remaining owned delta; retirement requires the behavior contracts recorded in the patch manifest. |
 | `relay-scope-concurrency-lifecycle` | retain | 22 | Retain remaining owned delta; retirement requires the behavior contracts recorded in the patch manifest. |
-| `provider-telemetry-runtime-ownership` | extract/split | 15 | Extract consumer: telemetry implementation to external plugin; retain generic runtime ownership/evidence seam. |
+| `provider-telemetry-runtime-ownership` | consumer extracted | 10 | Collector, settings and consumer contracts live in the existing external telemetry repository; retain generic role/discovery and health contracts. |
 | `cron-trigger-provenance` | retain | 25 | Retain remaining owned delta; retirement requires the behavior contracts recorded in the patch manifest. |
 | `langfuse-lazy-sdk-retention` | retain | 13 | Keep remaining compatibility fixtures/governance; the product implementation is already external. |
 | `plugin-environment-backends` | retain | 8 | Retain generic registry seam; keep product backends external. |
 | `final-output-policy-context` | retain | 3 | Retain remaining owned delta; retirement requires the behavior contracts recorded in the patch manifest. |
-| `side-effect-evidence-regulator` | extract/split | 21 | Split: policy classifier to batumi-policy after hook ordering and current-turn evidence contracts are proven. |
+| `side-effect-evidence-regulator` | retain | 21 | Mandatory validation follows every optional output rewrite; first-wins transform hooks cannot replace that contract. See the November 6 completion decision. |
 | `provider-fallback-lifecycle` | retain | 12 | Retain remaining owned delta; retirement requires the behavior contracts recorded in the patch manifest. |
 | `kimi-billing-classification` | retain | 2 | Retain remaining owned delta; retirement requires the behavior contracts recorded in the patch manifest. |
 | `cron-verbatim-delivery` | retain | 5 | Retain remaining owned delta; retirement requires the behavior contracts recorded in the patch manifest. |

@@ -24,8 +24,6 @@ LEGACY_VERCEL_RUNTIME = "node24"  # the seeded pre-49 default, never a user choi
 DEFAULT_CONFIG = {
     "model": "",
     "providers": {},
-    # Optional telemetry plugin: empty uses this profile's state/prometheus directory.
-    "provider_telemetry": {"metrics_file": ""},
     "fallback_providers": [],
     # min_switch_reset_seconds: opt-in (0 = off). When a rate-limited primary declares a reset
     # sooner than this many seconds, stay on it (the retry backoff rides out the window) instead
