@@ -162,7 +162,7 @@ def parse_auth_tag(raw: Any, label: str) -> list[str]:
 
 
 def build_media_get_authorization(*, private_key: str, server: str) -> str:
-    """BUD-01 GET authorization, matching Buzz CLI's sign_blossom_get.
+    """Blossom read authorization, matching Buzz's server-scoped kind-24242 flow.
 
     Callers must validate the destination before signing and never follow redirects.
     Owner delegation is a separate x-auth-tag header, not an event tag.

@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
+from plugins.platforms.buzz import attachments as buzz_attachments
+
 from tests.gateway.test_buzz_adapter import _make_adapter, _buzz_mod
 
 @pytest.mark.parametrize('value', ['https://test.relay:0', 'wss://test.relay:0', 'test.relay:0'])
@@ -27,10 +29,11 @@ async def test_zero_port_refused_before_signing_and_client(monkeypatch, relay, h
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('scheme', ['https', 'wss'])
 @pytest.mark.parametrize('authority', ['test.relay', 'test.relay:443', 'test.relay:8443'])
-async def test_authority_ports_preserved(monkeypatch, authority):
+async def test_authority_ports_preserved(monkeypatch, authority, scheme):
     adapter = _make_adapter()
-    adapter.relay_url = f'https://{authority}'
+    adapter.relay_url = f'{scheme}://{authority}'
     adapter._attachment_origins = {_buzz_mod._attachment_origin(adapter.relay_url)}
     adapter._private_key = '0' * 63 + '1'
     calls = []
@@ -42,7 +45,7 @@ async def test_authority_ports_preserved(monkeypatch, authority):
         assert ['server', authority] in event['tags']
         return httpx.Response(200, content=PAYLOAD)
     transport(monkeypatch, handler)
-    monkeypatch.setattr(_buzz_mod, 'cache_media_bytes_async', AsyncMock(return_value='cached'))
+    monkeypatch.setattr(buzz_attachments, 'cache_media_bytes_async', AsyncMock(return_value='cached'))
     assert await adapter._download_attachment(metadata(url=f'https://{authority}/media/{DIGEST}.bin')) == 'cached'
     assert len(calls) == 1
 
@@ -121,7 +124,7 @@ async def test_private_imeta_uses_blossom_auth_and_owner_header(monkeypatch):
         return httpx.Response(200, content=PAYLOAD)
     transport(monkeypatch, handler)
     cache = AsyncMock(return_value='verified-cache')
-    monkeypatch.setattr(_buzz_mod, 'cache_media_bytes_async', cache)
+    monkeypatch.setattr(buzz_attachments, 'cache_media_bytes_async', cache)
     assert await adapter._download_attachment(metadata()) == 'verified-cache'
     cache.assert_awaited_once_with(PAYLOAD, filename='file.bin', mime_type='application/octet-stream')
 
@@ -144,7 +147,7 @@ async def test_authenticated_transfer_rejects_invalid_data(monkeypatch, damage):
                                        **({'content-encoding': 'gzip'} if damage == 'encoding' else {})})
     transport(monkeypatch, handler)
     cache = AsyncMock()
-    monkeypatch.setattr(_buzz_mod, 'cache_media_bytes_async', cache)
+    monkeypatch.setattr(buzz_attachments, 'cache_media_bytes_async', cache)
     item = metadata(**({'size': len(PAYLOAD) + 1} if damage == 'size' else {}))
     assert await adapter._download_attachment(item) is None
     cache.assert_not_awaited()
@@ -159,18 +162,20 @@ async def test_digest_conflict_rejected_before_signing_or_network(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_optional_third_party_host_never_receives_credentials(monkeypatch):
+@pytest.mark.parametrize('query', ['', '?token=fixture-only'])
+async def test_optional_third_party_host_never_receives_credentials(monkeypatch, query):
     adapter = _make_adapter(extra={'attachment_hosts': ['cdn.test']})
     adapter._private_key = '0' * 63 + '1'
     adapter._auth_tag = '["auth","owner","conditions","signature"]'
     def handler(request):
         assert 'authorization' not in request.headers
         assert 'x-auth-tag' not in request.headers
+        assert request.url.query == query.lstrip('?').encode()
         return httpx.Response(200, content=PAYLOAD)
     transport(monkeypatch, handler)
     cache = AsyncMock(return_value='third-party-cache')
-    monkeypatch.setattr(_buzz_mod, 'cache_media_bytes_async', cache)
-    assert await adapter._download_attachment(metadata(url=f'https://cdn.test/media/{DIGEST}.bin')) == 'third-party-cache'
+    monkeypatch.setattr(buzz_attachments, 'cache_media_bytes_async', cache)
+    assert await adapter._download_attachment(metadata(url=f'https://cdn.test/media/{DIGEST}.bin{query}')) == 'third-party-cache'
 
 
 @pytest.mark.asyncio
@@ -191,7 +196,7 @@ async def test_handler_private_imeta_native_delivery_and_failure_note(monkeypatc
     transport(monkeypatch, handler)
     cached = CachedMedia('/isolated/file.bin', 'application/octet-stream', 'document', 'file.bin')
     cache = AsyncMock(return_value=cached)
-    monkeypatch.setattr(_buzz_mod, 'cache_media_bytes_async', cache)
+    monkeypatch.setattr(buzz_attachments, 'cache_media_bytes_async', cache)
     event = _event('private-imeta', content='inspect')
     event['tags'].append(['imeta', f'url https://test.relay/media/{DIGEST}.bin',
                           f'x {DIGEST}', f'size {len(PAYLOAD)}', 'filename file.bin'])
@@ -218,3 +223,28 @@ async def test_authenticated_stream_deadline_closes_client(monkeypatch):
     monkeypatch.setattr(_buzz_mod, '_ATTACHMENT_DOWNLOAD_TIMEOUT', .05)
     assert await adapter._download_attachment(metadata()) is None
     assert closed == [True]
+
+
+@pytest.mark.asyncio
+async def test_relay_query_refused_before_signing_or_client(monkeypatch):
+    adapter = _make_adapter()
+    adapter._private_key = '0' * 63 + '1'
+    monkeypatch.setattr(_buzz_mod._nostr_auth, 'build_media_get_authorization',
+                        lambda **kwargs: pytest.fail('signed a noncanonical relay object URL'))
+    monkeypatch.setattr(httpx, 'AsyncClient', lambda **kwargs: pytest.fail('created client for relay query'))
+    assert await adapter._download_attachment(metadata(url=f'https://test.relay/media/{DIGEST}.bin?token=fixture')) is None
+
+
+@pytest.mark.asyncio
+async def test_adapter_subclass_keeps_attachment_transport(monkeypatch):
+    from gateway.config import PlatformConfig
+
+    class ExtendedBuzzAdapter(_buzz_mod.BuzzAdapter):
+        pass
+
+    adapter = ExtendedBuzzAdapter(PlatformConfig(enabled=True, extra={'relay_url': 'https://test.relay'}))
+    adapter._private_key = '0' * 63 + '1'
+    transport(monkeypatch, lambda request: httpx.Response(200, content=PAYLOAD))
+    cache = AsyncMock(return_value='subclass-cache')
+    monkeypatch.setattr(buzz_attachments, 'cache_media_bytes_async', cache)
+    assert await adapter._download_attachment(metadata()) == 'subclass-cache'

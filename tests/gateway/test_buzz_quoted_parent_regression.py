@@ -2,6 +2,8 @@
 from unittest.mock import AsyncMock
 import hashlib
 import pytest
+
+from plugins.platforms.buzz import attachments as buzz_attachments
 from tests.gateway.test_buzz_adapter import _make_adapter, _buzz_mod, _event, CHANNEL, OTHER_PUBKEY, CachedMedia
 
 PAYLOAD = b'parent image'
@@ -110,7 +112,7 @@ async def test_parent_uses_authenticated_integrity_checked_transport(monkeypatch
         return httpx.Response(200, content=PAYLOAD)
     monkeypatch.setattr(httpx, 'AsyncClient', lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
     cache = AsyncMock(return_value=CachedMedia('/isolated/parent.png', 'image/png', 'image', 'parent.png'))
-    monkeypatch.setattr(_buzz_mod, 'cache_media_bytes_async', cache)
+    monkeypatch.setattr(buzz_attachments, 'cache_media_bytes_async', cache)
     await adapter._handle_event(CHANNEL, state, child())
     assert len(calls) == 1
     cache.assert_awaited_once_with(PAYLOAD, filename='parent.png', mime_type='image/png')
