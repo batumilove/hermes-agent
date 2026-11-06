@@ -55,6 +55,16 @@ patches:
   - scripts/run_tests.sh tests/cron/test_strict_topic_delivery.py tests/cron/test_strict_topic_recovery.py tests/gateway/test_delivery_ledger.py
   retirement: Remove when upstream preserves strict scheduled topic routing across all
     live, standalone and durable replay paths with equivalent behavioral coverage.
+- id: osv-container-output-isolation
+  kind: operations
+  rationale: Run the pinned advisory scanner and reporter with the runner UID, read-only source and tools, and a separate writable result directory.
+  paths:
+  - .github/workflows/osv-scanner.yml
+  - tests/scripts/test_osv_scanner_workflow.py
+  - tests/scripts/test_osv_container_isolation.py
+  tests:
+  - scripts/run_tests.sh tests/scripts/test_osv_scanner_workflow.py tests/scripts/test_osv_container_isolation.py
+  retirement: Remove when upstream separates scanner output from the checkout and applies equivalent container isolation.
 - id: desktop-reconnect-durable-history
   kind: core
   rationale: Recover the persisted reply after reconnect retires a confirmed live
