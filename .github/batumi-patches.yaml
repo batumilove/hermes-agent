@@ -65,6 +65,17 @@ patches:
   tests:
   - scripts/run_tests.sh tests/scripts/test_osv_scanner_workflow.py tests/scripts/test_osv_container_isolation.py
   retirement: Remove when upstream separates scanner output from the checkout and applies equivalent container isolation.
+- id: npm-layout-canonical-path-test
+  kind: compatibility
+  rationale: Compare npm entrypoint layout under the canonical temporary root,
+    so native macOS temporary-directory spelling does not prevent the real npm
+    version probe from executing. Keep both ordinary and versioned PM layouts.
+  paths:
+  - tests-js/node-deps.test.mjs
+  tests:
+  - npm exec --workspace tests-js -- vitest run node-deps.test.mjs
+  retirement: Remove when upstream compares equivalent npm entrypoint paths by
+    canonical filesystem identity in the layout regression.
 - id: desktop-reconnect-durable-history
   kind: core
   rationale: Recover the persisted reply after reconnect retires a confirmed live
