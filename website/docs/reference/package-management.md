@@ -94,7 +94,10 @@ a complete writable environment outside the signed package. Its first generation
 retains the shipped extras along with the new requirements. Later generations
 use the recorded extra selection as their baseline.
 
-Termux uses a separate bionic build and a sealed APT package. Docker bakes its
+The retained upstream Termux implementation uses a separate bionic build and a
+sealed APT package. Android/Termux is unsupported in this fork; its build and
+package-management references describe historical compatibility only. See
+[Platform Support](../getting-started/platform-support.md). Docker bakes its
 runtime into the image and disables on-demand dependency installation. Nix
 provides its runtime through derivations. See the
 [Termux](../getting-started/termux.md), [Docker](../user-guide/docker.md), and

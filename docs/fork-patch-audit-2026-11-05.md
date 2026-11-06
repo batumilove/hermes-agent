@@ -33,17 +33,22 @@ This is a source update; it does not activate code on a running installation.
 
 ## Move capability out of core
 
-These are migration proposals, not completed runtime extractions. No live cron job or installed
-plugin is repointed by this sync.
+The source sync did not repoint installed consumers. The first extraction below was subsequently
+packaged and migrated separately; the remaining items are proposals.
 
 1. **Honcho monitor and queue diagnostic → `batumilove/hermes-ops` (first).**
-   `hermes_cli/honcho_monitor.py` and `honcho_queue_diagnostic.py` hold approximately 1,882 lines of
-   product-specific operations code. The repository already exists at component pin
-   `eb9a4559046bbb8035390d91a869ffa1470f641d`. Package the commands externally, using
-   `ctx.register_cli_command` if distributed as a Hermes plugin. Preserve profile selection,
-   bounded state reads and output contracts. Move the scheduled monitor command and its fixtures
-   to the new package; prove its installed CLI on a temporary home, then migrate the cron consumer
-   before deleting core modules and imports. No new core hook is necessary.
+   [Operations PR #12](https://github.com/batumilove/hermes-ops/pull/12) packages the monitor and
+   queue diagnostic through `ctx.register_cli_command`, without tools, hooks, workers or new
+   dependencies. Its merged revision is `7ec58a359fd5ba22ee2f411d71a800769462a61b`.
+   The seven behavior suites moved with the implementation; installed discovery, profile-state
+   isolation and recoverable wrapper migration contracts passed on native Linux and macOS.
+   The selected installation now uses the pinned plugin for its cron wrapper and three legacy
+   CLI entry points. The wrapper's exact original bytes were preserved, the directory's immutable
+   flag restored, and the cron definition retained. A natural scheduled monitor run completed
+   successfully with a fresh profile-state write; the queue command also completed successfully.
+   These are execution receipts, not a claim of Telegram delivery. This follow-up removes the
+   application copies and tests without internal import shims. The independent `.mailmap` alias
+   remains under `fork-automation-attribution`. No new core hook is necessary.
 2. **Provider telemetry → an external observer plugin.**
    The consumer in `evidence/provider_telemetry_fixed.py` already registers `post_api_request`.
    Move collector/export logic, fixtures and operations evidence to the plugin. Keep generic
@@ -77,7 +82,37 @@ the final frozen target above and their redaction/browser/file-read contracts we
 
 Local validation uses `scripts/run_tests.sh` and the fork contract runner. Full CI must also cover
 Linux, native release/build lanes and Docker; local macOS checks do not prove those environments.
-Plugin extraction should be reviewed separately after this source reconciliation is accepted.
+Plugin extraction is reviewed separately from this source reconciliation.
+
+### Honcho consumer migration
+
+Select the owning installation's CLI and profile explicitly. Install the reviewed package with
+an explicit `--ref`: selecting a commit in a tree URL alone does not pin future plugin updates.
+
+```bash
+hermes plugins install https://github.com/batumilove/hermes-ops/tree/7ec58a359fd5ba22ee2f411d71a800769462a61b/plugins/honcho-ops --ref 7ec58a359fd5ba22ee2f411d71a800769462a61b --enable
+hermes honcho-ops monitor --help
+hermes honcho-ops queue --help
+```
+
+Review native scan findings before consenting; retain operator isolation policy. CLI registration
+requires in-process loading. Run the reviewed package's `scripts/honcho/migrate_monitor_entrypoint.py`
+with the owning `--hermes-home`, `--hermes-cli` and freshly inspected `--expected-sha256`. It refuses
+drift, backs up the original and atomically replaces only `scripts/honcho_monitor.py`. If a directory
+is protected, obtain scoped authorization before unlocking it, and restore its protection immediately.
+Keep job id, schedule, delivery destination and no-agent mode unchanged. Back up legacy installed
+`bin/honcho-monitor`, `bin/honcho_monitor.py` and `bin/honcho_queue_diagnostic.py` before forwarding
+them to the matching plugin command; stop reinstalling the obsolete hermes-extensions copies.
+Verify fresh command execution and the scheduled consumer before removing application internals.
+
+Monitor state remains `cache/honcho_monitor.json` in the owning profile, and ingestion reads that
+profile's `state.db`. Existing overrides and silent-healthy/alert-output contracts are unchanged.
+A monitor run can issue its configured chat health probe; `--help` performs no monitoring probes.
+Restoring the saved cron wrapper is sufficient while the old core modules remain installed. After
+updating to a revision that removes them, use that installation's included updater to restore the
+previous application revision before restoring the wrapper. Installation and consumer migration do
+not require an application update or restart. The operations deployment-component pin is unchanged;
+plugin provenance lives in the native installer metadata.
 
 ## Validation for the reconciliation
 
@@ -192,7 +227,7 @@ behavior or a measure of code complexity. Shared ownership can count a file more
 | `kimi-billing-classification` | retain | 2 | Retain remaining owned delta; retirement requires the behavior contracts recorded in the patch manifest. |
 | `cron-verbatim-delivery` | retain | 5 | Retain remaining owned delta; retirement requires the behavior contracts recorded in the patch manifest. |
 | `honcho-connection-lifecycle` | retain | 5 | Retain: current official plugin does not close clients on reset/slot replacement or provide the retained no-idle transport. |
-| `honcho-operational-monitoring` | extract/split | 11 | Extract first: external operations CLI/plugin; migrate the cron consumer before removing imports. |
+| `honcho-operational-monitoring` | extracted | 0 | Implementation and contracts moved to the pinned external Honcho Ops plugin; installed cron/CLI consumers migrated before core removal. The independent mailmap delta remains owned by `fork-automation-attribution`. |
 | `cron-ephemeral-telegram-topics` | retain | 9 | Retain remaining owned delta; retirement requires the behavior contracts recorded in the patch manifest. |
 | `telegram-cancellation-socket-ownership` | retain | 7 | Retain remaining owned delta; retirement requires the behavior contracts recorded in the patch manifest. |
 | `gateway-delivery-shutdown-correctness` | retain | 37 | Retain remaining owned delta; retirement requires the behavior contracts recorded in the patch manifest. |
