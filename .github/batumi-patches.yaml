@@ -463,6 +463,7 @@ patches:
     dependencies without suppressing dependency validation. A reproducible metadata-only
     browser-harness wheel admits patched Pillow; the user-approved certifi release-age
     exception is bounded to its security release and expires for removal on October 23.
+    Keep the OAuth security floor at 4.0.1 for GHSA-3jp2-3mrg-2vxc.
   paths:
   - pyproject.toml
   - uv.lock
