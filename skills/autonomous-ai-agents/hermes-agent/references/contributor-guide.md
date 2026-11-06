@@ -111,6 +111,20 @@ Host-specific tests run on the real host. Use one `@pytest.mark.platforms(...)`
 marker per test, such as `@pytest.mark.platforms("macos", arch="arm64")`.
 Do not fake the host by patching `sys.platform` or platform probes.
 
+### Fork install and update CI
+
+Use `read_file` to load `website/docs/developer-guide/install-ci.md` in the fork
+checkout before diagnosing install/update CI. The guide is also published on
+[GitHub](https://github.com/batumilove/hermes-agent/blob/batumi/live/website/docs/developer-guide/install-ci.md).
+
+- macOS install E2Es use GitHub-hosted `macos-15` runners.
+- Pre-PM macOS installers receive Node 22.23.4 only in their installer subprocess;
+  the driver and current updater retain locked tooling.
+- Inspect the actual failing job and its transcripts before retrying. Cancellation
+  or a downstream coverage/gate failure alone does not identify a code defect.
+- For installer changes, verify historical release → HEAD and HEAD → NEXT legs
+  on the exact candidate commit. A skipped leg is not validation evidence.
+
 ### System prompt's execution-environment block
 
 Factual host/backend guidance (OS, `$HOME`, cwd, terminal backend, shell)
