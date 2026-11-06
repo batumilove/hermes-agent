@@ -636,7 +636,7 @@ constraint-dependencies = [
   # Security floors for optional/transitive consumers, without adding the
   # consumers to every installation. Preserve the next-major upper bounds.
   "multidict>=6.9.1,<7",  # GHSA-54p9-h82j-f925
-  "oauthlib>=4.0.0,<5",  # GHSA-hj66-6f7g-4r5v, GHSA-xpv3-w29h-x7cv
+  "oauthlib>=4.0.1,<5",  # GHSA-hj66-6f7g-4r5v, GHSA-xpv3-w29h-x7cv, GHSA-3jp2-3mrg-2vxc
   "tornado>=6.6,<7",  # GHSA-pcg2-g6cj-q92c, GHSA-pw9p-v7r6-gx4p, GHSA-r4j5-9xpp-3985
 ]
 # uv otherwise enables the dev group by default, including in payload builds.
