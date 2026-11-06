@@ -336,7 +336,7 @@ export function useSessionTileDelegate({
 
         updateSessionState(runtimeId, state => ({
           ...state,
-          reconnectHistoryPending: Boolean(state.turnLive && state.streamId),
+          reconnectHistoryPending: state.turnLive,
           awaitingResponse: false,
           busy: false,
           turnLive: false,
