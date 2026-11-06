@@ -272,7 +272,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         int_chat_id = normalize_telegram_chat_id(chat_id)
         media_files = media_files or []
         thread_kwargs = _telegram_thread_kwargs(thread_id)
-        if strict_topic and thread_id is not None:
+        if strict_topic:
             # Do not normalize explicit General (1), invalid or unresolved topics to root.
             if not thread_kwargs.get("message_thread_id"):
                 return {"error": "Explicit scheduled Telegram topic cannot be routed without a topic"}

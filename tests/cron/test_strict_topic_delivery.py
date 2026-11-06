@@ -49,6 +49,18 @@ def test_live_strict_topic_cannot_normalize_to_root(topic):
         TelegramAdapter._thread_kwargs_for_send('-100123', topic, {'strict_topic': True})
 
 
+@pytest.mark.parametrize('topic', [None, '', '1'])
+def test_standalone_strict_topic_cannot_normalize_to_root(monkeypatch, topic):
+    send = AsyncMock(return_value=NS(message_id=1))
+    monkeypatch.setattr(senders, '_telegram_bot', lambda token: NS())
+    monkeypatch.setattr(senders, '_telegram_format', lambda message: (message, None, False))
+    monkeypatch.setattr(senders, '_send_telegram_message_with_retry', send)
+    result = asyncio.run(senders._send_telegram(
+        'synthetic', '-100123', 'alert', thread_id=topic, strict_topic=True))
+    assert 'error' in result
+    send.assert_not_awaited()
+
+
 def test_platform_dispatch_carries_strict_topic(monkeypatch):
     from tools import send_message_tool as tool
     sender = AsyncMock(return_value={'error': 'rejected'})
