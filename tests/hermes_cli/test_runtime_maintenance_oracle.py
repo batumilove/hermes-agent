@@ -90,3 +90,19 @@ def test_oracle_rejects_logical_mutation_independently(live_database):
     physical_after_with_old_rows = dict(after, logical=before['logical'])
     with pytest.raises(AssertionError, match='logical'):
         _assert_live_bundle_unchanged(physical_after_with_old_rows, after)
+
+
+@pytest.mark.parametrize('offset', [96, 200])
+def test_oracle_rejects_checkpoint_and_frame_index_mutations(live_database, offset):
+    _, path, _ = live_database
+    before = _live_bundle_state(path)
+    shm = path.with_name('state.db-shm')
+    original = shm.read_bytes()
+    try:
+        with shm.open('r+b') as stream:
+            stream.seek(offset)
+            stream.write(bytes([original[offset] ^ 1]))
+        with pytest.raises(AssertionError, match='SHM'):
+            _assert_live_bundle_unchanged(before, _live_bundle_state(path, logical=False))
+    finally:
+        shm.write_bytes(original)

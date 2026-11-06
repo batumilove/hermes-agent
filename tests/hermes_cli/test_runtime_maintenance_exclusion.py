@@ -101,8 +101,6 @@ def test_restore_refuses_live_authority_without_changing_data(tmp_path, caplog):
             await rpc(ws, 'prompt.submit', session_id=session, input_id='queued', text='FOLLOWER')
             before = rows()
             assert dict(before) == {'warm': 'terminal', 'started': 'started', 'queued': 'queued'}
-            import hashlib
-            bundle = [Path(str(home / 'state.db') + suffix) for suffix in ('', '-wal', '-shm')]
             baseline = _live_bundle_state(home / 'state.db')
             restored = restore_quick_snapshot(snapshot, hermes_home=home)
             assert not restored
@@ -118,11 +116,12 @@ def test_restore_refuses_live_authority_without_changing_data(tmp_path, caplog):
             # The real daemon still holds the source DB. Separate-output salvage
             # must not require stopping it or installing recovered runtime work.
             from hermes_cli.session_recovery import recover_session_database
-            hashes = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in bundle if p.exists()}
+            baseline = _live_bundle_state(home / 'state.db')
             report = recover_session_database(home / 'state.db', tmp_path / 'salvaged.db')
             assert report['verified'] and report['source_unchanged'], report
             assert report['runtime_state']['excluded_tables']['session_admissions']['rows'] == len(before)
-            assert hashes == {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in bundle if p.exists()}
+            _assert_live_bundle_unchanged(baseline, _live_bundle_state(home / 'state.db', logical=False))
+            assert baseline['logical'] == _live_bundle_state(home / 'state.db')['logical']
             assert rows() == before
             print(json.dumps({'live_recovery_verified': report['verified'], 'source_bundle_unchanged': True,
                               'excluded_admissions': len(before)}), flush=True)
