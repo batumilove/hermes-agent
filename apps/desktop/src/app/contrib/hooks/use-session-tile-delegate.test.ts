@@ -13,9 +13,7 @@ import { $activeSessionId, setSessionOwnerHint, setSessions } from '@/store/sess
 import { $sessionTiles, sessionTileDelegate } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
 
-import {
-  clearSingleFlightSessionResumeState
-} from '../../session/hooks/use-prompt-actions/single-flight-resume'
+import { clearSingleFlightSessionResumeState } from '../../session/hooks/use-prompt-actions/single-flight-resume'
 
 import { useSessionTileDelegate } from './use-session-tile-delegate'
 
@@ -745,6 +743,7 @@ describe('useSessionTileDelegate retireBusyClaim', () => {
 
     expect(updater(busyState)).toEqual({
       ...busyState,
+      reconnectHistoryPending: true,
       awaitingResponse: false,
       busy: false,
       turnLive: false,
