@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from gateway.run import _profile_runtime_scope
 from hermes_cli.plugins import PluginContext, PluginManifest, get_plugin_manager
 
 
