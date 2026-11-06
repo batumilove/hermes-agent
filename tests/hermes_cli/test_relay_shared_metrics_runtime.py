@@ -1576,27 +1576,6 @@ def test_subagent_agent_boundary_closes_its_own_scope(
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def test_terminal_model_error_retains_the_failed_route(direct_runtime):
     base = {
         "session_id": "s1",
