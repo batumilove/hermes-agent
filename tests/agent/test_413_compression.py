@@ -1205,7 +1205,7 @@ class TestPreflightCompression:
         speculative display snapshot.
         """
         agent.compression_enabled = True
-        agent._interrupt_requested = True
+        agent._interrupt_requested = False
         agent.context_compressor.context_length = 200_000
         agent.context_compressor.threshold_tokens = 130_000
         agent.context_compressor.last_prompt_tokens = 74_400
@@ -1223,6 +1223,8 @@ class TestPreflightCompression:
             agent.context_compressor.compression_count += 1
             agent.context_compressor._ineffective_compression_count = 2
             agent.context_compressor._last_compression_savings_pct = 0.0
+            # Interrupt after compaction commits, not before turn admission.
+            agent._interrupt_requested = True
             return msgs, agent._cached_system_prompt
 
         with (

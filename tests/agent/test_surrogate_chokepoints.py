@@ -77,7 +77,7 @@ def test_finalize_turn_scrubs_lone_surrogate_from_final_response(monkeypatch):
     assert "answer " in final and " here" in final
 
 
-def test_finalize_turn_leaves_non_string_final_response_alone(monkeypatch):
+def test_finalize_turn_supplies_interrupted_response_without_provider_text(monkeypatch):
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
     agent = FakeAgent()
     result = finalize_turn(
@@ -95,7 +95,11 @@ def test_finalize_turn_leaves_non_string_final_response_alone(monkeypatch):
         _should_review_memory=False,
         _turn_exit_reason="interrupted",
     )
-    assert result["final_response"] is None
+    # A cancelled turn must remain deliverable even without provider text.
+    assert isinstance(result["final_response"], str)
+    assert "interrupted" in result["final_response"].lower()
+    assert result["interrupted"] is True
+    assert result["completed"] is False
 
 
 # ---------------------------------------------------------------------------
