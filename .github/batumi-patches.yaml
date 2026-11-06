@@ -49,12 +49,16 @@ patches:
     equivalent completion-order and newer-turn protection.
 - id: process-registry-rewrite-test-isolation
   kind: core
-  rationale: Keep command-rewrite assertions scoped to the terminal job rather than unrelated supervisor subprocesses.
+  rationale: Keep command-rewrite, environment, scope-routing and orphan-cleanup assertions
+    scoped to the terminal registry job rather than unrelated supervisor subprocesses.
+    Fake process IDs must not enter host supervision; reader-thread mocks stay local.
+    Split command-rewrite cases to respect the existing test file-size cap.
   paths:
   - tests/tools/test_process_registry.py
+  - tests/tools/test_process_registry_spawn_rewrite.py
   tests:
-  - scripts/run_tests.sh tests/tools/test_process_registry.py
-  retirement: Drop when upstream scopes the rewrite regression to the registry job-spawn seam.
+  - scripts/run_tests.sh tests/tools/test_process_registry.py tests/tools/test_process_registry_spawn_rewrite.py
+  retirement: Drop when upstream provides equivalent registry launch/thread mock isolation.
 - id: watchdog-early-thread-attribution
   kind: core
   rationale: Attribute pre-prompt watchdog diagnostics to the admitted scheduling owner without resetting interrupt state.
@@ -2834,3 +2838,39 @@ patches:
   tests:
   - scripts/run_tests.sh tests/hermes_cli/test_session_recovery_lost_and_found.py
   retirement: Remove when upstream missing-CLI tests run actual discovery instead of retaining cached host probe diagnostics.
+
+- id: bounded-turn-evidence-custody
+  kind: core
+  rationale: Retain original in-process receipt readers through host turn closure and scoped callback
+    quiescence. Account for queued stream work, async cancellation and abandoned helpers, reject inherited
+    fork custody, and bind bounded local collectors to one host turn. Collected local proof does not establish
+    remote backend delivery or authorize activation.
+  paths:
+  - .github/workflows/telemetry-pair.yml
+  - agent/plugin_stream_hooks.py
+  - agent/turn_facade.py
+  - hermes_cli/plugin_isolation.py
+  - hermes_cli/plugins.py
+  - hermes_cli/plugins_dispatch.py
+  - hermes_cli/plugins_hook_activity.py
+  - hermes_cli/plugins_ledger.py
+  - hermes_cli/plugins_turn_boundary.py
+  - hermes_cli/plugins_turn_evidence_collector.py
+  - tests/agent/test_plugin_stream_evidence.py
+  - tests/agent/test_turn_evidence_boundary.py
+  - tests/hermes_cli/test_plugin_turn_boundary.py
+  - tests/hermes_cli/test_plugin_turn_boundary_async.py
+  - tests/hermes_cli/test_turn_evidence_collector.py
+  - tests/hermes_cli/fixtures/turn_evidence/LICENSE.txt
+  - tests/hermes_cli/fixtures/turn_evidence/PROVENANCE.json
+  - tests/hermes_cli/fixtures/turn_evidence/delivery_receipts.py.fixture
+  - website/docs/developer-guide/observer-hooks.md
+  - website/docs/developer-guide/turn-evidence-collector.md
+  tests:
+  - scripts/run_tests.sh tests/hermes_cli/test_plugin_turn_boundary.py tests/hermes_cli/test_plugin_turn_boundary_async.py
+    tests/hermes_cli/test_turn_evidence_collector.py tests/agent/test_plugin_stream_evidence.py tests/agent/test_turn_evidence_boundary.py
+  - scripts/run_tests.sh tests/hermes_cli/test_plugins.py tests/hermes_cli/test_plugin_hook_failure_reporting.py
+    tests/agent/test_plugin_stream_hooks.py tests/agent/test_cross_process_turn_lease.py
+  retirement: Remove when upstream provides equivalent bounded host-turn custody and collector attachment
+    with original-reader freshness, callback lifetime, process/profile/registration binding and concurrent
+    single-admission regression coverage.
