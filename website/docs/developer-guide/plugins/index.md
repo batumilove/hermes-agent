@@ -245,6 +245,11 @@ The compatibility rules are:
 - **Evolve additively.** Documented `PluginContext` methods are not removed or
   renamed. New parameters are optional, have defaults, and should be
   keyword-only. Existing return fields are not removed or silently retyped.
+- **Scalar context properties retain their types across isolation.** The plugin host
+  receives public scalar properties (including runtime role and boolean capabilities)
+  under the owning profile's scope at registration. A false capability stays false;
+  methods and live facades retain their RPC proxies. Role transitions re-register the
+  plugin through ordinary discovery.
 - **Hook payloads are keyword payloads.** New hook data is added as keyword
   fields, never by changing the meaning or position of an existing field.
   Hermes inspects callback signatures: a legacy callback receives the fields it

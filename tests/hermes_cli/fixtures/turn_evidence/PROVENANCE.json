@@ -1,0 +1,9 @@
+{
+  "purpose": "Frozen test data executed only by collector interoperability tests; never imported by production core.",
+  "source_repository": "https://github.com/batumilove/hermes-official-plugins",
+  "source_commit": "393e950384cc266016676564b78c509c33c70f64",
+  "source_path": "langfuse/delivery_receipts.py",
+  "sha256": "d41cb8b704f03e4f496e8a8816795a73bb0d7649fbbee722fe4ca28a4dab8f52",
+  "license": "MIT; see LICENSE.txt",
+  "platform": "Linux producer identity reads /proc; tests carry Linux platform markers."
+}

@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from hermes_cli.middleware import OBSERVER_SCHEMA_VERSION
+from hermes_cli.plugins_turn_boundary import admit_callback, fail_current
 
 logger = logging.getLogger(__name__)
 
@@ -27,8 +28,26 @@ _STOP = object()
 class _ConsumerDispatcher:
     hook_name: str
     callback: Callable[..., Any]
-    events: queue.Queue[tuple[contextvars.Context, dict[str, Any]] | object]
+    events: queue.Queue[Any]
     thread: threading.Thread | None = None
+
+
+@dataclass
+class _QueuedHook:
+    context: contextvars.Context
+    payload: dict[str, Any]
+    activity: Any
+
+    def release(self, *, dropped=False):
+        if self.activity is not None:
+            if dropped:
+                self.activity.fail()
+            self.activity.leave()
+
+
+def _drop(item):
+    if isinstance(item, _QueuedHook):
+        item.release(dropped=True)
 
 
 _dispatcher_lock = threading.Lock()
@@ -46,7 +65,7 @@ def _put_drop_oldest(events: queue.Queue[Any], item: Any) -> bool:
         return True
     except queue.Full:
         try:
-            events.get_nowait()
+            _drop(events.get_nowait())
             events.task_done()
         except queue.Empty:
             pass
@@ -54,6 +73,7 @@ def _put_drop_oldest(events: queue.Queue[Any], item: Any) -> bool:
         events.put_nowait(item)
         return True
     except queue.Full:
+        _drop(item)
         return False
 
 
@@ -63,8 +83,7 @@ def _worker(dispatcher: _ConsumerDispatcher) -> None:
         try:
             if item is _STOP:
                 return
-            context, payload = item
-            payload = dict(payload)
+            context, payload = item.context, dict(item.payload)
             payload.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
             try:
                 # The worker outlives every turn and serves every profile; run the callback in the
@@ -72,15 +91,28 @@ def _worker(dispatcher: _ConsumerDispatcher) -> None:
                 # secrets), not an unbound context that fail-closed plugin bindings refuse (#118538).
                 # ``copy()``: one snapshot fans out to N consumer threads and a Context can only be
                 # entered by one thread at a time.
-                context.copy().run(dispatcher.callback, **payload)
+                context.copy().run(_invoke_stream_callback, dispatcher.callback, payload)
             except Exception as exc:
+                if item.activity is not None:
+                    item.activity.fail()
                 # Fires once per streaming delta: a mis-declared callback fails identically every
                 # time, so it goes through the manager's warn-once reporter (#111922).
                 from hermes_cli.plugins import get_plugin_manager
 
                 get_plugin_manager()._report_hook_failure(dispatcher.hook_name, dispatcher.callback, payload, exc)
+            except BaseException:
+                if item.activity is not None:
+                    item.activity.fail()
+                raise
         finally:
+            if isinstance(item, _QueuedHook):
+                item.release()
             dispatcher.events.task_done()
+
+
+def _invoke_stream_callback(callback, payload):
+    from hermes_cli.plugins_dispatch import resolve_plugin_command_result
+    return resolve_plugin_command_result(callback(**payload))
 
 
 def _registered_callbacks(hook_name: str) -> tuple[Callable[..., Any], ...]:
@@ -88,6 +120,7 @@ def _registered_callbacks(hook_name: str) -> tuple[Callable[..., Any], ...]:
         from hermes_cli import plugins
         return plugins.iter_hook_callbacks(hook_name)
     except Exception:
+        fail_current()
         logger.debug("plugin stream hook callback lookup failed: %s", hook_name, exc_info=True)
         return ()
 
@@ -132,9 +165,20 @@ def _dispatchers_for(hook_name: str) -> list[_ConsumerDispatcher]:
 
 def enqueue_plugin_stream_hook(hook_name: str, **payload: Any) -> bool:
     """Queue an observer hook for each consumer without running plugin code inline."""
+    from hermes_cli.plugins import get_plugin_manager
+
     queued = False
-    item = (contextvars.copy_context(), dict(payload))
-    for dispatcher in _dispatchers_for(hook_name):
+    manager = get_plugin_manager()
+    try:
+        dispatchers = _dispatchers_for(hook_name)
+    except BaseException:
+        fail_current()
+        raise
+    for dispatcher in dispatchers:
+        activity = admit_callback(manager, payload)
+        if activity is False:
+            continue
+        item = _QueuedHook(contextvars.copy_context(), dict(payload), activity)
         if _put_drop_oldest(dispatcher.events, item):
             queued = True
         else:

@@ -69,6 +69,23 @@ def _hosted_ambient_credentials(home: Path) -> dict[str, str]:
         reset_secret_scope(token)
 
 
+def _context_properties(ctx: Any) -> dict[str, Any]:
+    """Freeze public scalar properties at load; live facades retain their RPC proxies."""
+    from hermes_cli.plugin_isolation import HOST_REMOTE_FACADES
+
+    if ctx is None:
+        return {}
+    values = {}
+    for name in dir(type(ctx)):
+        if name.startswith("_") or name in HOST_REMOTE_FACADES:
+            continue
+        if isinstance(inspect.getattr_static(type(ctx), name), property):
+            value = getattr(ctx, name)
+            if value is None or isinstance(value, (str, bool, int, float)):
+                values[name] = value
+    return values
+
+
 class PluginHost:
     """One host process for one :class:`~hermes_cli.plugins.PluginManager` (one profile home)."""
 
@@ -236,7 +253,9 @@ class PluginHost:
             "manifest": {k: getattr(manifest, k, None) for k in (
                 "name", "version", "description", "author", "source", "path", "key", "kind",
                 "data_namespace")},
-            "ctx_methods": sorted(n for n in dir(PluginContext) if not n.startswith("_")),
+            "ctx_methods": sorted(n for n in dir(PluginContext)
+                                  if not n.startswith("_") and callable(getattr(PluginContext, n))),
+            "ctx_properties": self._base_context.copy().run(_context_properties, ctx),
         }
         self._loading = plugin_key
         try:
@@ -286,7 +305,9 @@ class PluginHost:
             "name": Path(plugin_dir).name, "path": str(plugin_dir), "module_name": module_name,
             "base": base_ref, "capture": capture, "forward": ctx is not None,
             "manifest": {"name": Path(plugin_dir).name, "path": str(plugin_dir), "source": "user"},
-            "ctx_methods": sorted(n for n in dir(PluginContext) if not n.startswith("_")),
+            "ctx_methods": sorted(n for n in dir(PluginContext)
+                                  if not n.startswith("_") and callable(getattr(PluginContext, n))),
+            "ctx_properties": self._base_context.copy().run(_context_properties, ctx),
         }
         self._loading = plugin_key
         try:

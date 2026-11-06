@@ -89,14 +89,17 @@ class RemotePluginContext:
     def __init__(self, runtime: HostRuntime, plugin_key: str, info: dict[str, Any]):
         self._runtime, self._plugin_key = runtime, plugin_key
         self._methods = set(info.get("ctx_methods") or ())
+        self._properties = dict(info.get("ctx_properties") or {})
         self._facades: dict[str, RemoteFacade] = {}
         self.manifest = types.SimpleNamespace(**(info.get("manifest") or {}))
         self.plugin_id = info.get("plugin_id") or plugin_key
-        self.profile_name = info.get("profile_name")
+        self.profile_name = self._properties.get("profile_name", info.get("profile_name"))
 
     def __getattr__(self, name: str) -> Any:
         if name.startswith("_"):
             raise AttributeError(name)
+        if name in self._properties:
+            return self._properties[name]
         from hermes_cli.plugin_isolation import (
             HOST_REMOTE_FACADES, HOST_SKIPPED_CTX_METHODS, HOST_UNSUPPORTED_CTX_METHODS,
         )

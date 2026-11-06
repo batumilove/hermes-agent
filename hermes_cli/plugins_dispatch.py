@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Union
 
 from hermes_cli.middleware import OBSERVER_SCHEMA_VERSION
+from hermes_cli.plugins_turn_boundary import admit_callback, fail_current, reserve_current_activity
+from hermes_cli.plugins_hook_activity import await_hook_result
 
 logger = logging.getLogger("hermes_cli.plugins")
 
@@ -221,6 +223,11 @@ def resolve_plugin_command_result(result: Any) -> Any:
         asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(result)
+    activity = reserve_current_activity()
+    if activity is False:
+        if inspect.iscoroutine(result):
+            result.close()
+        raise TimeoutError("hook helper admission closed")
     outcome: dict[str, Any] = {}
     failure: dict[str, BaseException] = {}
     done = threading.Event()
@@ -231,13 +238,24 @@ def resolve_plugin_command_result(result: Any) -> Any:
         except BaseException as exc:  # pragma: no cover - re-raised below
             failure["exc"] = exc
         finally:
+            if activity is not None:
+                activity.leave()
             done.set()
 
     # copy_context: the helper thread must see the caller's profile/secret scope, else an
     # async hook under a running loop reads the default HERMES_HOME and get_secret raises.
-    threading.Thread(target=contextvars.copy_context().run, args=(_runner,),
-                     name="hermes-plugin-command-await", daemon=True).start()
+    try:
+        threading.Thread(target=contextvars.copy_context().run, args=(_runner,),
+                         name="hermes-plugin-command-await", daemon=True).start()
+    except RuntimeError:
+        if activity is not None:
+            activity.fail()
+            activity.leave()
+        if inspect.iscoroutine(result):
+            result.close()
+        raise
     if not done.wait(timeout=_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS):
+        fail_current()
         raise TimeoutError("Plugin command async handler did not complete within "
                            f"{_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS:.0f}s")
     if "exc" in failure:
@@ -262,15 +280,24 @@ class PluginDispatchMixin:
             if name in parameters and parameters[name].kind in keyword_kinds
         }
 
-    @classmethod
-    def _invoke_hook_callback(cls, callback: Callable, payload: dict[str, Any]) -> Any:
+    def _invoke_hook_callback(self, callback: Callable, payload: dict[str, Any]) -> Any:
         """Invoke a hook while withholding additive fields from narrow legacy callbacks.
 
         An ``async def`` callback returns a coroutine; resolve it the way plugin slash commands
         are (loop-safe), otherwise the bare coroutine object is appended to the results and the
         plugin's body never runs (#12449).
         """
-        return resolve_plugin_command_result(callback(**cls._hook_callback_kwargs(callback, payload)))
+        activity = admit_callback(self, payload)
+        if activity is False:
+            return _HOOK_SKIPPED
+        try:
+            return resolve_plugin_command_result(callback(**self._hook_callback_kwargs(callback, payload)))
+        except BaseException:
+            fail_current()
+            raise
+        finally:
+            if activity is not None:
+                activity.leave()
 
     def invoke_hook(self, hook_name: str, **kwargs: Any) -> list[Any]:
         """Call all callbacks for *hook_name*; return their non-``None`` results.
@@ -313,6 +340,10 @@ class PluginDispatchMixin:
                         continue
                 else:
                     ret = self._invoke_hook_callback(cb, kwargs)
+                    if ret is _HOOK_SKIPPED:
+                        if fail_closed:
+                            results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
+                        continue
                 if ret is not None:
                     results.append(ret)
             except (Exception, SystemExit) as exc:  # health: allow BLE001 -- moved from invoke_hook: plugin callbacks are untrusted; each failure is reported and isolated
@@ -367,6 +398,7 @@ class PluginDispatchMixin:
                 logger.warning(
                     "Hook '%s' callback %s skipped after previous "
                     "timeout or while still running", hook_name, callback_name)
+                fail_current()
                 return _HOOK_SKIPPED
             # Workers abandoned on timeout still hold threads. Once the suppression window has
             # passed, a fresh call id may start a new worker (a hung guard must not fail every
@@ -380,9 +412,13 @@ class PluginDispatchMixin:
                     "Hook '%s' callback %s (%s) skipped: %d abandoned worker(s) still running — "
                     "the plugin is hung; fix or disable it (retried when a worker finishes)",
                     hook_name, callback_name, getattr(cb, "__module__", "unknown plugin"), len(abandoned))
+                fail_current()
                 return _HOOK_SKIPPED
             if suppressed_until is not None:
                 self._hook_timeout_suppressed_until.pop(suppression_key, None)
+            activity = admit_callback(self, kwargs)
+            if activity is False:
+                return _HOOK_SKIPPED
             self._hook_running_callbacks[gate_key] = token
 
         context = contextvars.copy_context()
@@ -407,6 +443,8 @@ class PluginDispatchMixin:
                 failure["exc"] = exc
             finally:
                 _release_token()
+                if activity is not None:
+                    activity.leave()
                 done.set()
 
         thread = threading.Thread(target=_runner, name=f"hermes-hook-{callback_name}"[:40], daemon=True)
@@ -414,11 +452,15 @@ class PluginDispatchMixin:
             thread.start()
         except RuntimeError as exc:
             _release_token()  # the runner's finally never runs when OS thread creation fails
+            if activity is not None:
+                activity.leave()
+            fail_current()
             logger.warning(
                 "Hook '%s' callback %s worker failed to start: %s — skipping",
                 hook_name, callback_name, exc)
             return _HOOK_SKIPPED
         if not done.wait(timeout=timeout):  # do not join — that would reintroduce the hang
+            fail_current()
             with self._hook_timeout_lock:
                 # See #6622.
                 self._hook_timeout_suppressed_until[suppression_key] = (
@@ -618,8 +660,8 @@ class PluginDispatchMixin:
         callback that awaits anything scheduled on that loop can make progress. Through the
         sync path it runs on a helper thread while the caller blocks in ``done.wait()`` — on the
         gateway that stalls the whole event loop for the callback's duration. Sync callbacks
-        run inline. Bounded hooks keep ``plugins.hook_callback_timeout`` via ``asyncio.wait_for``
-        (the coroutine is cancelled, not abandoned); a timed-out ``pre_tool_call`` fails closed.
+        run inline. Bounded hooks keep ``plugins.hook_callback_timeout``; cancelled callbacks
+        retain activity until they actually exit. A timed-out ``pre_tool_call`` fails closed.
         """
         from hermes_cli.plugins import _resolve_hook_callback_timeout
         if hook_name != "gateway_platform_event":
@@ -630,22 +672,35 @@ class PluginDispatchMixin:
         fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
         for cb in self._hooks.get(hook_name, []):
             callback_name = getattr(cb, "__name__", repr(cb))
+            activity = admit_callback(self, kwargs)
+            if activity is False:
+                if fail_closed:
+                    results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
+                continue
             try:
                 ret = cb(**self._hook_callback_kwargs(cb, kwargs))
                 if inspect.isawaitable(ret):
-                    ret = await (asyncio.wait_for(ret, timeout) if use_timeout else ret)
+                    ret = await await_hook_result(ret, timeout if use_timeout else None)
                 if ret is not None:
                     results.append(ret)
             except TimeoutError:
+                fail_current()
                 logger.warning("Hook '%s' callback %s timed out after %.0fs", hook_name, callback_name, timeout)
                 if fail_closed:  # policy hook: fail closed with a block directive
                     results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
             except (Exception, SystemExit) as exc:
+                fail_current()
                 # Same isolation + failure contract as the sync path (#111922 warn-once, #109624
                 # a raising policy guard fails closed).
                 self._report_hook_failure(hook_name, cb, kwargs, exc)
                 if fail_closed:
                     results.append(_policy_error_block_directive(hook_name, cb, exc))
+            except BaseException:
+                fail_current()
+                raise
+            finally:
+                if activity is not None:
+                    activity.leave()
         return results
 
     def iter_hook_callbacks(self, hook_name: str) -> tuple[Callable, ...]:

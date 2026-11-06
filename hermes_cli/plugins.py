@@ -10,6 +10,8 @@ and an ``__init__.py`` exposing ``register(ctx)``. Plugins register callbacks fo
 
 from __future__ import annotations
 
+from hermes_cli.plugins_turn_boundary import PluginTurnContextMixin
+
 import asyncio
 import importlib.metadata
 import json
@@ -231,7 +233,7 @@ class LoadedPlugin:
     deferred: bool = False
 
 
-class PluginContext(PluginRoleContextMixin, PluginCapabilityCtxMixin):
+class PluginContext(PluginTurnContextMixin, PluginRoleContextMixin, PluginCapabilityCtxMixin):
     """Facade given to plugins so they can register tools and hooks."""
 
     def __init__(self, manifest: PluginManifest, manager: PluginManager):
@@ -947,19 +949,6 @@ class PluginContext(PluginRoleContextMixin, PluginCapabilityCtxMixin):
             "middleware", kind, callback, self._manager._middleware, VALID_MIDDLEWARE
         )
 
-    def _track_callback(
-        self, kind: str, key: str, callback: Callable, mapping: dict[str, list[Callable]],
-        valid: set[str],
-    ) -> PluginRegistration:
-        """Append ``callback`` under ``key`` (warning on unknown ``key``) and lease its removal."""
-        if key not in valid:
-            logger.warning("Plugin '%s' registered unknown %s '%s' (valid: %s)", self.manifest.name, kind,
-                           key, ", ".join(sorted(valid)))
-        mapping.setdefault(key, []).append(callback)
-        handle = self._track(kind, key, lambda: self._manager._remove_callback(mapping, key, callback))
-        logger.debug("Plugin %s registered %s: %s", self.manifest.name, kind, key)
-        return handle
-
     def register_system_prompt_section(
         self, id: str, content: str | Callable[[Mapping[str, Any]], str], *,
         position: str = "after_memory", max_chars: int = DEFAULT_SYSTEM_PROMPT_SECTION_MAX_CHARS,
@@ -1122,6 +1111,7 @@ class PluginManager(PluginRoleManagerMixin, PluginLoaderMixin, PluginDispatchMix
         self._emit_depth = threading.local()
         # In-flight / recently-timed-out hook callbacks keyed by (hook_name, id(cb), call_identity)
         # so a stuck policy hook cannot spawn a new abandoned thread on every fire.
+        self._hook_evidence_generation = 0
         self._hook_running_callbacks: dict[tuple, object] = {}
         self._hook_abandoned: dict[tuple, set] = {}
         self._hook_timeout_suppressed_until: dict[tuple, float] = {}
