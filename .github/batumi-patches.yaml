@@ -5,6 +5,16 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: osv-container-output-isolation
+  kind: operations
+  rationale: Run the pinned advisory scanner and reporter with the runner UID, read-only source and tools, and a separate writable result directory.
+  paths:
+  - .github/workflows/osv-scanner.yml
+  - tests/scripts/test_osv_scanner_workflow.py
+  - tests/scripts/test_osv_container_isolation.py
+  tests:
+  - scripts/run_tests.sh tests/scripts/test_osv_scanner_workflow.py tests/scripts/test_osv_container_isolation.py
+  retirement: Remove when upstream separates scanner output from the checkout and applies equivalent container isolation.
 - id: process-registry-rewrite-test-isolation
   kind: core
   rationale: Keep command-rewrite assertions scoped to the terminal job rather than unrelated supervisor subprocesses.
