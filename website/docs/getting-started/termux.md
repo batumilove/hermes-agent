@@ -1,15 +1,16 @@
 ---
 sidebar_position: 3
 title: "Android / Termux"
-description: "Install Hermes Agent on Android from its signed Termux APT repository"
+description: "Historical upstream Termux instructions; Android is unsupported in this fork."
 ---
 
 # Hermes on Android with Termux
 
-:::danger Termux is currently broken
-The Termux package does not work right now. A fix is in progress and will
-ship soon. Until then, the steps below may fail or install a package that
-does not run.
+:::warning Unsupported in this fork
+Android/Termux is unsupported on every architecture. This fork refuses Termux
+installation and does not publish Termux packages. The instructions below are
+retained upstream reference material, not an installation route for this fork.
+Use a supported Linux/macOS host; see [Platform Support](./platform-support.md).
 :::
 
 The Termux package runs Hermes on **aarch64 (arm64-v8a)** Android devices.

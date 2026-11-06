@@ -51,24 +51,21 @@ Pick the row that matches your goal:
 ---
 
 ## 1. Install Hermes Agent
-### With the Hermes Desktop installer on macOS or Windows (recommended)
-To easily install the command-line and desktop applications, [download the Hermes Desktop installer](https://hermes-agent.nousresearch.com/) from our website and run it.
+This fork supports standard Linux and macOS on **x86_64 and ARM64**, including
+Linux inside WSL2. Native Windows and Android/Termux are unsupported.
+See [Platform Support](./platform-support.md).
 
-### Without Hermes Desktop:
-For a command-line only install without Hermes Desktop, run:
+### macOS desktop
 
-For aarch64 Android devices, use the separate [Termux APT guide](./termux.md).
+Use a macOS desktop bundle built by this fork; see the
+[installation guide](./installation.md). The `Hermes-Setup.dmg` bootstrap is
+Apple Silicon only. Intel Macs use the source installer or a `darwin-x64` bundle.
+Linux desktop users install from source and run `hermes desktop`.
 
-#### Linux / macOS / WSL2
+### Linux / macOS / WSL2 source install
+
 ```bash
-curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
-```
-
-#### Windows (native)
-
-Run in powershell:
-```powershell
-iex (irm https://hermes-agent.nousresearch.com/install.ps1) 
+curl -fsSL https://raw.githubusercontent.com/batumilove/hermes-agent/batumi/live/scripts/install.sh | HERMES_REPO_URL=https://github.com/batumilove/hermes-agent.git bash -s -- --branch batumi/live --channel main
 ```
 
 After it finishes, reload your shell:

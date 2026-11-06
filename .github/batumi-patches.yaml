@@ -1815,30 +1815,16 @@ patches:
     tests/test_honcho_client_config.py
   retirement: Remove when upstream owns injected Honcho clients and passes the same reset, replacement,
     no-idle-pool, and URL-redaction contracts.
-- id: honcho-operational-monitoring
+- id: fork-automation-attribution
   kind: operations
-  rationale: Preserve the production Honcho health monitor and queue diagnostic used by Hermes cron, together
-    with their fail-closed behavior contracts. Route regressions require the checkout test
-    dependencies (pytest and PyYAML) and a disposable HOME/HERMES_HOME; no live
-    Honcho, provider credentials or generation calls are required. The mailmap alias
-    preserves locally generated Hermes automation attribution without rewriting PR history.
+  rationale: Preserve the established attribution of locally generated Hermes automation commits
+    without rewriting PR history. Honcho monitoring and its contracts now live in the external
+    hermes-ops plugin; this alias is independent of that retired application patch.
   paths:
   - .mailmap
-  - hermes_cli/honcho_monitor.py
-  - hermes_cli/honcho_queue_diagnostic.py
-  - scripts/honcho_monitor.py
-  - tests/hermes_cli/test_honcho_monitor.py
-  - tests/hermes_cli/test_honcho_queue_diagnostic.py
-  - tests/hermes_cli/test_honcho_monitor_routes.py
-  - tests/hermes_cli/test_honcho_route_review.py
-  - tests/hermes_cli/test_honcho_routing_unknown.py
-  - tests/hermes_cli/test_honcho_report_evidence.py
-  - tests/hermes_cli/test_literal_model_regression.py
   tests:
-  - scripts/run_tests.sh tests/hermes_cli/test_honcho_monitor.py tests/hermes_cli/test_honcho_queue_diagnostic.py
-  - scripts/run_tests.sh tests/hermes_cli/test_honcho_monitor_routes.py tests/hermes_cli/test_honcho_route_review.py tests/hermes_cli/test_honcho_routing_unknown.py tests/hermes_cli/test_honcho_report_evidence.py tests/hermes_cli/test_literal_model_regression.py
-  retirement: Remove when the live watchdog and diagnostics migrate to a durable operations package that
-    no longer imports these modules.
+  - git check-mailmap 'Hermes Agent <hermes@example.invalid>'
+  retirement: Remove when upstream carries this automation alias or no retained history uses it.
 - id: cron-ephemeral-telegram-topics
   kind: core
   rationale: Preserve the existing config key that creates one private Telegram topic per cron output
@@ -2656,6 +2642,8 @@ patches:
   kind: compatibility
   rationale: Limit this fork's install, startup, CI and release admission to standard
     Linux and macOS on x86_64 and ARM64, retaining historical platform readers.
+    Keep contributor, skill and translated installation guidance aligned with that
+    support policy while labelling upstream Windows and Termux references.
   paths:
   - .github/batumi-patches.yaml
   - .github/workflows/bootstrap-installer-build.yml
@@ -2731,6 +2719,20 @@ patches:
   - scripts/releases/darwin.py
   - scripts/releases/r2.py
   - scripts/bundles/release_artifacts.py
+  - CONTRIBUTING.md
+  - skills/autonomous-ai-agents/hermes-agent/references/contributor-guide.md
+  - skills/autonomous-ai-agents/hermes-agent/references/troubleshooting.md
+  - skills/autonomous-ai-agents/hermes-agent/references/windows-quirks.md
+  - website/docs/getting-started/official-domains.md
+  - website/docs/getting-started/quickstart.md
+  - website/docs/getting-started/termux.md
+  - website/docs/user-guide/windows-native.md
+  - website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/getting-started/installation.md
+  - website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/getting-started/quickstart.md
+  - website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/getting-started/termux.md
+  - website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/getting-started/updating.md
+  - website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent.md
+  - website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/windows-native.md
   tests:
   - scripts/run_tests.sh tests/hermes_platform tests/scripts/test_supported_release_platforms.py tests/scripts/install/test_install_sh_termux_refusal.py tests/hermes_cli/test_shared_metrics_harness.py
   - scripts/run_tests.sh tests/scripts/test_job_groups.py tests/scripts/test_release_lanes.py tests/scripts/test_release_entrypoint.py tests/scripts/test_release_channels.py tests/scripts/test_stable_release.py tests/scripts/test_release_artifacts.py tests/scripts/test_release_darwin.py
@@ -2738,6 +2740,7 @@ patches:
   - scripts/run_tests.sh tests/ci/test_update_ci_routing.py tests/ci/test_update_transitive_routing.py tests/ci/test_classify_changes.py tests/ci/test_commit_build_staging.py tests/ci/test_desktop_release_tag_admission.py tests/ci/test_termux_input_archive.py
   - scripts/run_tests.sh tests/scripts/test_release_sequencer.py tests/scripts/test_dispatch_log.py tests/scripts/test_render_builds_binding.py tests/scripts/test_render_builds_publication.py tests/scripts/install/test_install_clone_throttle_fallback.py tests/scripts/install/test_install_diverged_rescue_ref.py
   - npm exec --workspace tests-js -- vitest run setup-pm-cache.test.mjs
+  - python website/scripts/check_doc_links.py
   retirement: Remove if the fork adopts upstream host support policy or upstream
     provides equivalent Linux and macOS admission across installation and releases.
 - id: turn-liveness-watchdog-diagnostics

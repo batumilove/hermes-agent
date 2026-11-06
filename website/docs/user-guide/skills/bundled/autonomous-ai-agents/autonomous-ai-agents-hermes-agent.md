@@ -16,10 +16,10 @@ Use, configure, theme, extend, and orchestrate Hermes Agent.
 |---|---|
 | Source | Bundled (installed by default) |
 | Path | `skills/autonomous-ai-agents/hermes-agent` |
-| Version | `3.3.0` |
+| Version | `3.3.1` |
 | Author | Hermes Agent + Teknium |
 | License | MIT |
-| Platforms | linux, macos, windows |
+| Platforms | linux, macos |
 | Tags | `hermes`, `setup`, `configuration`, `multi-agent`, `spawning`, `cli`, `gateway`, `bots`, `bot-mode`, `features`, `themes`, `skins`, `desktop-plugins`, `tui-widgets`, `petdex`, `development` |
 | Related skills | [`claude-code`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code.md), [`codex`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-codex.md), [`opencode`](../../optional/autonomous-ai-agents/autonomous-ai-agents-opencode.md) |
 
@@ -31,7 +31,9 @@ The following is the complete skill definition that Hermes loads when this skill
 
 # Hermes Agent
 
-Hermes Agent is an open-source AI agent framework by Nous Research that runs in your terminal, a native desktop app, messaging platforms, and IDEs. It's in the same category as Claude Code (Anthropic), Codex (OpenAI), and OpenClaw — autonomous coding and task-execution agents that use tool calling to interact with your system. Hermes works with any LLM provider (OpenRouter, Anthropic, OpenAI, Google, DeepSeek, xAI, local models, and 20+ others) and runs on Linux, macOS, Windows, and WSL.
+Hermes Agent is an open-source AI agent framework by Nous Research that runs in your terminal, a native desktop app, messaging platforms, and IDEs. It's in the same category as Claude Code (Anthropic), Codex (OpenAI), and OpenClaw — autonomous coding and task-execution agents that use tool calling to interact with your system. Hermes works with any LLM provider (OpenRouter, Anthropic, OpenAI, Google, DeepSeek, xAI, local models, and 20+ others).
+
+This fork supports standard Linux and macOS on x86_64 and ARM64, including Linux inside WSL2. Native Windows and Android/Termux are unsupported. Follow the [fork platform policy](https://github.com/batumilove/hermes-agent/blob/batumi/live/website/docs/getting-started/platform-support.md); upstream documentation may describe additional platforms.
 
 What makes Hermes different:
 
@@ -72,7 +74,7 @@ Never answer "Hermes can't do that" from memory. Hermes ships far more than this
 
 ```bash
 # Install (shell installer — bootstraps PM, Python, dependencies, and the launcher)
-curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/batumilove/hermes-agent/batumi/live/scripts/install.sh | HERMES_REPO_URL=https://github.com/batumilove/hermes-agent.git bash -s -- --branch batumi/live --channel main
 
 # Interactive chat (default surface; set display.interface: tui to launch the Ink TUI instead)
 hermes
@@ -130,7 +132,7 @@ Profiles use `~/.hermes/profiles/<name>/` with the same layout. When a profile i
 | A desktop app UI element (pane, widget, ⌘K command, page) | `references/desktop-plugins.md` + `templates/plugin.js` |
 | A live TUI panel or modal widget (ticker, clock, dashboard) | `references/tui-widgets.md` + `templates/clock.mjs` |
 | Pet mascots — install, select, scale, diagnose | `references/petdex.md` |
-| Windows-specific issues (keybinds, WinError 10106, BOM) | `references/windows-quirks.md` |
+| Historical upstream Windows compatibility (unsupported in this fork) | `references/windows-quirks.md` |
 | Debugging: voice, tools missing, gateway, aux models | `references/troubleshooting.md` |
 | Contributing code: adding tools, slash commands, tests | `references/contributor-guide.md` |
 | delegate_task "capped at N" reports | `references/delegate-task-concurrency-diagnosis.md` |
@@ -240,7 +242,7 @@ terminal(command="tmux new-session -d -s resumed 'hermes --resume 20260225_14305
 
 ## Surfaces (quick orientation)
 
-- **Desktop app** (`hermes desktop` / `hermes gui`) — native Electron app for macOS/Linux/Windows: streaming chat, session list, Cmd+K palette, drag-and-drop files, native notifications, per-profile remote-gateway login. Extend it with UI plugins — `references/desktop-plugins.md`.
+- **Desktop app** (`hermes desktop` / `hermes gui`) — Electron app on supported Linux/macOS hosts (Linux uses a source build; macOS has desktop bundles): streaming chat, session list, Cmd+K palette, drag-and-drop files, native notifications, per-profile remote-gateway login. Extend it with UI plugins — `references/desktop-plugins.md`.
 - **Web dashboard** (`hermes dashboard`) — full admin panel: messaging channels, MCP catalog, webhooks, memory, profile builder, plus an embedded `hermes --tui` chat. Secured behind an OAuth/token gate.
 - **Ink TUI** (`hermes --tui` or `display.interface: tui`) — terminal UI with docked widget apps — `references/tui-widgets.md`.
 - **OpenAI-compatible proxy** (`hermes proxy`) — a local OpenAI API backed by whichever OAuth provider you're signed into. Point Codex CLI, Aider, Cline, or any script at it — no API key.

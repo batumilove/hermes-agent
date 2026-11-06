@@ -51,9 +51,9 @@ description: "与 Hermes Agent 的第一次对话——从安装到开始聊天�
 
 ## 1. 安装 Hermes Agent
 
-### 在 macOS 或 Windows 上使用 Hermes Desktop 安装器（推荐）
+### macOS 桌面安装
 
-如需同时安装命令行与桌面应用，请从我们的官网[下载 Hermes Desktop 安装器](https://hermes-agent.nousresearch.com/)并运行。
+使用此分支构建的 macOS DMG/ZIP，详见[安装指南](./installation.md)。Apple Silicon 可使用 `Hermes-Setup.dmg`；Intel Mac 使用源码安装器或 `darwin-x64` 软件包。Linux 桌面从源码安装后运行 `hermes desktop`。
 
 ### 不使用 Hermes Desktop：
 
@@ -61,14 +61,13 @@ description: "与 Hermes Agent 的第一次对话——从安装到开始聊天�
 
 ```bash
 # Linux / macOS / WSL2
-curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/batumilove/hermes-agent/batumi/live/scripts/install.sh | HERMES_REPO_URL=https://github.com/batumilove/hermes-agent.git bash -s -- --branch batumi/live --channel main
 ```
 
-源码脚本通过 PM 准备运行时。桌面软件包、Docker、Nix 和 Termux APT 是独立的安装方式。
+源码脚本通过 PM 准备运行时。此分支支持标准 Linux/macOS（x86_64、ARM64），包括 WSL2 内的 Linux。
 请勿使用 `pip install hermes-agent` 替代受管理的安装。
 
-Windows 原生安装可在 PowerShell 中运行 `iex (irm https://hermes-agent.nousresearch.com/install.ps1)`，无需 WSL。
-aarch64 Android 设备请使用 [Termux APT 指南](./termux.md)，而非上述脚本。
+此分支不支持原生 Windows 或 Android/Termux。Windows 用户请在 WSL2 中运行上述 Linux 安装命令。
 
 安装完成后，重新加载 shell：
 

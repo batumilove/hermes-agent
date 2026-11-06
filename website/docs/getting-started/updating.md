@@ -77,17 +77,18 @@ Within the authorized migration scope, account for autoheal and queued recovery 
 
 After migration, verify the configured fork feed/channel and use the installation's included `hermes update`. Do not assume a pinned or detached checkout follows the desired branch automatically. This migration is not a replacement update controller.
 
-Choose the update method for the installation that is running:
+Choose the update method for the installation that is running on a supported
+Linux/macOS host (including WSL2). Native Windows, Microsoft Store/MSIX and
+Android/Termux installations are unsupported in this fork. Retained notes for
+those upstream formats do not establish a supported update path; see
+[Platform Support](./platform-support.md).
 
 | Installation | Update method |
 |---|---|
 | Managed source checkout | `hermes update`, or the source-built desktop's update handoff. |
-| Windows sideload MSIX | The desktop Update control and Windows App Installer. |
-| Microsoft Store package | Microsoft Store updates. |
 | macOS bundled app | The desktop Update control, through `electron-updater`. |
 | Docker image | Pull the chosen image and recreate the container with the same data mount. |
 | Nix | Update the flake/profile and rebuild. |
-| Termux APT | `pkg update`, then `pkg upgrade hermes-agent`. |
 
 `hermes update` does not rewrite package-owned application files. PM manages
 dependencies, not application distribution: `hermes pm update` is a maintainer
@@ -728,7 +729,7 @@ removes data. `--data` removes user data without deleting package-owned code.
 These modes are destructive; make a backup first.
 
 For MSIX/Store, use Windows Settings → Apps → Installed apps. For macOS,
-quit Hermes and move its app bundle to Trash. Docker, Nix, and Termux use the
+quit Hermes and move its app bundle to Trash. Docker and Nix use the
 same manager that installed them. Their package files are not removed by the
 source uninstaller. Data deletion is separate from package removal.
 

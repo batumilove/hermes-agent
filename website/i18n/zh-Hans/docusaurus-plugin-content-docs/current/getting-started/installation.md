@@ -1,7 +1,7 @@
 ---
 sidebar_position: 2
 title: "安装"
-description: "在 Linux、macOS、WSL2 或原生 Windows 上安装 Hermes Agent"
+description: "在标准 Linux、macOS 或 WSL2 上安装此分支（x86_64 / ARM64）"
 ---
 
 # 安装
@@ -12,57 +12,28 @@ description: "在 Linux、macOS、WSL2 或原生 Windows 上安装 Hermes Agent"
 
 ### 一行安装命令（Linux / macOS / WSL2）
 
-基于 git 的安装方式，跟踪 `main` 分支，可立即获取最新变更：
+基于 Git 的安装方式，跟踪此分支的 `batumi/live`：
 
 ```bash
-curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/batumilove/hermes-agent/batumi/live/scripts/install.sh | HERMES_REPO_URL=https://github.com/batumilove/hermes-agent.git bash -s -- --branch batumi/live --channel main
 ```
 
-### Windows（原生，PowerShell）
+### 支持的平台与安装目录
 
-原生 Windows 无需 WSL 即可运行 Hermes——CLI、gateway、TUI 和工具均可原生运行。（原生安装与 WSL2 安装可干净共存；唯一仅限 WSL2 的功能见下方功能说明。）遇到 bug 请[提交 issue](https://github.com/NousResearch/hermes-agent/issues)。
+此分支仅支持标准 Linux 和 macOS，架构为 x86_64 或 ARM64；WSL2 内的 Linux 也受支持。
+不支持原生 Windows 或 Android/Termux。请勿使用上游的 PowerShell、MSIX、Microsoft Store 或 Termux 安装路线。
+完整政策见[平台支持（英文）](https://github.com/batumilove/hermes-agent/blob/batumi/live/website/docs/getting-started/platform-support.md)。
 
-打开 PowerShell 并运行：
-
-```powershell
-iex (irm https://hermes-agent.nousresearch.com/install.ps1)
-```
-
-源码安装脚本克隆仓库，再由 PM 准备 Python 3.14、Node.js、npm、ripgrep、FFmpeg 和 Python 依赖。
-缺少 Git 时，脚本下载经过 SHA-256 验证的 Git for Windows 到工具存储目录。
-它不替换系统 Git，也不再使用 MinGit 或 `hermes\node` 的旧布局。
-安装完成后，打开新终端以读取用户 PATH。
-
-**桌面软件包：** MSIX/App Installer 是自包含的软件包，与源码脚本不同。
-它要求 Windows 11 22H2 或更新版本，首次启动无需克隆源码或编译基础运行时。
-打开 `.appinstaller` 文件安装并登记更新源。Microsoft Store 版本由商店更新。
-`Hermes-Setup.exe` 则是下载并配置源码的引导安装程序。
-
-macOS 的 DMG 包含应用；将它复制到 Applications 后启动。
-其自动更新使用包含已签名应用的 ZIP。详情见 [桌面指南](../user-guide/desktop.md)。
-
-### Android / Termux
-
-aarch64 Android 设备可通过 Termux 安装预发布的 APT 软件包。软件包包含 Python、Node.js 和 TUI，无需在手机上编译核心依赖。请按照 [Termux 指南](./termux.md)配置签名仓库，然后运行 `pkg install hermes-agent`。桌面和服务器的安装脚本不支持 Termux。
-
-### 功能与安装目录
-
-Windows 的 CLI、TUI、gateway 和桌面应用可原生运行。
-Dashboard 终端使用 `pywinpty`/ConPTY，不再是尚未实现的 POSIX-only 功能。
-部分可选依赖仍受架构限制，请参阅 [Windows 指南](../user-guide/windows-native.md)。
+macOS 使用此分支构建的 DMG/ZIP 软件包。`Hermes-Setup.dmg` 引导安装器仅支持 Apple Silicon；
+Intel Mac 使用源码安装器或 `darwin-x64` 软件包。Linux 桌面从源码安装后运行 `hermes desktop`。
 
 | 安装方式 | 代码 | 命令入口 | 默认数据目录 |
 |---|---|---|---|
 | POSIX 源码脚本 | `~/.hermes/hermes-agent/` | `~/.local/bin/hermes` 包装器 | `~/.hermes/` |
-| Windows 源码脚本 | `%LOCALAPPDATA%\hermes\hermes-agent\` | `%LOCALAPPDATA%\hermes\bin\` | `%LOCALAPPDATA%\hermes\` |
-| 桌面软件包 | 应用包内部 | 包内启动器；Windows 执行别名 | 平台默认数据目录 |
-| Docker | `/opt/hermes/` | 镜像入口和 `hermes` | 挂载的 `/opt/data/` |
-| Termux APT | `$PREFIX/lib/hermes-agent/` | `$PREFIX/bin/` 符号链接 | `~/.hermes/` |
+| macOS 桌面软件包 | 应用包内部 | 包内启动器 | 平台默认数据目录 |
+| Linux Docker | `/opt/hermes/` | 镜像入口和 `hermes` | 挂载的 `/opt/data/` |
 
-`HERMES_HOME` 选择数据目录。POSIX 的 `--dir` 单独选择源码目录。
-以 root 身份运行不再自动选择 `/usr/local/lib` 的 FHS 布局。
-PM 的工具和 Python 环境代际位于独立目录，详见 [包管理](../reference/package-management.md)。
-不要为了修复应用而删除整个数据目录。
+`HERMES_HOME` 选择数据目录；`--dir` 单独选择源码目录。请勿删除整个数据目录来修复应用。
 
 ### 安装后
 

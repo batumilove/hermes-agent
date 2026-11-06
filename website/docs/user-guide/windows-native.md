@@ -7,6 +7,12 @@ sidebar_position: 3
 
 # Windows (Native) Guide
 
+:::warning Unsupported in this fork
+Native Windows is unsupported. The instructions below describe retained upstream
+implementation and historical installations. Use Linux inside WSL2 instead; see
+[Platform Support](../getting-started/platform-support.md).
+:::
+
 Hermes runs natively on Windows 10 and Windows 11 — no WSL, no Cygwin, no Docker. This page is the deep dive: what works natively, what's WSL-only, what the installer actually does, and the Windows-specific knobs you might need to touch.
 
 If you just want to install, the one-liner on the [landing page](../index.mdx) or [Installation page](../getting-started/installation#windows-native) is all you need. Come back here when something surprises you.

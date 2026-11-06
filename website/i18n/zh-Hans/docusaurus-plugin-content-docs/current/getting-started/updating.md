@@ -6,6 +6,13 @@ description: "如何将 Hermes Agent 更新至最新版本或将其卸载"
 
 # 更新与卸载
 
+:::warning 此分支的平台限制
+此分支仅支持标准 Linux/macOS（x86_64、ARM64），包括 WSL2 内的 Linux。
+原生 Windows 和 Android/Termux 不受支持；下文涉及这些平台的内容仅保留作上游或历史参考。
+请使用[此分支的安装指南](./installation.md)。
+:::
+
+
 ## 更新
 
 使用单条命令更新至最新版本：
