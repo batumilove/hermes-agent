@@ -326,6 +326,7 @@ def collect_timings(token: str, repo: str, run_id: str, head_sha: str) -> dict:
     return {
         "run_id": run_id,
         "head_sha": head_sha,
+        "head_branch": run_info.get("head_branch", ""),
         "created_at": created_at,
         "is_main": (run_info.get("head_branch") == "main"
                     and bool(run_info.get("event"))
@@ -863,7 +864,8 @@ def generate_html(timings: dict, baseline: dict | None = None) -> str:
     bl_info = ""
     if baseline:
         bl_sha = (baseline.get("head_sha") or "")[:7]
-        bl_info = f' | Baseline: <code>{bl_sha}</code> (main)'
+        bl_branch = baseline.get("head_branch") or "unknown branch"
+        bl_info = f' | Baseline: <code>{bl_sha}</code> ({escape(bl_branch)})'
 
     html = (
         f'<!DOCTYPE html>\n<html lang="en">\n<head>\n'
