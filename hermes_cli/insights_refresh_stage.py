@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,17 @@ import time
 from hermes_cli.insights_metadata_read import MESSAGE_FIELDS, SESSION_COLUMNS, read_scope
 
 
+def _require_private_stage_support():
+    """Refuse before source access unless descriptor-bound POSIX I/O is available."""
+    if not (hasattr(os, 'geteuid') and hasattr(os, 'getegid')
+            and hasattr(os, 'O_DIRECTORY') and hasattr(os, 'O_NOFOLLOW')
+            and all(inspect.unwrap(operation) in os.supports_dir_fd
+                    for operation in (os.open, os.mkdir, os.stat, os.rmdir))
+            and inspect.unwrap(os.stat) in os.supports_follow_symlinks):
+        raise ValueError('private stage requires POSIX descriptor-bound I/O')
+    return os.geteuid(), os.getegid()  # windows-footgun: ok -- guarded POSIX requirement
+
+
 class _PrivateStage:
     """Linux descriptor-bound output; never traverse a replacement on cleanup.
 
@@ -22,6 +34,7 @@ class _PrivateStage:
     """
 
     def __init__(self, path):
+        uid, gid = _require_private_stage_support()
         self.path = path
         self.fds = []
         self.edges = []
@@ -31,8 +44,8 @@ class _PrivateStage:
             self.fds.append(fd)
             for name in path.parts[1:-1]:
                 info = os.fstat(fd)
-                if info.st_uid not in (0, os.geteuid()) or (
-                    info.st_mode & 0o020 and info.st_gid != os.getegid()
+                if info.st_uid not in (0, uid) or (
+                    info.st_mode & 0o020 and info.st_gid != gid
                     and not (info.st_uid == 0 and info.st_mode & stat.S_ISVTX)
                 ) or (
                     info.st_mode & 0o002 and not
@@ -45,7 +58,7 @@ class _PrivateStage:
                 self.fds.append(child)
                 fd = child
             info = os.fstat(fd)
-            if info.st_uid != os.geteuid() or info.st_mode & 0o022:
+            if info.st_uid != uid or info.st_mode & 0o022:
                 raise ValueError('stage parent must be private to the caller')
             self.parent = fd
             self.name = path.name
@@ -56,7 +69,7 @@ class _PrivateStage:
             self.edges.append((fd, self.name, child))
             self.directory = child
             info = os.fstat(child)
-            if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+            if info.st_uid != uid or stat.S_IMODE(info.st_mode) != 0o700:
                 raise ValueError('stage is not private')
             self.created = True
             self.check()
@@ -103,6 +116,7 @@ class _PrivateStage:
 def refresh_stage(args):
     from hermes_constants import get_hermes_home
 
+    _require_private_stage_support()
     if not (1 <= args.max_rows <= 100_000 and 1 <= args.max_bytes <= 64 * 1024 * 1024
             and 0 < args.seconds <= 30):
         raise ValueError('invalid budget')
@@ -135,7 +149,7 @@ def refresh_stage(args):
             observed = time.time()
             owner.check()
             out = sqlite3.connect(':memory:', timeout=0.05)
-            out.executescript(Path(__file__).with_name('insights_summary_schema.sql').read_text())
+            out.executescript(Path(__file__).with_name('insights_summary_schema.sql').read_text(encoding='utf-8-sig'))
             out.execute('PRAGMA journal_mode=DELETE')
             out.execute('PRAGMA synchronous=FULL')
             out.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)

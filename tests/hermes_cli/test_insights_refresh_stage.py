@@ -8,7 +8,8 @@ import sqlite3
 
 import pytest
 from hermes_cli import state_db_cmd
-from tests.hermes_cli.test_insights_metadata_read import databases
+
+pytest_plugins = ['tests.hermes_cli.test_insights_metadata_read']
 
 
 def refresh(databases, stage, **options):
@@ -19,6 +20,9 @@ def refresh(databases, stage, **options):
 
 
 def valid_source(d):
+    # Stage parents must satisfy the production private-directory contract,
+    # independent of the test runner's inherited umask.
+    d[0].chmod(0o700)
     con = d[1]
     con.execute("update sessions set source='cli',started_at=1")
     for c in ('tool_call_count,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,reasoning_tokens,api_call_count,archived,rewind_count').split(','):
@@ -26,6 +30,7 @@ def valid_source(d):
     con.commit()
 
 
+@pytest.mark.platforms('posix')
 def test_bootstrap_actual_consumer_schema_and_catchup(databases, tmp_path, capsys):
     valid_source(databases)
     first = tmp_path/'stage1'
@@ -66,6 +71,7 @@ def test_bootstrap_actual_consumer_schema_and_catchup(databases, tmp_path, capsy
 
 
 @pytest.mark.parametrize('options',[{'max_rows':1},{'max_bytes':1},{'seconds':0},{'schema_sha256':'0'*64}])
+@pytest.mark.platforms('posix')
 def test_budget_or_schema_rollback(databases,tmp_path,capsys,options):
     valid_source(databases)
     stage=tmp_path/'failed'
@@ -85,7 +91,7 @@ def test_replaced_path_preserves_unrelated_files(databases, tmp_path, monkeypatc
 
     valid_source(databases)
     parent = tmp_path / 'parent'
-    parent.mkdir()
+    parent.mkdir(mode=0o700)
     stage = parent / 'stage'
     foreign = tmp_path / 'foreign'
     foreign.mkdir()
@@ -123,19 +129,24 @@ def test_replacement_at_file_creation_cannot_redirect(databases, tmp_path, monke
     marker = foreign / 'unrelated'
     marker.write_bytes(b'KEEP')
     original = module.os.open
+    intercepted = []
 
     def replace(path, flags, mode=0o777, *, dir_fd=None):
         if path == 'metadata-summary.db':
+            intercepted.append(path)
             stage.rename(tmp_path / 'detached')
             stage.symlink_to(foreign, target_is_directory=True)
         return original(path, flags, mode, dir_fd=dir_fd)
 
     monkeypatch.setattr(module.os, 'open', replace)
+    monkeypatch.setattr(module.os, 'supports_dir_fd', module.os.supports_dir_fd | {replace})
     assert refresh(databases, stage) == 1
+    assert intercepted == ['metadata-summary.db']
     assert marker.read_bytes() == b'KEEP'
     assert not (foreign / 'metadata-summary.db').exists()
 
 
+@pytest.mark.platforms('posix')
 def test_existing_target_never_modified(databases,tmp_path):
     valid_source(databases)
     stage=tmp_path/'occupied';stage.mkdir()
