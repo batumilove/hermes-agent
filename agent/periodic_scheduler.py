@@ -21,7 +21,7 @@ failure never retires the handle: it is re-queued and logged at warning.
 
 from __future__ import annotations
 
-from contextvars import copy_context
+from contextvars import Context, copy_context
 import heapq
 import itertools
 import logging

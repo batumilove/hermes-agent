@@ -117,6 +117,7 @@ class DurableTurnLease:
                 if handle.cancel(wait=timeout) is not True:
                     ceased = False
             except BaseException as exc:
+                logger.warning("turn timer cancellation failed", exc_info=True)
                 errors.append(exc)
                 ceased = False
         if errors:
@@ -417,6 +418,7 @@ def admit_durable_turn_lease(
         try:
             lease.release()
         except BaseException as cleanup_error:
+            logger.warning("turn admission cleanup failed", exc_info=True)
             agent._turn_quarantine = {"lease": lease, "owned_tid": None,
                                       "reason": "admission ownership cleanup unconfirmed"}
             primary.add_note(f"turn admission cleanup: {type(cleanup_error).__name__}: {cleanup_error}")

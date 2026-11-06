@@ -5,6 +5,22 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: lcm-preserved-825-cancellation
+  kind: core
+  rationale: Preserve deployment protections while transplanting reviewed cancellation cleanup refactor.
+  paths:
+  - agent/conversation_loop.py
+  - agent/periodic_scheduler.py
+  - agent/turn_context.py
+  - agent/turn_context_compaction.py
+  - agent/turn_facade.py
+  - agent/turn_facade_cleanup.py
+  - agent/turn_facade_lease.py
+  - agent/turn_finalizer.py
+  - tools/interrupt.py
+  tests:
+  - tests/agent/test_periodic_scheduler_retention.py
+  retirement: Remove when equivalent cancellation and deployment protections are upstream.
 - id: watchdog-early-thread-attribution
   kind: core
   rationale: Attribute pre-prompt watchdog diagnostics to the admitted scheduling owner without resetting interrupt state.
