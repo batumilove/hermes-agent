@@ -2651,6 +2651,8 @@ patches:
     support policy while labelling upstream Windows and Termux references.
     Run macOS installation coverage on GitHub-hosted runners without requiring
     a Blacksmith installation for this fork.
+    Give historical pre-PM macOS installers a compatible Node runtime while
+    retaining locked current tooling for the driver and updater.
   paths:
   - .github/batumi-patches.yaml
   - .github/workflows/bootstrap-installer-build.yml
@@ -2660,6 +2662,7 @@ patches:
   - .github/workflows/install-e2e-windows-run.yml
   - .github/workflows/install-e2e.yml
   - .github/workflows/install-e2e-macos-run.yml
+  - .github/workflows/install-e2e-run.yml
   - .github/workflows/nix.yml
   - .github/workflows/pm-bundle.yml
   - .github/workflows/stable-release.yml
@@ -2706,6 +2709,8 @@ patches:
   - tests/ci/test_termux_input_archive.py
   - tests/ci/test_update_ci_routing.py
   - tests/hermes_platform/test_support.py
+  - tests/install/e2e-assets/installer-common.sh
+  - tests/scripts/install/test_source_installer_runtime.py
   - tests/hermes_cli/test_shared_metrics_harness.py
   - tests/scripts/install/test_install_clone_throttle_fallback.py
   - tests/scripts/install/test_install_diverged_rescue_ref.py
