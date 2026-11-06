@@ -805,14 +805,18 @@ class GatewaySessionCommandsMixin:
         persist BEFORE repointing so a failed write is fatal and old history stays reachable.
         In-place compaction already archived + inserted rows, and a rewrite would DELETE the
         archive; an unchanged id without in-place means rotation FAILED."""
+        old_session_id = session_entry.session_id
         new_session_id = tmp_agent.session_id
-        if new_session_id != session_entry.session_id:
+        if new_session_id != old_session_id:
             # Published child is already durable; a rewrite would drop rows cloned at publish.
             if not await self.async_session_store.persist_rotated_compression_child(
-                    session_entry.session_id, new_session_id, compressed):
+                    old_session_id, new_session_id, compressed):
                 raise RuntimeError(f"failed to persist compressed transcript for session {new_session_id}")
-            session_entry.session_id = new_session_id
-            await self.async_session_store._save()
+            if not await self.async_session_store.rebind_session_id(
+                    session_entry.session_key, old_session_id, new_session_id):
+                raise RuntimeError(
+                    f"session binding changed before compressed transcript could be published: "
+                    f"{old_session_id} → {new_session_id}")
             await asyncio.to_thread(self._sync_telegram_topic_binding, source, session_entry,
                                     reason="compress-command")
         elif not getattr(tmp_agent, "_last_compaction_in_place", False):
