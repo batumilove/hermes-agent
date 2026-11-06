@@ -104,21 +104,34 @@ class DurableTurnLease:
 
     deactivate_after_liveness_abort = stop_refresher
 
-    def join_threads(self, timeout: float = 1.0) -> None:
-        """Cancel both timers; ``wait=timeout`` mirrors the old ``thread.join(timeout)`` so an
-        in-flight tick finishes before ``clear_interrupt`` runs."""
+    def join_threads(self, timeout: float = 1.0) -> bool:
+        """True only when every timer is cancelled and its callback has ceased.
+
+        Retain handles/watchdog on timeout or error for explicit quarantine recovery.
+        None from a legacy handle is NOT cessation confirmation.
+        """
+        ceased = True
+        errors = []
         for handle in self.timer_handles:
-            handle.cancel(wait=timeout)
-        # The watchdog holds this lease's bound methods: drop it so the finished turn frees by refcount.
-        self.timer_handles, self.watchdog = [], None
+            try:
+                if handle.cancel(wait=timeout) is not True:
+                    ceased = False
+            except BaseException as exc:
+                logger.warning("turn timer cancellation failed", exc_info=True)
+                errors.append(exc)
+                ceased = False
+        if errors:
+            raise errors[0]
+        if ceased:
+            self.timer_handles, self.watchdog = [], None
+        return ceased
 
     def release(self) -> None:
         """Release the row and drop the agent's holder attrs (only if they still name this lease)."""
         agent = self.agent
-        try:
-            self.db.release_session_turn_lease(self.session_id, self.holder)
-        except Exception:
-            logger.error("Failed to release session turn lease: %s", self.session_id, exc_info=True)
+        # Normal return means the holder-qualified store operation completed;
+        # database errors propagate and retain holder identity for explicit recovery.
+        self.db.release_session_turn_lease(self.session_id, self.holder)
         if getattr(agent, "_active_session_turn_lease_holder", None) == self.holder:
             agent._active_session_turn_lease_holder = None
             agent._active_session_turn_lease_ttl_seconds = None
@@ -400,9 +413,15 @@ def admit_durable_turn_lease(
                 )
                 admission.conversation_history = reloaded
         lease.build_threads()
-    except BaseException:
-        # The façade never saw this lease; release here so an admitted row is not leaked.
-        lease.release()
+    except BaseException as primary:
+        # The facade never saw this lease. Retain it if holder cleanup is uncertain.
+        try:
+            lease.release()
+        except BaseException as cleanup_error:
+            logger.warning("turn admission cleanup failed", exc_info=True)
+            agent._turn_quarantine = {"lease": lease, "owned_tid": None,
+                                      "reason": "admission ownership cleanup unconfirmed"}
+            primary.add_note(f"turn admission cleanup: {type(cleanup_error).__name__}: {cleanup_error}")
         raise
     admission.lease = lease
     return admission

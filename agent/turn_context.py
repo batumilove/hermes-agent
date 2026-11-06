@@ -856,6 +856,7 @@ def _collect_pre_llm_call_context(
     runaway plugin can't inflate every subsequent turn's prompt. Each
     ``{"action": "block", "message": ...}`` veto is appended to ``blocks`` (#57364); one
     without a message is ignored, as for ``pre_tool_call``."""
+    from tools.interrupt import TurnInterrupted
     if getattr(agent, "_persist_disabled", False):
         return ""
     try:
@@ -880,6 +881,8 @@ def _collect_pre_llm_call_context(
                 get_spill_config as _spill_cfg, spill_if_oversized as _spill_if_oversized
             )
             _spill_config_cached = _spill_cfg()
+        except TurnInterrupted:
+            raise
         except Exception:
             _spill_if_oversized = None  # type: ignore[assignment]
             _spill_config_cached = None
@@ -902,10 +905,14 @@ def _collect_pre_llm_call_context(
                         _piece, session_id=agent.session_id, source="plugin hook",
                         config=_spill_config_cached,
                     )
+                except TurnInterrupted:
+                    raise
                 except Exception as _spill_exc:
                     logger.warning("hook context spill failed: %s", _spill_exc)
             _ctx_parts.append(_piece)
         return "\n\n".join(_ctx_parts)
+    except TurnInterrupted:
+        raise
     except Exception as exc:
         logger.warning("pre_llm_call hook failed: %s", exc)
     return ""
@@ -1110,6 +1117,8 @@ def build_turn_context(
     compression."""
     from agent.turn_context_compaction import CompactionOutcome, run_turn_start_compaction
 
+    _bind_interrupt_scope(agent, ra)
+
     # Guard stdio against OSError from broken pipes (systemd/headless/daemon).
     install_safe_stdio()
 
@@ -1234,57 +1243,73 @@ def build_turn_context(
     # Before turn-start compaction: its summary request quotes recent user turns, this one included,
     # so a vetoed prompt skips it (the turn makes no model call at all).
     _blocks: list[str] = []
-    plugin_user_context = _collect_pre_llm_call_context(
-        agent, effective_task_id=effective_task_id, turn_id=turn_id,
-        original_user_message=original_user_message, messages=messages,
-        conversation_history=conversation_history, blocks=_blocks,
-    )
-    plugin_block_message = _blocks[0] if _blocks else ""  # first veto wins
-    compaction = CompactionOutcome(
-        messages=messages, active_system_prompt=active_system_prompt,
-        conversation_history=conversation_history, current_turn_user_idx=current_turn_user_idx,
-    ) if plugin_block_message else run_turn_start_compaction(
-        agent, messages=messages, system_message=system_message,
-        active_system_prompt=active_system_prompt, conversation_history=conversation_history,
-        current_turn_user_idx=current_turn_user_idx, user_message=user_message,
-        effective_task_id=effective_task_id,
-    )
+    from tools.interrupt import TurnInterrupted
+    plugin_user_context = ""
+    plugin_block_message = ""
+    cancelled = bool(agent._interrupt_requested)
+    try:
+        if cancelled:
+            raise TurnInterrupted("pending turn cancellation")
+        plugin_user_context = _collect_pre_llm_call_context(
+            agent, effective_task_id=effective_task_id, turn_id=turn_id,
+            original_user_message=original_user_message, messages=messages,
+            conversation_history=conversation_history, blocks=_blocks,
+        )
+        plugin_block_message = _blocks[0] if _blocks else ""
+        compaction = CompactionOutcome(
+            messages=messages, active_system_prompt=active_system_prompt,
+            conversation_history=conversation_history, current_turn_user_idx=current_turn_user_idx,
+        ) if plugin_block_message else run_turn_start_compaction(
+            agent, messages=messages, system_message=system_message,
+            active_system_prompt=active_system_prompt, conversation_history=conversation_history,
+            current_turn_user_idx=current_turn_user_idx, user_message=user_message,
+            effective_task_id=effective_task_id,
+        )
+    except TurnInterrupted:
+        cancelled = True
+        # Preserve the current accepted rows and pending cause. The ordinary
+        # begin_iteration/finalize_turn path emits the system/user interruption.
+        compaction = CompactionOutcome(
+            messages=messages, active_system_prompt=active_system_prompt,
+            conversation_history=conversation_history, current_turn_user_idx=current_turn_user_idx,
+        )
     messages = compaction.messages
     active_system_prompt = compaction.active_system_prompt
     conversation_history = compaction.conversation_history
     current_turn_user_idx = compaction.current_turn_user_idx
-    # Every turn, not only on a prompt restore: a long-lived agent (CLI, TUI, Desktop) keeps its
-    # prompt in memory for the whole conversation and would never re-check its skills index.
-    stage_skills_index_note(agent, active_system_prompt, messages)
-    plugin_user_context = _merge_gateway_notes(
-        agent, messages, current_turn_user_idx, plugin_user_context
-    )
+    ext_prefetch_cache = ""
+    if not cancelled and not agent._interrupt_requested:
+        # Every turn, not only on a prompt restore: a long-lived agent (CLI, TUI, Desktop) keeps its
+        # prompt in memory for the whole conversation and would never re-check its skills index.
+        stage_skills_index_note(agent, active_system_prompt, messages)
+        plugin_user_context = _merge_gateway_notes(
+            agent, messages, current_turn_user_idx, plugin_user_context
+        )
 
-    _bind_interrupt_scope(agent, ra)
-    # A vetoed prompt never leaves the host: no external-memory prefetch, no titling call.
-    ext_prefetch_cache = "" if plugin_block_message else _memory_turn_start_and_prefetch(
-        agent, original_user_message, turn_author)
+        # A vetoed prompt never leaves the host: no external-memory prefetch, no titling call.
+        ext_prefetch_cache = "" if plugin_block_message else _memory_turn_start_and_prefetch(
+            agent, original_user_message, turn_author)
 
-    # Title the session now: titling depends only on the user's ask (before any injected
-    # context lands on list content), so it runs concurrently with the turn. Daemon thread,
-    # no-op once titled; it ensures the session row itself.
-    if not plugin_block_message:
-        _maybe_title_session_at_turn_start(agent, messages, title_user_message)
+        # Title the session now: titling depends only on the user's ask (before any injected
+        # context lands on list content), so it runs concurrently with the turn. Daemon thread,
+        # no-op once titled; it ensures the session row itself.
+        if not plugin_block_message:
+            _maybe_title_session_at_turn_start(agent, messages, title_user_message)
 
-    # Sidecar skipped for codex_app_server/MoA; list content carries its context as a part in every mode.
-    if 0 <= current_turn_user_idx < len(messages) and messages[current_turn_user_idx].get("role") == "user":
-        if plugin_block_message:
-            _withhold_blocked_prompt(agent, messages[current_turn_user_idx], original_user_message)
-        elif isinstance(messages[current_turn_user_idx].get("content"), list):
-            _append_multimodal_context(
-                agent, messages[current_turn_user_idx], ext_prefetch_cache, plugin_user_context,
-                preflight_compressed=compaction.compressed,
-            )
-        elif not moa_active and getattr(agent, "api_mode", None) != "codex_app_server":
-            _stamp_api_content_sidecar(
-                agent, messages, current_turn_user_idx, ext_prefetch_cache,
-                plugin_user_context, preflight_compressed=compaction.compressed,
-            )
+        # Sidecar skipped for codex_app_server/MoA; list content carries its context as a part in every mode.
+        if 0 <= current_turn_user_idx < len(messages) and messages[current_turn_user_idx].get("role") == "user":
+            if plugin_block_message:
+                _withhold_blocked_prompt(agent, messages[current_turn_user_idx], original_user_message)
+            elif isinstance(messages[current_turn_user_idx].get("content"), list):
+                _append_multimodal_context(
+                    agent, messages[current_turn_user_idx], ext_prefetch_cache, plugin_user_context,
+                    preflight_compressed=compaction.compressed,
+                )
+            elif not moa_active and getattr(agent, "api_mode", None) != "codex_app_server":
+                _stamp_api_content_sidecar(
+                    agent, messages, current_turn_user_idx, ext_prefetch_cache,
+                    plugin_user_context, preflight_compressed=compaction.compressed,
+                )
 
     _persist_turn_start(agent, messages, conversation_history, pending_cli_message)
 

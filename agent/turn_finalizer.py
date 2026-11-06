@@ -629,6 +629,39 @@ def _mirror_turn_to_memory(
             )
 
 
+def _close_pending_tool_result(agent, final_response, interrupted, messages, failed, _turn_exit_reason):
+    """Give an unanswered tool tail the same visible failure close as before."""
+    if (
+        not final_response
+        and not interrupted
+        and messages
+        and isinstance(messages[-1], dict)
+        and messages[-1].get("role") == "tool"
+        and not (getattr(agent, "_current_streamed_assistant_text", "") or "").strip()
+    ):
+        _turn_exit_reason = "pending_tool_result"
+        failed = True
+        final_response = ""
+        try:
+            if agent._turn_completion_explainer_enabled():
+                final_response = (
+                    agent._format_turn_completion_explanation("pending_tool_result", None) or ""
+                )
+        except Exception:
+            logging.getLogger("agent.conversation_loop").exception(
+                "pending tool completion explanation failed"
+            )
+            final_response = ""
+        if not final_response:
+            # The turn-completion explainer opt-out must not reintroduce the silent stop.
+            final_response = (
+                "No reply: the turn stopped while a tool result was still pending. "
+                "Send `continue` to let the model summarize."
+            )
+
+    return final_response, failed, _turn_exit_reason
+
+
 def finalize_turn(
     agent, *, final_response, api_call_count, interrupted, failed, messages, conversation_history,
     effective_task_id, turn_id, user_message, original_user_message, _should_review_memory,
@@ -650,39 +683,9 @@ def finalize_turn(
         logger=logger,
     )
 
-    # A non-interrupted turn that fell out of the loop after a tool result, with no
-    # follow-up assistant text, is the Desktop/TUI "silent stop" (#55316, #54756): the
-    # composer returns to ready (or keeps spinning) while the durable transcript ends
-    # at a raw ``tool`` row — the user never learns the turn stopped, and the next user
-    # message lands as ``tool → user``. Interrupted tails keep
-    # ``close_interrupted_tool_sequence``; this is the non-interrupt sibling. Mint the
-    # exit reason, fail the turn, and synthesize the visible close so the tail close in
-    # ``_persist_step`` persists an assistant row. A turn that already streamed text is
-    # left alone: ``_recover_final_from_stream`` owns that recovery (#95514).
-    if (
-        not final_response
-        and not interrupted
-        and messages
-        and isinstance(messages[-1], dict)
-        and messages[-1].get("role") == "tool"
-        and not (getattr(agent, "_current_streamed_assistant_text", "") or "").strip()
-    ):
-        _turn_exit_reason = "pending_tool_result"
-        failed = True
-        final_response = ""
-        try:
-            if agent._turn_completion_explainer_enabled():
-                final_response = (
-                    agent._format_turn_completion_explanation("pending_tool_result", None) or ""
-                )
-        except Exception:
-            final_response = ""
-        if not final_response:
-            # The turn-completion explainer opt-out must not reintroduce the silent stop.
-            final_response = (
-                "No reply: the turn stopped while a tool result was still pending. "
-                "Send `continue` to let the model summarize."
-            )
+    final_response, failed, _turn_exit_reason = _close_pending_tool_result(
+        agent, final_response, interrupted, messages, failed, _turn_exit_reason
+    )
 
     # Loop exits that are failures in their own right (outer-loop error cap, shutdown, context
     # that could not be shrunk) carry the verdict the UI descriptor needs; a bare
@@ -692,6 +695,12 @@ def finalize_turn(
     _exit_failure = None if interrupted else exit_reason_failure(_turn_exit_reason)
     if _exit_failure is not None and _exit_failure.fails_turn:
         failed = True
+
+    # Early cooperative cancellation has no provider text. Return honest terminal
+    # status, without presenting the scan cancellation as a provenance/storage error.
+    if interrupted and not final_response:
+        from agent.interrupt_control import interrupt_skip_wording
+        final_response = "Operation interrupted: " + interrupt_skip_wording(agent) + "."
 
     # Sibling producers (``turn_recovery``, ``codex_runtime``) return ``completed=False`` for an
     # interrupted turn; the gateway stream gate and the API run status rely on that contract.
@@ -711,7 +720,8 @@ def finalize_turn(
     # The model has answered (or the loop gave up): a title upgrade held back because it shares a
     # self-hosted endpoint with the main request (#117296) may go out now.
     from agent.turn_context import start_deferred_title_upgrade
-    _guarded_cleanup("start_deferred_title_upgrade", lambda: start_deferred_title_upgrade(agent), _cleanup_errors, logger)
+    if not interrupted:
+        _guarded_cleanup("start_deferred_title_upgrade", lambda: start_deferred_title_upgrade(agent), _cleanup_errors, logger)
     # ``user_message`` may be a multimodal list of parts; the trajectory format wants a string.
     _guarded_cleanup(
         "save_trajectory",
@@ -890,7 +900,7 @@ def finalize_turn(
     # Opt-in (compression.prepare_ahead): near the trigger, write the next compaction summary
     # between turns. No-op otherwise; never raises. Not after a vetoed turn (no model calls).
     from agent.prepared_compaction import maybe_prepare
-    if not vetoed:
+    if not vetoed and not interrupted:
         maybe_prepare(agent, messages, origin="turn-end")
 
     # Memory provider on_session_end()/shutdown_all() are NOT called here:

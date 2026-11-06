@@ -8,15 +8,12 @@ providers (Gemini, Claude) react to by hallucinating a continuation of the
 user's message before transitioning into the assistant persona.
 
 ``finalize_turn`` closes the tool-call sequence on interrupt by appending a
-synthetic ``assistant`` message before persistence. ``final_response`` is
-typically empty on an interrupt, so the placeholder text is used rather than
-an empty-content assistant turn. The synthetic row is hidden from the user
-(``content=""`` + ``display_kind="hidden"``); the placeholder lives in the
-``api_content`` sidecar, substituted at API-build time for the LLM.
+visible ``assistant`` diagnostic before persistence. The returned response and
+persisted content agree; interrupted metadata preserves the terminal state.
+Empty-content sanitizer placeholder behavior is tested separately.
 """
 
 
-from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
 from agent.turn_finalizer import finalize_turn
 
 
@@ -149,23 +146,30 @@ def _assert_no_tool_then_user(messages):
             )
 
 
-def test_interrupt_after_tool_closes_sequence_with_placeholder():
+def test_interrupt_after_tool_closes_sequence_with_visible_diagnostic():
     agent = _StubAgent()
     messages = _interrupted_tool_tail()
-    _finalize(agent, messages, interrupted=True, final_response=None)
+    result = _finalize(agent, messages, interrupted=True, final_response=None)
 
-    # Tail must now be an assistant message, not a raw tool result.
+    assert result["final_response"] == "Operation interrupted: Turn interrupted."
+    assert result["interrupted"] is True
+    assert result["completed"] is False
+    assert result["failed"] is False
     assert messages[-1]["role"] == "assistant"
-    # Hidden from user: content intentionally empty, display_kind marks it
-    # hidden; placeholder lives in api_content (LLM sees it via sidecar).
-    assert messages[-1]["content"] == ""
-    assert messages[-1]["display_kind"] == "hidden"
-    assert messages[-1]["api_content"] == _INTERRUPTED_PLACEHOLDER
+    assert messages[-1]["content"] == result["final_response"]
+    assert messages[-1]["content"].strip()
+    assert messages[-1].get("display_kind") != "hidden"
+    assert "api_content" not in messages[-1]
+    assert messages[-1]["display_metadata"]["interrupted"] is True
 
     # The persisted snapshot is alternation-safe: appending a new user
     # message would follow an assistant, not an orphan tool.
     assert agent.persisted_messages is not None
-    assert agent.persisted_messages[-1]["role"] == "assistant"
+    assert agent.persisted_messages[-1] == messages[-1]
+    assert agent.persisted_messages[-1]["content"] == result["final_response"]
+    assert [m["role"] for m in agent.persisted_messages] == [
+        "user", "assistant", "tool", "assistant",
+    ]
     follow_on = agent.persisted_messages + [{"role": "user", "content": "forget it"}]
     _assert_no_tool_then_user(follow_on)
 
