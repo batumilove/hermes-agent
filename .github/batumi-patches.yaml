@@ -89,6 +89,18 @@ patches:
   - scripts/run_tests.sh tests/gateway/test_manual_compression_route_custody.py tests/gateway/test_compress_command.py tests/gateway/test_routing_save_fast_path.py
   retirement: Remove when upstream manual compression uses equivalent durable
     route ownership and preserves a newer binding during child persistence.
+- id: logging-default-setup-fast-path
+  kind: core
+  rationale: Repeated per-agent default logging setup must avoid filesystem and configuration I/O
+    once that home's static or profile-routed default writers exist, while preserving new-home
+    adoption and explicit component or policy setup.
+  paths:
+  - hermes_logging.py
+  - tests/test_hermes_logging.py
+  tests:
+  - scripts/run_tests.sh tests/test_hermes_logging.py
+  retirement: Remove when upstream provides equivalent home-aware default setup without per-turn
+    directory or configuration I/O and preserves profile routing and explicit setup behavior.
 - id: desktop-reconnect-durable-history
   kind: core
   rationale: Recover the persisted reply after reconnect retires a confirmed live
