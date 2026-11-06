@@ -2634,6 +2634,8 @@ patches:
     Linux and macOS on x86_64 and ARM64, retaining historical platform readers.
     Keep contributor, skill and translated installation guidance aligned with that
     support policy while labelling upstream Windows and Termux references.
+    Run macOS installation coverage on GitHub-hosted runners without requiring
+    a Blacksmith installation for this fork.
   paths:
   - .github/batumi-patches.yaml
   - .github/workflows/bootstrap-installer-build.yml
@@ -2642,6 +2644,7 @@ patches:
   - .github/workflows/desktop-bundled-release.yml
   - .github/workflows/install-e2e-windows-run.yml
   - .github/workflows/install-e2e.yml
+  - .github/workflows/install-e2e-macos-run.yml
   - .github/workflows/nix.yml
   - .github/workflows/pm-bundle.yml
   - .github/workflows/stable-release.yml
