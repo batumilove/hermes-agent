@@ -1637,6 +1637,14 @@ def _codex_app_server_turn(agent: Any, s: Any) -> Optional[dict[str, Any]]:
     return None
 
 
+def _refresh_turn_credentials(agent):
+    """Adopt credential edits without failing an otherwise runnable turn."""
+    try:
+        agent._try_refresh_env_client_credentials()
+    except Exception:
+        logger.debug("per-turn env credential refresh failed", exc_info=True)
+
+
 def _run_conversation_turn(
     agent,
     user_message: Any,
@@ -1677,10 +1685,7 @@ def _run_conversation_turn(
 
     # Adopt ~/.hermes/.env credential/base-url edits made since the last turn — a
     # Settings save updates .env, not this worker's client (#67821). No-op if unchanged.
-    try:
-        agent._try_refresh_env_client_credentials()
-    except Exception:
-        logger.debug("per-turn env credential refresh failed", exc_info=True)
+    _refresh_turn_credentials(agent)
 
     # A loaded ``hold_stream`` transform in this profile: the user sees only its rewritten final, made
     # by the transforms live now (a plugin reload mid-turn cannot drop them before the final). Set
@@ -1714,7 +1719,8 @@ def _run_conversation_turn(
     # Voice turns may run on auxiliary.voice_chat: bound after the prompt/row/compaction were settled
     # against the main model, undone in finalize_turn (and run_conversation's finally on early exits).
     from agent.voice_turn_route import begin_voice_turn_route
-    _ctx.active_system_prompt = begin_voice_turn_route(agent, _ctx.messages, _ctx.active_system_prompt)
+    if not agent._interrupt_requested:
+        _ctx.active_system_prompt = begin_voice_turn_route(agent, _ctx.messages, _ctx.active_system_prompt)
 
     # Per-turn agent state (the gateway caches agents across turns, so none of this may
     # leak into the next message): interim-commentary dedup spans the whole turn but not
