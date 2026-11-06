@@ -88,13 +88,15 @@ contracts:
   - tests/hermes_state/test_fts_sanitizer.py
   - tests/hermes_state/test_message_lineage_contracts.py
 - id: plugins
-  rationale: Preserve plugin discovery, lifecycle hooks, and skill exposure.
+  rationale: Preserve plugin discovery, lifecycle hooks, profile-owned runtime roles, isolated host context, and skill exposure.
   tests:
   - tests/hermes_cli/test_plugins_module_eviction.py
   - tests/hermes_cli/test_plugins.py
   - tests/tools/test_plugin_skills.py
   - tests/tools/test_environment_registry.py
-  - tests/plugins/test_provider_telemetry_config.py
+  - tests/hermes_cli/test_plugin_runtime_role.py
+  - tests/hermes_cli/test_plugin_role_registration_ordering.py
+  - tests/hermes_cli/test_plugin_host_context_properties.py
   - tests/e2e/core/test_policy_skill_fixtures.py
 - id: honcho
   rationale: Preserve deterministic HTTP connection cleanup for memory operations.

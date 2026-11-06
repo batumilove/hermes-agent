@@ -1047,6 +1047,7 @@ patches:
   - tests/scripts/test_upgrade_source_checkout.py
   - tests/scripts/test_code_health_cli.py
   - docs/fork-patch-audit-2026-11-05.md
+  - docs/fork-delta-completion-2026-11-06.md
   tests:
   - scripts/run_tests.sh tests/scripts/test_check_fork_delta.py tests/scripts/test_ci_workflow.py tests/scripts/test_install_batumi_components.py
     tests/scripts/test_upstream_sync_workflow.py tests/test_hermes_ops_pull_budget_pin.py tests/scripts/test_ops_pull_budget_manifest.py
@@ -1646,33 +1647,28 @@ patches:
   retirement: Remove when upstream isolates overlapping Relay scope lifetimes, preserves owner-loop execution
     for nested synchronous LLM calls and streams, and passes the same real-binding lifecycle contracts.
 - id: provider-telemetry-runtime-ownership
-  kind: operations
-  rationale: Keep platform health gauges free of mutable ghost-series labels and make provider telemetry
-    writer ownership depend on the runtime role, with a repository-owned plugin candidate and deterministic
-    clean-runner tests. Resolve metrics_file through profile configuration on each invocation; bound pending
-    records and metric-series cardinality.
+  kind: compatibility
+  rationale: Retain stable platform-health gauges and the generic profile-owned runtime-role and
+    discovery-order contracts, including scalar context properties across process isolation. The provider collector, configuration reader and consumer tests live
+    in batumilove/hermes-provider-telemetry. The legacy writer-capability property remains a
+    compatibility surface for installed plugins; settings and the legacy config-key declaration belong to the external manifest.
   paths:
   - agent/monitoring/gateway_health.py
-  - evidence/README.md
-  - evidence/provider_telemetry_fixed.py
-  - evidence/provider_telemetry_writer_ownership.patch
-  - evidence/role_registration_ordering.md
   - tests/hermes_cli/test_plugin_role_registration_ordering.py
   - tests/hermes_cli/test_plugin_runtime_role.py
-  - tests/monitoring/monitoring_test.evidence.txt
-  - tests/monitoring/test_gateway_health.evidence.txt
   - tests/monitoring/test_gateway_health.py
-  - tests/plugins/test_provider_telemetry_plugin.py
   - hermes_cli/plugins.py
   - hermes_cli/plugins_roles.py
-  - hermes_cli/config_defaults.py
-  - tests/plugins/test_provider_telemetry_config.py
+  - hermes_cli/plugin_host.py
+  - hermes_cli/plugin_host_child.py
+  - tests/hermes_cli/test_plugin_host_context_properties.py
+  - website/docs/developer-guide/plugins/index.md
   tests:
   - scripts/run_tests.sh tests/monitoring/test_gateway_health.py tests/hermes_cli/test_plugin_runtime_role.py
-    tests/hermes_cli/test_plugin_role_registration_ordering.py tests/plugins/test_provider_telemetry_plugin.py
-  - scripts/run_tests.sh tests/plugins/test_provider_telemetry_config.py
-  retirement: Remove when upstream provides stable platform-health series and equivalent runtime-role-gated
-    provider telemetry ownership with hermetic tests.
+    tests/hermes_cli/test_plugin_role_registration_ordering.py tests/hermes_cli/test_plugin_host_context_properties.py
+  retirement: Remove the generic host delta when upstream preserves stable health series, profile-owned
+    runtime-role detection, scalar host-property transport and discovery transitions. Remove the legacy capability only after installed
+    external consumers migrate; collector lifecycle and export behavior are owned by the external plugin.
 - id: cron-trigger-provenance
   kind: core
   rationale: Persist exact cron trigger origin, due slot, and trigger time so natural scheduler runs cannot
@@ -1770,7 +1766,8 @@ patches:
   rationale: Require current-turn execution evidence before preserving fresh external side-effect claims
     in final responses, compute trusted verdicts before framework decoration, and preserve their tool
     identity across restart, resume, and historical fork database recovery while leaving descriptive parity
-    headings unchanged.
+    headings unchanged. The delivery-only check follows every optional output transform; the first-wins
+    transform hook cannot replace this mandatory final guard without weakening its behavior.
   paths:
   - agent/tool_executor_display.py
   - agent/side_effect_evidence.py
@@ -1800,8 +1797,11 @@ patches:
     tests/agent/test_tool_batch_segmentation.py tests/hermes_state/test_hermes_state.py
   - scripts/run_tests.sh tests/hermes_cli/test_session_schema_history.py tests/hermes_cli/test_session_recovery_fork_layouts.py
   - scripts/run_tests.sh tests/hermes_state/test_session_id_recognition_recovery.py
-  retirement: Remove when upstream provides equivalent fail-closed current-turn side-effect evidence validation,
-    trusted pre-decoration verdict persistence, and resume-safe tool identity.
+  - scripts/run_tests.sh tests/agent/test_turn_finalizer_final_response_persistence.py
+  retirement: Remove when upstream provides equivalent fail-closed current-turn side-effect evidence validation
+    after all optional output rewrites, trusted pre-decoration verdict persistence, and resume-safe tool
+    identity. A plugin extraction must first prove ordered final validation, replay isolation, overlapping
+    turns and owning-profile behavior; an ordinary first-wins transform does not meet that gate.
 - id: provider-fallback-lifecycle
   kind: core
   rationale: Expose provider fallback transitions to edge telemetry and re-arm exhaustion reporting when
