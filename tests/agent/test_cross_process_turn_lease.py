@@ -652,8 +652,23 @@ def test_late_refresh_miss_after_release_does_not_interrupt(monkeypatch):
 
     agent.interrupt = track_interrupt
 
+    # Renewal may return after deactivation, but must cease before row release.
+    from agent.turn_facade_lease import DurableTurnLease
+
+    refresh_entered = threading.Event()
+    refresh_finished = threading.Event()
+    original_stop = DurableTurnLease.stop_refresher
+
+    def stop_and_unblock(lease):
+        original_stop(lease)
+        released.set()
+
+    monkeypatch.setattr(DurableTurnLease, "stop_refresher", stop_and_unblock)
+
     def refresh_after_release(session_id, holder, **kwargs):
-        released.wait(timeout=2.0)
+        refresh_entered.set()
+        assert released.wait(timeout=2.0)
+        refresh_finished.set()
         return False
 
     db.refresh_session_turn_lease = refresh_after_release
@@ -661,13 +676,13 @@ def test_late_refresh_miss_after_release_does_not_interrupt(monkeypatch):
     orig_release = db.release_session_turn_lease
 
     def release_and_signal(session_id, holder):
+        assert refresh_finished.is_set()
         orig_release(session_id, holder)
-        released.set()
 
     db.release_session_turn_lease = release_and_signal
 
     def fake_run(_agent, _message, _system, history, *_args, **_kwargs):
-        time.sleep(0.03)
+        assert refresh_entered.wait(timeout=2.0)
         return {"final_response": "ok", "messages": history, "failed": False}
 
     monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)

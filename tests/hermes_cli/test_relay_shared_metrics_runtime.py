@@ -1497,13 +1497,20 @@ def test_subagent_agent_boundary_closes_its_own_scope(
         turn_id="parent-turn",
         task_id="parent-task",
     )
-    child_agent = SimpleNamespace(
+    from agent.turn_facade import TurnFacadeMixin
+
+    class ChildAgent(TurnFacadeMixin):
+        pass
+
+    child_agent = ChildAgent()
+    child_agent.__dict__.update(
         session_id="child",
         platform="subagent",
         _parent_session_id="parent",
         _session_db=None,
         _conversation_root_id=lambda: "parent",
         _release_idle_turn_client=lambda result: None,
+        _reset_activity_labels_after_turn=lambda: None,
     )
 
     if terminal == "return":
