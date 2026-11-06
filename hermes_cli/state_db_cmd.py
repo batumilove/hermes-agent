@@ -107,6 +107,12 @@ def register_cli(subparsers) -> None:
     )
     parser.set_defaults(func=cmd_state_db, _state_db_parser=parser)
     actions = parser.add_subparsers(dest="state_db_action")
+    from hermes_cli.insights_metadata_read import register_cli as register_insights
+
+    register_insights(actions)
+    from hermes_cli.insights_refresh_stage import register_cli as register_refresh
+
+    register_refresh(actions)
     query = actions.add_parser("query", help="Execute one read-only SQL statement")
     query.add_argument("--sql", required=True, help="SQL statement to execute")
     query.add_argument(
