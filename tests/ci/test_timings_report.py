@@ -12,6 +12,8 @@ import importlib.util
 from datetime import datetime, timezone, UTC
 from pathlib import Path
 
+import pytest
+
 _PATH = Path(__file__).resolve().parents[2] / "scripts" / "ci" / "timings_report.py"
 _spec = importlib.util.spec_from_file_location("timings_report", _PATH)
 if _spec is None or _spec.loader is None:
@@ -51,6 +53,35 @@ def _result(statuses: list[dict]) -> dict:
     results = statuses[0]["results"]
     assert len(results) == 1
     return results[0]
+
+
+def test_collect_timings_preserves_actual_head_branch(monkeypatch):
+    def api(path, _token, params=None, list_key=None):
+        if path.endswith("/actions/runs/123"):
+            return {"created_at": "2026-11-06T00:00:00Z", "head_branch": "batumi/live", "event": "push"}
+        if list_key in {"jobs", "workflow_runs"}:
+            return []
+        raise AssertionError(path)
+
+    monkeypatch.setattr(_mod, "api_get", api)
+    result = _mod.collect_timings("test-token", "batumilove/hermes-agent", "123", "a" * 40)
+    assert result["head_branch"] == "batumi/live"
+
+
+@pytest.mark.parametrize("branch,label", [
+    ("batumi/live", "batumi/live"),
+    ("<branch>", "&lt;branch&gt;"),
+    (None, "unknown branch"),
+])
+def test_html_baseline_labels_actual_branch_or_unknown(branch, label):
+    current = _timings([_job("tests", 60)])
+    baseline = _timings([_job("tests", 50)])
+    baseline["head_sha"] = "a" * 40
+    if branch is not None:
+        baseline["head_branch"] = branch
+    html = _mod.generate_html(current, baseline)
+    assert f"Baseline: <code>aaaaaaa</code> ({label})" in html
+    assert "Baseline: <code>aaaaaaa</code> (main)" not in html
 
 
 def test_no_baseline_is_debug():

@@ -5,6 +5,17 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: ci-timing-baseline-provenance
+  kind: operations
+  rationale: Preserve and HTML-escape the timing baseline's actual source branch instead of labeling
+    every baseline as main, including trusted default-branch caches produced from batumi/live.
+  paths:
+  - scripts/ci/timings_report.py
+  - tests/ci/test_timings_report.py
+  tests:
+  - scripts/run_tests.sh tests/ci/test_timings_report.py tests/scripts/test_ci_cache_trust.py
+  retirement: Remove when upstream reports actual baseline branch provenance without changing cache
+    trust or treating unknown legacy provenance as main.
 - id: cron-strict-topic-recovery
   kind: core
   rationale: Preserve explicitly scheduled Telegram destinations through durable reconnect
