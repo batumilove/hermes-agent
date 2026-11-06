@@ -31,6 +31,36 @@ class TurnFacadeMixin:
         title_user_message: Optional[str]=None,
         prelude: Optional[Generator]=None,
     ) -> dict[str, Any]:
+        """Fence every post-acquisition operation, including identity initialization."""
+        import threading
+        lock = self.__dict__.setdefault("_turn_invocation_lock", threading.Lock())
+        if not lock.acquire(blocking=False):
+            raise RuntimeError("conversation invocation already active")
+        try:
+            if getattr(self, "_turn_quarantine", None) is not None:
+                raise RuntimeError("conversation invocation quarantined; explicit cessation recovery required")
+            return self._run_owned_conversation(
+                user_message, system_message, conversation_history, task_id,
+                stream_callback, persist_user_message, persist_user_timestamp,
+                persist_user_display_kind, persist_user_display_metadata,
+                persist_user_platform_id, moa_config, turn_author, relay_metadata,
+                title_user_message, prelude,
+            )
+        finally:
+            lock.release()
+
+    def _run_owned_conversation(
+        self, user_message: Any, system_message: str | None=None,
+        conversation_history: list[dict[str, Any]] | None=None, task_id: str | None=None,
+        stream_callback: Optional[callable]=None, persist_user_message: Optional[Any]=None,
+        persist_user_timestamp: Optional[float]=None, persist_user_display_kind: Optional[str]=None,
+        persist_user_display_metadata: Optional[dict[str, Any]]=None,
+        persist_user_platform_id: Optional[str]=None, moa_config: Optional[dict[str, Any]]=None,
+        turn_author: Optional[dict[str, Any]] = None,
+        relay_metadata: Optional[dict[str, Any]] = None,
+        title_user_message: Optional[str]=None,
+        prelude: Optional[Generator]=None,
+    ) -> dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         # A review shares this session_id for cache parity: fence review startup or interrupt
         # an admitted request and await its exit before opening live-turn instrumentation.
@@ -58,12 +88,6 @@ class TurnFacadeMixin:
 
         import threading
         import sys
-        invocation_lock = self.__dict__.setdefault("_turn_invocation_lock", threading.Lock())
-        if not invocation_lock.acquire(blocking=False):
-            raise RuntimeError("conversation invocation already active")
-        if getattr(self, "_turn_quarantine", None) is not None:
-            invocation_lock.release()
-            raise RuntimeError("conversation invocation quarantined; explicit cessation recovery required")
         owned_tid = None
         primary_error = None
         effective_task_id = task_id or str(uuid.uuid4())
@@ -242,8 +266,18 @@ class TurnFacadeMixin:
                         cleanup(lambda: set_interrupt(True, owned_tid))
                     cleanup_errors.append(RuntimeError("worker cessation unconfirmed; invocation quarantined"))
                 else:
-                    cleanup(lease.clear_interrupt)
+                    ownership_errors = len(cleanup_errors)
                     cleanup(lease.release)
+                    # Clear cancellation only after holder cleanup has returned successfully.
+                    if len(cleanup_errors) == ownership_errors:
+                        cleanup(lease.clear_interrupt)
+                    if len(cleanup_errors) != ownership_errors:
+                        ceased = False
+                        self._turn_quarantine = {"lease": lease, "owned_tid": owned_tid,
+                                                 "reason": "ownership cleanup unconfirmed"}
+                        if owned_tid is not None:
+                            from tools.interrupt import set_interrupt
+                            cleanup(lambda: set_interrupt(True, owned_tid))
             # Only this admitted invocation with confirmed cessation may clear its token.
             if ceased and owned_tid is not None and getattr(self, "_execution_thread_id", None) == owned_tid:
                 from tools.interrupt import set_interrupt
@@ -260,7 +294,6 @@ class TurnFacadeMixin:
             if affinity_token is not None:
                 cleanup(lambda: reset_affinity_scope(affinity_token))
             cleanup(_review_queue.note_turn_finished)
-            invocation_lock.release()
             if cleanup_errors:
                 if primary_error is not None:
                     for error in cleanup_errors:
@@ -288,8 +321,8 @@ class TurnFacadeMixin:
             lease.stop_refresher()
             if lease.join_threads() is not True:
                 raise RuntimeError("worker cessation unconfirmed; invocation remains quarantined")
-            lease.clear_interrupt()
             lease.release()
+            lease.clear_interrupt()
             if tid is not None:
                 set_interrupt(False, tid)
                 if getattr(self, "_execution_thread_id", None) == tid:

@@ -5,6 +5,23 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: lcm-owned-cancellation-and-timer-retention
+  kind: core
+  rationale: Preserve invocation-local cancellation from early LCM preflight through terminal cleanup; retain cancelled timer workers and quarantine unresolved ownership instead of admitting a successor.
+  paths:
+  - agent/conversation_loop.py
+  - agent/periodic_scheduler.py
+  - agent/turn_context.py
+  - agent/turn_context_compaction.py
+  - agent/turn_facade.py
+  - agent/turn_facade_lease.py
+  - agent/turn_finalizer.py
+  - tools/interrupt.py
+  - tests/agent/test_periodic_scheduler_retention.py
+  - tests/agent/test_turn_invocation_cleanup.py
+  tests:
+  - scripts/run_tests.sh tests/agent/test_turn_invocation_cleanup.py tests/agent/test_turn_facade_lease.py tests/agent/test_periodic_scheduler_retention.py tests/agent/test_periodic_scheduler.py
+  retirement: Remove when upstream preserves owned early-preflight stop/watchdog cancellation, confirmed timer cessation, unconditional invocation unlock and explicit quarantine on holder cleanup failure with equivalent fault regressions; requires the matching plugin scan-cancellation change.
 - id: bounded-config-explanation
   kind: core
   rationale: Explain one non-secret approval boolean without config bootstrap or unrelated value expansion.
