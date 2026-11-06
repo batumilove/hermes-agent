@@ -2889,6 +2889,8 @@ patches:
   - scripts/releases/r2.py
   - scripts/bundles/release_artifacts.py
   - CONTRIBUTING.md
+  - website/docs/developer-guide/install-ci.md
+  - website/docs/developer-guide/contributing.md
   - skills/autonomous-ai-agents/hermes-agent/references/contributor-guide.md
   - skills/autonomous-ai-agents/hermes-agent/references/troubleshooting.md
   - skills/autonomous-ai-agents/hermes-agent/references/windows-quirks.md
