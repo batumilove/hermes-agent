@@ -104,11 +104,26 @@ class DurableTurnLease:
 
     deactivate_after_liveness_abort = stop_refresher
 
-    def join_threads(self, timeout: float = 1.0) -> None:
-        """Cancel both timers; ``wait=timeout`` mirrors the old ``thread.join(timeout)`` so an
-        in-flight tick finishes before ``clear_interrupt`` runs."""
+    def join_threads(self, timeout: float = 1.0) -> bool:
+        """True only when every timer is cancelled and its callback has ceased.
+
+        Retain handles/watchdog on timeout or error for explicit quarantine recovery.
+        None from a legacy handle is NOT cessation confirmation.
+        """
+        ceased = True
+        errors = []
         for handle in self.timer_handles:
-            handle.cancel(wait=timeout)
+            try:
+                if handle.cancel(wait=timeout) is not True:
+                    ceased = False
+            except BaseException as exc:
+                errors.append(exc)
+                ceased = False
+        if errors:
+            raise errors[0]
+        if ceased:
+            self.timer_handles, self.watchdog = [], None
+        return ceased
 
     def release(self) -> None:
         """Release the row and drop the agent's holder attrs (only if they still name this lease)."""

@@ -693,6 +693,12 @@ def finalize_turn(
     if _exit_failure is not None and _exit_failure.fails_turn:
         failed = True
 
+    # Early cooperative cancellation has no provider text. Return honest terminal
+    # status, without presenting the scan cancellation as a provenance/storage error.
+    if interrupted and not final_response:
+        from agent.interrupt_control import interrupt_skip_wording
+        final_response = "Operation interrupted: " + interrupt_skip_wording(agent) + "."
+
     # Sibling producers (``turn_recovery``, ``codex_runtime``) return ``completed=False`` for an
     # interrupted turn; the gateway stream gate and the API run status rely on that contract.
     completed = (
@@ -711,7 +717,8 @@ def finalize_turn(
     # The model has answered (or the loop gave up): a title upgrade held back because it shares a
     # self-hosted endpoint with the main request (#117296) may go out now.
     from agent.turn_context import start_deferred_title_upgrade
-    _guarded_cleanup("start_deferred_title_upgrade", lambda: start_deferred_title_upgrade(agent), _cleanup_errors, logger)
+    if not interrupted:
+        _guarded_cleanup("start_deferred_title_upgrade", lambda: start_deferred_title_upgrade(agent), _cleanup_errors, logger)
     # ``user_message`` may be a multimodal list of parts; the trajectory format wants a string.
     _guarded_cleanup(
         "save_trajectory",
@@ -890,7 +897,7 @@ def finalize_turn(
     # Opt-in (compression.prepare_ahead): near the trigger, write the next compaction summary
     # between turns. No-op otherwise; never raises. Not after a vetoed turn (no model calls).
     from agent.prepared_compaction import maybe_prepare
-    if not vetoed:
+    if not vetoed and not interrupted:
         maybe_prepare(agent, messages, origin="turn-end")
 
     # Memory provider on_session_end()/shutdown_all() are NOT called here:
