@@ -270,8 +270,10 @@ patches:
 - id: native-windows-pinned-launcher-publication
   kind: core
   rationale: Preserve both native CLI names on Windows using PM's pinned standalone supplier and staged per-destination publication; fail dependency sync when mandatory launcher publication fails. Required by the original old-gateway update journey; no diagnostic capture ships.
+    Refuse invalid private supplier modules and nested links before reuse, and discard partial imports on failure or cancellation while preserving cancellation propagation.
   paths:
   - hermes_cli/_launchers.py
+  - hermes_cli/_launcher_supplier.py
   - hermes_cli/venv_sync.py
   - tests/conftest.py
   - tests/fixtures/README-native-supplier.md
@@ -289,9 +291,11 @@ patches:
   - tests/tools/test_bot_delivery_install_launcher.py
   - tests/test_native_supplier_remediation.py
   - tests/hermes_cli/test_native_launcher_transaction.py
+  - tests/hermes_cli/test_store_launcher_supplier.py
   - tests/native_supplier.py
   - tests/test_native_supplier_fixture.py
   tests:
+  - scripts/run_tests.sh tests/hermes_cli/test_store_launcher_supplier.py tests/pm/test_python_bootstrap.py
   - python -m pytest tests/test_native_supplier_fixture.py tests/hermes_cli/test_native_launcher_transaction.py tests/hermes_cli/test_source_launcher_publication.py tests/hermes_cli/test_hermes_home_shared_launchers.py
   retirement: Remove when upstream provides equivalent pinned native pair publication and fail-closed receipts. Unit tests require the ordinary repository pytest environment; injected Windows PE generation is not native execution. Complete PM integration requires Python 3.14 and its full cached dependency set.
 - id: isolated-upgrade-empty-service-discovery
