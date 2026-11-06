@@ -5,6 +5,17 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: gateway-scoped-plugin-role
+  kind: core
+  rationale: Declare gateway capability on each served profile manager before discovery and authority initialization while refusing unserved reloads and preserving passive supervisor guards.
+  paths:
+  - gateway/run_adapters.py
+  - gateway/run_runtime.py
+  - gateway/run_plugin_rewire.py
+  - tests/gateway/test_plugin_runtime_role.py
+  tests:
+  - scripts/run_tests.sh tests/gateway/test_plugin_runtime_role.py
+  retirement: Remove when upstream declares gateway role across served-profile startup and reload paths with equivalent passive and unserved refusal coverage.
 - id: watchdog-early-thread-attribution
   kind: core
   rationale: Attribute pre-prompt watchdog diagnostics to the admitted scheduling owner without resetting interrupt state.
