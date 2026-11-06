@@ -454,6 +454,10 @@ def _engine_preflight_maintenance(
     try:
         _wants_engine_preflight = bool(_engine_preflight(out.messages))
     except Exception as _preflight_exc:
+        from tools.interrupt import TurnInterrupted
+        if isinstance(_preflight_exc, TurnInterrupted):
+            # Keep cancellation out of the generic maintenance failure handler.
+            raise
         # A buggy engine must never break an otherwise-healthy turn.
         logger.debug(
             "should_compress_preflight raised %s; skipping "
