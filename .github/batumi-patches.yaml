@@ -101,6 +101,19 @@ patches:
   - scripts/run_tests.sh tests/test_hermes_logging.py
   retirement: Remove when upstream provides equivalent home-aware default setup without per-turn
     directory or configuration I/O and preserves profile routing and explicit setup behavior.
+- id: delegation-dispatch-persistence-refusal
+  kind: core
+  rationale: Fail closed before submitting background work when dispatch persistence or executor
+    preparation fails, release reserved capacity, and keep retention pruning from vetoing an
+    already committed dispatch. Worker cleanup must use its bound ledger rather than local SQLite.
+  paths:
+  - tools/async_delegation.py
+  - tests/tools/test_async_delegation_dispatch_persistence.py
+  tests:
+  - scripts/run_tests.sh tests/tools/test_async_delegation_dispatch_persistence.py
+    tests/tools/test_async_delegation.py tests/tools/test_async_delegation_worker_routing.py
+  retirement: Remove when upstream provides equivalent pre-submission failure containment, slot
+    release, best-effort retention, and worker-owned ledger cleanup for single and batch dispatch.
 - id: desktop-reconnect-durable-history
   kind: core
   rationale: Recover the persisted reply after reconnect retires a confirmed live
