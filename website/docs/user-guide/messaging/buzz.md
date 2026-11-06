@@ -142,8 +142,16 @@ mismatches are rejected.
 The relay's own HTTPS origin is trusted automatically. If a community stores
 media on another public origin, add its exact `host` or `host:port` to
 `attachment_hosts` under `gateway.platforms.buzz.extra`. Non-default ports
-must be listed explicitly. Protected media that requires authenticated
-retrieval through the Buzz CLI is not handled by this native public-URL path.
+must be listed explicitly. Canonical relay media objects use a short-lived
+Blossom read token and the configured owner-attestation header when present.
+Third-party attachment hosts receive neither credential. Relay object URLs
+with query strings are refused before signing; configured third-party hosts
+can use query strings for their own download links.
+
+An observed quoted parent can contribute its attachments when it belongs to
+the same conversation and both senders remain authorized. Quoted text alone
+does not authorize a download. Current and quoted attachments share the same
+file-count and byte limits; expired or unavailable parent metadata is omitted.
 
 ## Run the gateway
 
