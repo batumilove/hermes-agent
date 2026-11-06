@@ -1670,7 +1670,7 @@ patches:
 - id: provider-telemetry-runtime-ownership
   kind: compatibility
   rationale: Retain stable platform-health gauges and the generic profile-owned runtime-role and
-    discovery-order contracts, including scalar context properties across process isolation. The provider collector, configuration reader and consumer tests live
+    discovery-order contracts, including secondary gateway startup and scalar context properties across process isolation. The provider collector, configuration reader and consumer tests live
     in batumilove/hermes-provider-telemetry. The legacy writer-capability property remains a
     compatibility surface for installed plugins; settings and the legacy config-key declaration belong to the external manifest.
   paths:
@@ -1683,10 +1683,13 @@ patches:
   - hermes_cli/plugin_host.py
   - hermes_cli/plugin_host_child.py
   - tests/hermes_cli/test_plugin_host_context_properties.py
+  - gateway/run_adapters.py
+  - tests/gateway/test_secondary_plugin_runtime_role.py
   - website/docs/developer-guide/plugins/index.md
   tests:
   - scripts/run_tests.sh tests/monitoring/test_gateway_health.py tests/hermes_cli/test_plugin_runtime_role.py
     tests/hermes_cli/test_plugin_role_registration_ordering.py tests/hermes_cli/test_plugin_host_context_properties.py
+    tests/gateway/test_secondary_plugin_runtime_role.py
   retirement: Remove the generic host delta when upstream preserves stable health series, profile-owned
     runtime-role detection, scalar host-property transport and discovery transitions. Remove the legacy capability only after installed
     external consumers migrate; collector lifecycle and export behavior are owned by the external plugin.
