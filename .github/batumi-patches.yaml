@@ -5,6 +5,17 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: npm-layout-canonical-path-test
+  kind: compatibility
+  rationale: Compare npm entrypoint layout under the canonical temporary root,
+    so native macOS temporary-directory spelling does not prevent the real npm
+    version probe from executing. Keep both ordinary and versioned PM layouts.
+  paths:
+  - tests-js/node-deps.test.mjs
+  tests:
+  - npm exec --workspace tests-js -- vitest run node-deps.test.mjs
+  retirement: Remove when upstream compares equivalent npm entrypoint paths by
+    canonical filesystem identity in the layout regression.
 - id: process-registry-rewrite-test-isolation
   kind: core
   rationale: Keep command-rewrite assertions scoped to the terminal job rather than unrelated supervisor subprocesses.
