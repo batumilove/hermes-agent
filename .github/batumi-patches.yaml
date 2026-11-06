@@ -5,6 +5,27 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: desktop-reconnect-durable-history
+  kind: core
+  rationale: Recover the persisted reply after reconnect retires a confirmed live
+    turn, including turns without a stream bubble. Consume recovery once and
+    retire it when a newer submit, start or terminal completion owns the view.
+    Extract the reviewed reconnect behavior from PR443 without its unrelated
+    dependency and fixture changes; retain current execution authority handling.
+  paths:
+  - apps/desktop/src/app/contrib/hooks/use-session-tile-delegate.ts
+  - apps/desktop/src/app/contrib/hooks/use-session-tile-delegate.test.ts
+  - apps/desktop/src/app/session/hooks/use-message-stream/gateway-event/message-stream.ts
+  - apps/desktop/src/app/session/hooks/use-message-stream/gateway-event/session-info.ts
+  - apps/desktop/src/app/session/hooks/use-message-stream/index.ts
+  - apps/desktop/src/app/session/hooks/use-message-stream/reconnect-durable-history.test.tsx
+  - apps/desktop/src/app/session/hooks/use-message-stream/reconnect-durable-history.fixture.json
+  - apps/desktop/src/app/session/hooks/use-prompt-actions/submit.ts
+  - apps/desktop/src/app/types.ts
+  tests:
+  - npm exec --workspace apps/desktop -- vitest run src/app/session/hooks/use-message-stream/reconnect-durable-history.test.tsx
+  retirement: Remove when upstream recovers durable replies across reconnect with
+    equivalent completion-order and newer-turn protection.
 - id: process-registry-rewrite-test-isolation
   kind: core
   rationale: Keep command-rewrite, environment, scope-routing and orphan-cleanup assertions
