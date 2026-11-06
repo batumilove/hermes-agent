@@ -159,7 +159,16 @@ def test_pending_response_does_not_mask_later_terminal_exit(
         _pending_verification_response="stale premature report",
     )
 
-    assert result["final_response"] is None
+    if interrupted:
+        assert result["final_response"] == "Operation interrupted: Turn interrupted."
+        assert result["final_response"].strip()
+        assert result["interrupted"] is True
+        assert result["failed"] is False
+        # This user-only fixture has no tool tail to close; never persist the stale report.
+        assert agent.persisted_messages == [{"role": "user", "content": "task"}]
+    else:
+        assert result["final_response"] is None
+    assert result["final_response"] != "stale premature report"
     assert result["turn_exit_reason"] == exit_reason
     assert result["completed"] is False
     assert agent._handle_max_iterations_called is False

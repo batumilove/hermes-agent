@@ -42,22 +42,26 @@ class ScheduledHandle:
 
     def __init__(self, scheduler: PeriodicScheduler, fn: Callable[[], object], interval: float):
         self._scheduler = scheduler
-        self._fn = fn
+        self._fn: Optional[Callable[[], object]] = fn
         self._interval = interval
         self._cancelled = False
         self._runner: Optional[threading.Thread] = None
         # Safe to reuse because this scheduler never overlaps runs of one handle.
-        self._context = copy_context()
+        self._context: Optional[Context] = copy_context()
 
     @property
     def cancelled(self) -> bool:
         return self._cancelled
 
-    def cancel(self, wait: Optional[float] = None) -> None:
+    def cancel(self, wait: Optional[float] = None) -> bool:
         """Stop future runs.  ``wait`` (seconds) additionally blocks until an
         in-flight run of this callback finishes — the analogue of
         ``thread.join(timeout=wait)`` on the old per-child thread."""
         self._scheduler._cancel(self, wait)
+        # Cancellation prevents dispatch under the same condition; a timed join alone
+        # is not evidence that the already-dispatched callback ceased.
+        with self._scheduler._cond:
+            return self._cancelled and (self._runner is None or not self._runner.is_alive())
 
 
 class PeriodicScheduler:
@@ -79,18 +83,25 @@ class PeriodicScheduler:
 
     def _cancel(self, handle: ScheduledHandle, wait: Optional[float]) -> None:
         with self._cond:
-            self._retire(handle)
+            handle._cancelled = True
             self._cond.notify()
             runner = handle._runner
+            if runner is None:
+                self._retire(handle)
         if wait and runner is not None and threading.current_thread() is not runner:
             runner.join(wait)
+
+    def _retire(self, handle: ScheduledHandle) -> None:
+        """Release owner references only after the body ceased (``_cond`` held)."""
+        handle._fn = None
+        handle._context = None
 
     def _dispatch(self, handle: ScheduledHandle) -> None:
         """Start ``handle``'s body on its own worker.  Called with ``_cond`` held
         so ``cancel`` can never observe a half-set runner."""
         runner = threading.Thread(
             target=self._run_callback,
-            args=(handle, handle._fn, handle._context),
+            args=(handle,),
             name=f"{_CALLBACK_THREAD_PREFIX}-{id(handle):x}",
             daemon=True,
         )
@@ -109,31 +120,28 @@ class PeriodicScheduler:
                 self._requeue(handle)
                 self._cond.notify()
 
-    @staticmethod
-    def _retire(handle: ScheduledHandle) -> None:
-        """Mark cancelled and drop the callback (``_cond`` held). The callback is usually a bound method of
-        the handle's owner, which keeps the handle: an owner -> handle -> method -> owner cycle that outlives
-        the turn and, on a quiet gateway, pins the whole agent until a full GC."""
-        handle._cancelled = True
-        handle._fn = handle._context = None
-
     def _requeue(self, handle: ScheduledHandle) -> None:
         """Push ``handle``'s next due time (``_cond`` held)."""
         heapq.heappush(self._heap, (time.monotonic() + handle._interval, next(self._seq), handle))
 
-    def _run_callback(self, handle: ScheduledHandle, fn: Callable[[], object], context: Context) -> None:
+    def _run_callback(self, handle: ScheduledHandle) -> None:
         stop = False
         try:
-            stop = context.run(fn) is False
+            # Dispatch and retirement are serialized by _cond; a running body
+            # owns these references until this worker's finally block.
+            assert handle._context is not None and handle._fn is not None
+            stop = handle._context.run(handle._fn) is False
         except Exception:
-            logger.debug("periodic callback %r raised", fn, exc_info=True)
+            logger.debug("periodic callback %r raised", handle._fn, exc_info=True)
         finally:
             with self._cond:
                 handle._runner = None
                 if stop:
-                    self._retire(handle)
+                    handle._cancelled = True
                 elif not handle._cancelled:
                     self._requeue(handle)
+                if handle._cancelled:
+                    self._retire(handle)
                 self._cond.notify()
 
     def _run(self) -> None:

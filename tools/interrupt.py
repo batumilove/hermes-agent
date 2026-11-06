@@ -127,3 +127,7 @@ def clear_current_thread_interrupt() -> None:
     this call re-sets the bit and is still observed by the executor's poll loop. Call
     directly on the executing thread."""
     set_interrupt(False)
+
+
+class TurnInterrupted(Exception):
+    """Cooperative owning-thread cancellation; never a storage/provenance failure."""
