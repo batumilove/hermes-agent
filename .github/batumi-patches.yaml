@@ -15,6 +15,27 @@ patches:
   tests:
   - scripts/run_tests.sh tests/scripts/test_osv_scanner_workflow.py tests/scripts/test_osv_container_isolation.py
   retirement: Remove when upstream separates scanner output from the checkout and applies equivalent container isolation.
+- id: desktop-reconnect-durable-history
+  kind: core
+  rationale: Recover the persisted reply after reconnect retires a confirmed live
+    turn, including turns without a stream bubble. Consume recovery once and
+    retire it when a newer submit, start or terminal completion owns the view.
+    Extract the reviewed reconnect behavior from PR443 without its unrelated
+    dependency and fixture changes; retain current execution authority handling.
+  paths:
+  - apps/desktop/src/app/contrib/hooks/use-session-tile-delegate.ts
+  - apps/desktop/src/app/contrib/hooks/use-session-tile-delegate.test.ts
+  - apps/desktop/src/app/session/hooks/use-message-stream/gateway-event/message-stream.ts
+  - apps/desktop/src/app/session/hooks/use-message-stream/gateway-event/session-info.ts
+  - apps/desktop/src/app/session/hooks/use-message-stream/index.ts
+  - apps/desktop/src/app/session/hooks/use-message-stream/reconnect-durable-history.test.tsx
+  - apps/desktop/src/app/session/hooks/use-message-stream/reconnect-durable-history.fixture.json
+  - apps/desktop/src/app/session/hooks/use-prompt-actions/submit.ts
+  - apps/desktop/src/app/types.ts
+  tests:
+  - npm exec --workspace apps/desktop -- vitest run src/app/session/hooks/use-message-stream/reconnect-durable-history.test.tsx
+  retirement: Remove when upstream recovers durable replies across reconnect with
+    equivalent completion-order and newer-turn protection.
 - id: process-registry-rewrite-test-isolation
   kind: core
   rationale: Keep command-rewrite assertions scoped to the terminal job rather than unrelated supervisor subprocesses.
@@ -2657,6 +2678,8 @@ patches:
     support policy while labelling upstream Windows and Termux references.
     Run macOS installation coverage on GitHub-hosted runners without requiring
     a Blacksmith installation for this fork.
+    Give historical pre-PM macOS installers a compatible Node runtime while
+    retaining locked current tooling for the driver and updater.
   paths:
   - .github/batumi-patches.yaml
   - .github/workflows/bootstrap-installer-build.yml
@@ -2666,6 +2689,7 @@ patches:
   - .github/workflows/install-e2e-windows-run.yml
   - .github/workflows/install-e2e.yml
   - .github/workflows/install-e2e-macos-run.yml
+  - .github/workflows/install-e2e-run.yml
   - .github/workflows/nix.yml
   - .github/workflows/pm-bundle.yml
   - .github/workflows/stable-release.yml
@@ -2712,6 +2736,8 @@ patches:
   - tests/ci/test_termux_input_archive.py
   - tests/ci/test_update_ci_routing.py
   - tests/hermes_platform/test_support.py
+  - tests/install/e2e-assets/installer-common.sh
+  - tests/scripts/install/test_source_installer_runtime.py
   - tests/hermes_cli/test_shared_metrics_harness.py
   - tests/scripts/install/test_install_clone_throttle_fallback.py
   - tests/scripts/install/test_install_diverged_rescue_ref.py
