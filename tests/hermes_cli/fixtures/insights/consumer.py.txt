@@ -1,0 +1,1683 @@
+#!/usr/bin/env python3
+"""Generate a self-contained Hermes Insights dashboard from compact summary.db.
+
+Reads only metadata-only summary data. Writes HTML + JSON under ~/.hermes/insights-dashboard/.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+import re
+import sqlite3
+import hashlib
+import threading
+import time
+from collections import Counter, defaultdict
+from contextlib import ExitStack
+from contextvars import ContextVar
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from functools import wraps
+from html import escape
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any
+from urllib.parse import parse_qs, quote, urlparse
+
+HOME = Path.home()
+DEFAULT_DB = HOME / ".hermes" / "insights" / "summary.db"
+DEFAULT_OUT = HOME / ".hermes" / "insights-dashboard" / "index.html"
+CACHE_DIR = HOME / ".hermes" / "insights-dashboard" / "cache"
+ARCHIVE_DIR = HOME / ".hermes" / "insights-dashboard" / "archive"
+CACHE_TTL_SECONDS = 60.0
+DISK_CACHE_TTL_SECONDS = 300.0
+PREWARM_DAYS = [1, 3, 7, 14, 30, 90, 365]
+PREWARM_SOURCES = [None, "telegram", "cli", "cron", "webhook", "subagent"]
+
+_READ_CONNECTION_STACK: ContextVar[ExitStack | None] = ContextVar(
+    "hermes_insights_read_connection_stack", default=None
+)
+
+
+def closes_read_connections(func):
+    @wraps(func)
+    def wrapped(*args, **kwargs):
+        with ExitStack() as stack:
+            token = _READ_CONNECTION_STACK.set(stack)
+            try:
+                return func(*args, **kwargs)
+            finally:
+                _READ_CONNECTION_STACK.reset(token)
+
+    return wrapped
+
+
+def open_read_connection(db: Path) -> sqlite3.Connection:
+    stack = _READ_CONNECTION_STACK.get()
+    if stack is None:
+        raise RuntimeError("SQLite read connection opened outside a managed query scope")
+    con = sqlite3.connect(f"file:{quote(str(db.resolve()), safe='/')}?mode=ro", uri=True)
+    stack.callback(con.close)
+    con.row_factory = sqlite3.Row
+    return con
+
+
+@closes_read_connections
+def summary_readiness(db: Path, now_ts: float | None = None, max_age_seconds: float = 1800) -> dict[str, Any]:
+    """Return producer-owned freshness state; request time never advances it."""
+    con = open_read_connection(db)
+    meta = {str(r["key"]): str(r["value"]) for r in con.execute("SELECT key,value FROM summary_meta")}
+    generated = float(meta.get("summary_generated_at", "0") or 0)
+    observed = float(meta.get("source_observed_at", "0") or 0)
+    source_high = int(meta.get("source_message_high_water", "0") or 0)
+    summary_high = int(meta.get("committed_message_high_water", "0") or 0)
+    bootstrap = meta.get("bootstrap_complete") == "1"
+    age = max(0.0, float(now_ts if now_ts is not None else time.time()) - generated) if generated else float("inf")
+    caught_up = summary_high >= source_high
+    latest_status = "unknown"
+    latest_failed = False
+    receipt = Path(str(db) + ".receipt.json")
+    try:
+        receipt_data = json.loads(receipt.read_text(encoding="utf-8"))
+        latest_status = str(receipt_data.get("status", "unknown"))
+        receipt_finished = float(receipt_data.get("finished_at", 0) or 0)
+        latest_failed = latest_status in {"failed", "schema_blocked", "budget_blocked"} and receipt_finished > generated
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        pass
+    ready = bool(generated and bootstrap and caught_up and age <= max_age_seconds and not latest_failed)
+    if latest_failed:
+        status = "generation_failed"
+    elif not generated or not bootstrap:
+        status = "incomplete"
+    elif not caught_up:
+        status = "lagging"
+    elif age > max_age_seconds:
+        status = "stale"
+    else:
+        status = "fresh"
+    return {
+        "ready": ready,
+        "data_status": status,
+        "summary_generated_at": generated,
+        "source_observed_at": observed,
+        "source_message_high_water": source_high,
+        "summary_message_high_water": summary_high,
+        "bootstrap_complete": bootstrap,
+        "freshness_seconds": age,
+        "max_age_seconds": max_age_seconds,
+        "latest_generation_status": latest_status,
+    }
+
+
+def dt(ts: float | None) -> datetime | None:
+    if ts is None:
+        return None
+    try:
+        return datetime.fromtimestamp(float(ts), tz=timezone.utc).astimezone()
+    except Exception:
+        return None
+
+
+def iso(ts: float | None) -> str:
+    d = dt(ts)
+    return d.isoformat(timespec="seconds") if d else ""
+
+
+def day_key(ts: float | None) -> str:
+    d = dt(ts)
+    return d.strftime("%Y-%m-%d") if d else "unknown"
+
+
+def hour_key(ts: float | None) -> int:
+    d = dt(ts)
+    return d.hour if d else 0
+
+
+def weekday_key(ts: float | None) -> str:
+    d = dt(ts)
+    return d.strftime("%a") if d else "unknown"
+
+
+def compact_num(n: float | int | None) -> str:
+    if n is None:
+        return "0"
+    n = float(n)
+    sign = "-" if n < 0 else ""
+    n = abs(n)
+    if n >= 1_000_000_000:
+        return f"{sign}{n/1_000_000_000:.2f}B"
+    if n >= 1_000_000:
+        return f"{sign}{n/1_000_000:.2f}M"
+    if n >= 1_000:
+        return f"{sign}{n/1_000:.1f}K"
+    if n == int(n):
+        return f"{sign}{int(n)}"
+    return f"{sign}{n:.2f}"
+
+
+def fmt_int(n: float | int | None) -> str:
+    return f"{int(n or 0):,}"
+
+
+def fmt_money(n: float | None) -> str:
+    return f"${(n or 0):,.2f}"
+
+
+def duration(seconds: float | None) -> str:
+    s = max(0, int(seconds or 0))
+    if s >= 86400:
+        return f"{s/86400:.1f}d"
+    if s >= 3600:
+        return f"{s/3600:.1f}h"
+    if s >= 60:
+        return f"{s//60}m"
+    return f"{s}s"
+
+
+def safe_model(v: str | None) -> str:
+    return v or "unknown"
+
+
+CRON_OVERDUE_GRACE_SECONDS = 3600
+CRON_FALLBACK_STALE_HOURS = 48
+
+
+def cron_schedule_state(job: dict[str, Any], now_ts: float | None = None) -> dict[str, Any]:
+    """Classify a cron job from metadata without exposing its prompt or output."""
+    now_ts = float(now_ts or time.time())
+    def parse_ts(value: str | None) -> float | None:
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        except Exception:
+            return None
+
+    last_ts = parse_ts(job.get("last_run_at"))
+    next_ts = parse_ts(job.get("next_run_at"))
+    enabled = bool(job.get("enabled", False))
+    paused = job.get("state") == "paused" or bool(job.get("paused_at"))
+    dormant = not enabled or paused
+    run_age_hours = None if last_ts is None else max(0.0, (now_ts - last_ts) / 3600)
+    overdue = False
+    overdue_hours = 0.0
+    schedule_basis = "next_run_at"
+    if enabled and not paused and last_ts is not None:
+        if next_ts is not None:
+            overdue_hours = max(0.0, (now_ts - next_ts - CRON_OVERDUE_GRACE_SECONDS) / 3600)
+            overdue = overdue_hours > 0
+        else:
+            schedule_basis = "48h_fallback"
+            overdue = bool(run_age_hours is not None and run_age_hours > CRON_FALLBACK_STALE_HOURS)
+            overdue_hours = max(0.0, float(run_age_hours or 0) - CRON_FALLBACK_STALE_HOURS)
+    never_run = enabled and not paused and last_ts is None
+    delivery = bool(job.get("last_delivery_error"))
+    failed = bool(job.get("last_status") and job.get("last_status") != "ok")
+    if dormant:
+        classification = "dormant"
+    elif failed:
+        classification = "failed"
+    elif delivery:
+        classification = "delivery"
+    elif never_run:
+        classification = "never_run"
+    elif overdue:
+        classification = "overdue"
+    else:
+        classification = "healthy"
+    return {
+        "classification": classification,
+        "execution_status": "failed" if failed else ("ok" if job.get("last_status") == "ok" else "unknown"),
+        "delivery_status": "failed" if delivery else "ok",
+        "overdue": overdue,
+        "overdue_hours": overdue_hours,
+        "never_run": never_run,
+        "dormant": dormant,
+        "run_age_hours": run_age_hours,
+        "next_run_valid": next_ts is not None,
+        "schedule_basis": schedule_basis,
+    }
+
+
+def total_tokens(row: dict[str, Any]) -> int:
+    return int(row.get("input_tokens") or 0) + int(row.get("output_tokens") or 0) + int(row.get("cache_read_tokens") or 0) + int(row.get("cache_write_tokens") or 0) + int(row.get("reasoning_tokens") or 0)
+
+
+def query_rows(con: sqlite3.Connection, sql: str, params: tuple = ()) -> list[dict[str, Any]]:
+    cur = con.execute(sql, params)
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
+
+
+
+
+def build_archive_trends(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows = list(reversed(history[-90:] if len(history) > 90 else history))
+    specs = [
+        ("sessions", "Sessions/day"),
+        ("messages", "Messages/day"),
+        ("total_tokens", "Tokens/day"),
+        ("cost_usd", "Cost/day"),
+        ("anomalies", "Anomalies/day"),
+        ("cron_overdue", "Overdue cron/day"),
+    ]
+    out = []
+    for key, label in specs:
+        pts = [{"date": r.get("date"), "value": float(r.get(key) or 0)} for r in rows]
+        vals = [p["value"] for p in pts]
+        out.append({"key": key, "label": label, "points": pts, "max": max(vals) if vals else 0, "latest": vals[-1] if vals else 0})
+    return out
+
+def build_attention(data: dict[str, Any]) -> dict[str, Any]:
+    cron = ((data.get("cron_health") or {}).get("summary") or {})
+    anomalies = data.get("anomalies") or []
+    active = data.get("active_sessions") or []
+    cache = data.get("cache") or {}
+    archive = (data.get("archive_history") or [{}])[0] if data.get("archive_history") else {}
+    items: list[dict[str, Any]] = []
+    def add(level: str, label: str, value: int | float | str, href: str = "") -> None:
+        items.append({"level": level, "label": label, "value": value, "href": href})
+    delivery_errors = int(cron.get("delivery_errors") or 0)
+    status_issues = int(cron.get("last_status_not_ok") or 0)
+    overdue_cron = int(cron.get("overdue") or cron.get("stale_enabled_48h") or 0)
+    anomaly_count = len(anomalies)
+    active_count = len(active)
+    cache_age = int(cache.get("age_seconds") or 0)
+    if delivery_errors:
+        add("red", "cron delivery errors", delivery_errors, "#cron-delivery-errors")
+    if status_issues:
+        add("red", "cron status issues", status_issues, "#cron-status-issues")
+    if overdue_cron:
+        add("amber", "overdue cron jobs", overdue_cron, "#overdue-cron")
+    if anomaly_count:
+        add("amber", "cost/token anomalies", anomaly_count, "#anomalies")
+    if active_count:
+        add("amber", "active sessions", active_count, "#active-sessions")
+    if cache_age > 3600:
+        add("amber", "cache age", f"{cache_age//60}m", "")
+    state = "green"
+    title = "All clear"
+    if any(i["level"] == "red" for i in items):
+        state = "red"; title = "Action needed"
+    elif items:
+        state = "amber"; title = "Attention"
+    subtitle_parts = []
+    if archive.get("date"):
+        subtitle_parts.append(f"latest snapshot {archive.get('date')}")
+    if cache.get("layer"):
+        subtitle_parts.append(f"cache {cache.get('layer')} age {cache_age}s")
+    if not subtitle_parts:
+        subtitle_parts.append("live operational summary")
+    return {"state": state, "title": title, "items": items, "subtitle": " · ".join(subtitle_parts)}
+
+def compact_snapshot(data: dict[str, Any]) -> dict[str, Any]:
+    generated_at = data.get("generated_at") or datetime.now().astimezone().isoformat(timespec="seconds")
+    day = str(generated_at)[:10]
+    totals = data.get("totals", {}) or {}
+    cron_summary = ((data.get("cron_health") or {}).get("summary") or {})
+    anomalies = data.get("anomalies") or []
+    return {
+        "date": day,
+        "generated_at": generated_at,
+        "period_days": data.get("days"),
+        "source": data.get("source"),
+        "model": data.get("model"),
+        "totals": {k: totals.get(k) for k in ["sessions", "messages", "tool_calls", "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "total_tokens", "cost_usd", "active_time_seconds"]},
+        "platforms": data.get("platforms", [])[:20],
+        "models": data.get("models", [])[:20],
+        "top_tools": data.get("top_tools", [])[:20],
+        "top_skills": data.get("top_skills", [])[:20],
+        "cron_health": {"summary": cron_summary},
+        "anomaly_counts": dict(Counter(a.get("reason") or "unknown" for a in anomalies)),
+        "active_sessions": len(data.get("active_sessions") or []),
+    }
+
+
+def write_daily_snapshot(data: dict[str, Any]) -> Path | None:
+    # Archive only unfiltered all-source/all-model daily dashboard snapshots.
+    if data.get("source") or data.get("model") or int(data.get("days") or 0) != 1:
+        return None
+    snap = compact_snapshot(data)
+    ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+    path = ARCHIVE_DIR / f"{snap['date']}.json"
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(snap, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)
+    return path
+
+
+def load_snapshot_history(limit: int = 60) -> list[dict[str, Any]]:
+    if not ARCHIVE_DIR.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for path in sorted(ARCHIVE_DIR.glob("*.json"), reverse=True)[:limit]:
+        try:
+            snap = json.loads(path.read_text())
+            totals = snap.get("totals", {}) or {}
+            cron = ((snap.get("cron_health") or {}).get("summary") or {})
+            rows.append({
+                "date": snap.get("date") or path.stem,
+                "generated_at": snap.get("generated_at"),
+                "sessions": totals.get("sessions") or 0,
+                "messages": totals.get("messages") or 0,
+                "tool_calls": totals.get("tool_calls") or 0,
+                "total_tokens": totals.get("total_tokens") or 0,
+                "cost_usd": totals.get("cost_usd") or 0,
+                "active_sessions": snap.get("active_sessions") or 0,
+                "anomalies": sum((snap.get("anomaly_counts") or {}).values()),
+                "cron_overdue": cron.get("overdue") if cron.get("overdue") is not None else (cron.get("stale_enabled_48h") or 0),
+                "cron_stale": cron.get("overdue") if cron.get("overdue") is not None else (cron.get("stale_enabled_48h") or 0),
+                "cron_delivery_errors": cron.get("delivery_errors") or 0,
+                "file": path.name,
+            })
+        except Exception:
+            continue
+    return rows
+
+def cache_key(days: int, source: str | None, model: str | None) -> str:
+    payload = json.dumps({"days": days, "source": source, "model": model}, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode()).hexdigest()[:24]
+
+
+def cache_path(days: int, source: str | None, model: str | None) -> Path:
+    src = source or "all"
+    mdl = model or "all"
+    safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in f"d{days}_s{src}_m{mdl}")
+    return CACHE_DIR / f"{safe}_{cache_key(days, source, model)}.json"
+
+
+def read_disk_cache(days: int, source: str | None, model: str | None, max_age: float | None = None) -> dict[str, Any] | None:
+    path = cache_path(days, source, model)
+    if not path.exists():
+        return None
+    try:
+        age = time.time() - path.stat().st_mtime
+        if max_age is not None and age > max_age:
+            return None
+        data = json.loads(path.read_text())
+        # Disk cache files can outlive code changes that add new derived fields.
+        # Keep the persistent-speed benefit, but graft cheap live-only metadata that
+        # does not require scanning state.db.
+        data["archive_history"] = load_snapshot_history(90)
+        data["archive_trends"] = build_archive_trends(data["archive_history"])
+        data["cache"] = {"layer": "disk", "age_seconds": int(max(0, age)), "path": str(path)}
+        data["attention"] = build_attention(data)
+        return data
+    except Exception:
+        return None
+
+
+def write_disk_cache(days: int, source: str | None, model: str | None, data: dict[str, Any]) -> None:
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    path = cache_path(days, source, model)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def warm_disk_cache(db: Path, days: int, source: str | None, model: str | None = None, force: bool = False) -> dict[str, Any]:
+    if not force:
+        cached = read_disk_cache(days, source, model, DISK_CACHE_TTL_SECONDS)
+        if cached is not None:
+            return cached
+    data = load_data(db, days, source, model)
+    write_disk_cache(days, source, model, data)
+    return data
+
+@closes_read_connections
+def load_data(db: Path, days: int, source: str | None, model: str | None = None) -> dict[str, Any]:
+    readiness = summary_readiness(db)
+    period_end_ts = float(
+        readiness["source_observed_at"] or readiness["summary_generated_at"] or 0
+    )
+    cutoff = period_end_ts - (days * 86400)
+    prev_cutoff = cutoff - (days * 86400)
+    where = "started_at >= ?"
+    params: list[Any] = [cutoff]
+    filter_clauses: list[str] = []
+    filter_params: list[Any] = []
+    if source:
+        filter_clauses.append("source = ?")
+        filter_params.append(source)
+    if model:
+        if model == "unknown":
+            filter_clauses.append("(model IS NULL OR model = '')")
+        else:
+            filter_clauses.append("model = ?")
+            filter_params.append(model)
+    if filter_clauses:
+        where += " AND " + " AND ".join(filter_clauses)
+        params.extend(filter_params)
+
+    con = open_read_connection(db)
+
+    session_cols = """
+        id, source, user_id, model, parent_session_id, started_at, ended_at, end_reason,
+        message_count, tool_call_count, input_tokens, output_tokens, title,
+        cache_read_tokens, cache_write_tokens, reasoning_tokens, billing_provider,
+        billing_mode, estimated_cost_usd, actual_cost_usd, cost_status, cost_source,
+        api_call_count, cwd, git_branch, git_repo_root, session_key, chat_id, chat_type, thread_id
+    """
+    sessions = [dict(r) for r in con.execute(f"SELECT {session_cols} FROM summary_sessions WHERE {where} ORDER BY started_at", params).fetchall()]
+    prev_where = "started_at >= ? AND started_at < ?"
+    prev_params: list[Any] = [prev_cutoff, cutoff]
+    if filter_clauses:
+        prev_where += " AND " + " AND ".join(filter_clauses)
+        prev_params.extend(filter_params)
+    prev_sessions = [dict(r) for r in con.execute(f"SELECT {session_cols} FROM summary_sessions WHERE {prev_where} ORDER BY started_at", prev_params).fetchall()]
+    available_sources = sorted({r["source"] or "unknown" for r in con.execute("SELECT DISTINCT source FROM summary_sessions ORDER BY source").fetchall()})
+    available_models = sorted({r["model"] or "unknown" for r in con.execute("SELECT DISTINCT model FROM summary_sessions ORDER BY model").fetchall()})
+
+    # Message, tool, and skill aggregates are materialized by the bounded producer.
+    # The dashboard never reads raw content, reasoning, API content, or tool arguments.
+    msg_where = where
+    msg_params = list(params)
+    role_counts = {r["role"]: r["n"] for r in con.execute(f"""
+        SELECT r.role AS role, SUM(r.count) AS n
+        FROM summary_sessions s JOIN summary_session_roles r ON r.session_id = s.id
+        WHERE {msg_where}
+        GROUP BY r.role
+    """, tuple(msg_params)).fetchall()}
+    tool_name_rows = query_rows(con, f"""
+        SELECT t.tool_name AS name, SUM(t.calls) AS calls
+        FROM summary_sessions s JOIN summary_session_tools t ON t.session_id = s.id
+        WHERE {msg_where}
+        GROUP BY t.tool_name
+        ORDER BY calls DESC
+        LIMIT 20
+    """, tuple(msg_params))
+    skill_messages = query_rows(con, f"""
+        WITH relevant AS (
+            SELECT k.skill_name AS name, k.loads, k.edits, s.started_at,
+                   k.first_message_id, k.first_call_index
+            FROM summary_sessions s JOIN summary_session_skills k ON k.session_id = s.id
+            WHERE {msg_where}
+        ), ranked AS (
+            SELECT *, ROW_NUMBER() OVER (
+                PARTITION BY name
+                ORDER BY started_at DESC, first_message_id, first_call_index
+            ) AS first_rank
+            FROM relevant
+        )
+        SELECT name, SUM(loads) AS loads, SUM(edits) AS edits,
+               MAX(CASE WHEN first_rank = 1 THEN started_at END) AS first_started_at,
+               MAX(CASE WHEN first_rank = 1 THEN first_message_id END) AS first_message_id,
+               MAX(CASE WHEN first_rank = 1 THEN first_call_index END) AS first_call_index
+        FROM ranked
+        GROUP BY name
+        ORDER BY first_started_at DESC, first_message_id, first_call_index
+    """, tuple(msg_params))
+
+    # Active-session durations are part of the committed summary view. Keep them
+    # pinned to the producer's observation clock rather than request time.
+    now_ts = datetime.fromtimestamp(period_end_ts, timezone.utc).timestamp()
+    totals = Counter()
+    models = defaultdict(lambda: Counter())
+    platforms = defaultdict(lambda: Counter())
+    daily = defaultdict(lambda: Counter())
+    hours = Counter()
+    weekdays = Counter()
+    cost_status = Counter()
+    recent_sessions = []
+
+    longest = None
+    most_messages = None
+    most_tokens = None
+    most_tools = None
+
+    for s in sessions:
+        toks = total_tokens(s)
+        dur = max(0.0, float((s.get("ended_at") or now_ts) - (s.get("started_at") or now_ts)))
+        cost = s.get("actual_cost_usd") if s.get("actual_cost_usd") is not None else s.get("estimated_cost_usd")
+        cost = float(cost or 0)
+        totals.update({
+            "sessions": 1,
+            "messages": int(s.get("message_count") or 0),
+            "tool_calls": int(s.get("tool_call_count") or 0),
+            "input_tokens": int(s.get("input_tokens") or 0),
+            "output_tokens": int(s.get("output_tokens") or 0),
+            "cache_read_tokens": int(s.get("cache_read_tokens") or 0),
+            "cache_write_tokens": int(s.get("cache_write_tokens") or 0),
+            "reasoning_tokens": int(s.get("reasoning_tokens") or 0),
+            "total_tokens": toks,
+        })
+        totals["cost_usd_x10000"] += int(cost * 10000)
+        totals["active_seconds"] += int(dur)
+        model_name = safe_model(s.get("model"))
+        src = s.get("source") or "unknown"
+        day = day_key(s.get("started_at"))
+        hr = hour_key(s.get("started_at"))
+        wd = weekday_key(s.get("started_at"))
+        for bucket in [models[model_name], platforms[src], daily[day]]:
+            bucket["sessions"] += 1
+            bucket["messages"] += int(s.get("message_count") or 0)
+            bucket["tool_calls"] += int(s.get("tool_call_count") or 0)
+            bucket["tokens"] += toks
+            bucket["cost_usd_x10000"] += int(cost * 10000)
+        hours[hr] += 1
+        weekdays[wd] += 1
+        cost_status[s.get("cost_status") or "unknown"] += 1
+        packed = {**s, "total_tokens": toks, "duration_seconds": dur, "cost_usd": cost, "started_iso": iso(s.get("started_at")), "ended_iso": iso(s.get("ended_at"))}
+        if longest is None or dur > longest["duration_seconds"]: longest = packed
+        if most_messages is None or int(s.get("message_count") or 0) > int(most_messages.get("message_count") or 0): most_messages = packed
+        if most_tokens is None or toks > most_tokens["total_tokens"]: most_tokens = packed
+        if most_tools is None or int(s.get("tool_call_count") or 0) > int(most_tools.get("tool_call_count") or 0): most_tools = packed
+        recent_sessions.append(packed)
+
+    user_messages = int(role_counts.get("user") or 0)
+    assistant_messages = int(role_counts.get("assistant") or 0)
+    tool_messages = int(role_counts.get("tool") or 0)
+    tool_names = Counter({str(r["name"]): int(r["calls"] or 0) for r in tool_name_rows})
+
+    # Skill names and operation counts are pre-extracted by the producer; raw arguments are absent.
+    skills = Counter({str(r["name"]): int(r["loads"] or 0) for r in skill_messages})
+    skill_edits = Counter({str(r["name"]): int(r["edits"] or 0) for r in skill_messages})
+
+    totals["user_messages"] = user_messages
+    totals["assistant_messages"] = assistant_messages
+    totals["tool_messages"] = tool_messages
+    totals["cost_usd"] = totals["cost_usd_x10000"] / 10000
+    del totals["cost_usd_x10000"]
+
+    def top_map(d: dict[str, Counter], n=12):
+        rows = []
+        for k, c in d.items():
+            rows.append({
+                "name": k,
+                "sessions": c["sessions"],
+                "messages": c["messages"],
+                "tool_calls": c["tool_calls"],
+                "tokens": c["tokens"],
+                "cost_usd": c["cost_usd_x10000"] / 10000,
+            })
+        return sorted(rows, key=lambda x: (x["tokens"], x["sessions"]), reverse=True)[:n]
+
+    day_rows = []
+    for k, c in sorted(daily.items()):
+        day_rows.append({
+            "date": k, "sessions": c["sessions"], "messages": c["messages"],
+            "tool_calls": c["tool_calls"], "tokens": c["tokens"], "cost_usd": c["cost_usd_x10000"] / 10000,
+        })
+
+    recent_sessions = sorted(recent_sessions, key=lambda x: x.get("started_at") or 0, reverse=True)[:20]
+    active_sessions = []
+    for s in sessions:
+        if s.get("ended_at") is not None:
+            continue
+        toks = total_tokens(s)
+        started = float(s.get("started_at") or now_ts)
+        active_sessions.append({
+            **s,
+            "total_tokens": toks,
+            "duration_seconds": max(0.0, now_ts - started),
+            "started_iso": iso(s.get("started_at")),
+        })
+    active_sessions = sorted(active_sessions, key=lambda x: x.get("started_at") or 0, reverse=True)[:12]
+
+    def summarize_window(rows: list[dict[str, Any]], window_end: float) -> dict[str, Any]:
+        c = Counter()
+        for r in rows:
+            toks = total_tokens(r)
+            start = float(r.get("started_at") or window_end)
+            end = float(r.get("ended_at") or window_end)
+            cost = r.get("actual_cost_usd") if r.get("actual_cost_usd") is not None else r.get("estimated_cost_usd")
+            c.update({
+                "sessions": 1,
+                "messages": int(r.get("message_count") or 0),
+                "tool_calls": int(r.get("tool_call_count") or 0),
+                "total_tokens": toks,
+            })
+            c["cost_usd_x10000"] += int(float(cost or 0) * 10000)
+            c["active_seconds"] += int(max(0.0, end - start))
+        out = dict(c)
+        out["cost_usd"] = out.pop("cost_usd_x10000", 0) / 10000
+        return out
+
+    previous_totals = summarize_window(prev_sessions, cutoff)
+    trend_metrics = []
+    for key, label in [("sessions", "Sessions"), ("messages", "Messages"), ("tool_calls", "Tool calls"), ("total_tokens", "Total tokens"), ("cost_usd", "Cost"), ("active_seconds", "Active time")]:
+        cur = float(totals.get(key) or 0)
+        prev = float(previous_totals.get(key) or 0)
+        delta = cur - prev
+        pct = None if prev == 0 else (delta / prev * 100)
+        trend_metrics.append({"key": key, "label": label, "current": cur, "previous": prev, "delta": delta, "pct": pct})
+
+    def anomaly_row(s: dict[str, Any], reason: str, score: float) -> dict[str, Any]:
+        toks = total_tokens(s)
+        start = float(s.get("started_at") or now_ts)
+        end = float(s.get("ended_at") or now_ts)
+        cost = s.get("actual_cost_usd") if s.get("actual_cost_usd") is not None else s.get("estimated_cost_usd")
+        return {
+            "id": s.get("id"),
+            "title": s.get("title") or s.get("id"),
+            "source": s.get("source") or "unknown",
+            "model": safe_model(s.get("model")),
+            "reason": reason,
+            "score": score,
+            "total_tokens": toks,
+            "input_tokens": int(s.get("input_tokens") or 0),
+            "output_tokens": int(s.get("output_tokens") or 0),
+            "cache_read_tokens": int(s.get("cache_read_tokens") or 0),
+            "cache_write_tokens": int(s.get("cache_write_tokens") or 0),
+            "reasoning_tokens": int(s.get("reasoning_tokens") or 0),
+            "cost_usd": float(cost or 0),
+            "messages": int(s.get("message_count") or 0),
+            "tool_calls": int(s.get("tool_call_count") or 0),
+            "duration_seconds": max(0.0, end - start),
+            "started_iso": iso(s.get("started_at")),
+            "active": s.get("ended_at") is None,
+        }
+
+    candidates: list[dict[str, Any]] = []
+    metrics = [
+        ("highest total tokens", lambda s: total_tokens(s)),
+        ("highest output tokens", lambda s: int(s.get("output_tokens") or 0)),
+        ("highest reasoning tokens", lambda s: int(s.get("reasoning_tokens") or 0)),
+        ("highest cache write", lambda s: int(s.get("cache_write_tokens") or 0)),
+        ("highest tool calls", lambda s: int(s.get("tool_call_count") or 0)),
+        ("longest duration", lambda s: max(0.0, float((s.get("ended_at") or now_ts) - (s.get("started_at") or now_ts)))),
+        ("highest cost", lambda s: float((s.get("actual_cost_usd") if s.get("actual_cost_usd") is not None else s.get("estimated_cost_usd")) or 0)),
+        ("highest tokens/message", lambda s: total_tokens(s) / max(1, int(s.get("message_count") or 0))),
+    ]
+    for reason, fn in metrics:
+        top = sorted(sessions, key=fn, reverse=True)[:5]
+        for s in top:
+            score = float(fn(s) or 0)
+            if score > 0:
+                candidates.append(anomaly_row(s, reason, score))
+    best: dict[str, dict[str, Any]] = {}
+    for row in candidates:
+        prev = best.get(row["id"])
+        if prev is None or row["score"] > prev["score"]:
+            best[row["id"]] = row
+        elif prev and row["reason"] not in prev["reason"]:
+            prev["reason"] += ", " + row["reason"]
+    anomalies = sorted(best.values(), key=lambda r: (r.get("cost_usd", 0), r.get("total_tokens", 0), r.get("tool_calls", 0), r.get("duration_seconds", 0)), reverse=True)[:18]
+
+    def latest_output_for(job_id: str) -> dict[str, Any]:
+        out_dir = HOME / ".hermes" / "cron" / "output" / job_id
+        if not out_dir.exists():
+            return {"count": 0}
+        files = [x for x in out_dir.iterdir() if x.is_file()]
+        if not files:
+            return {"count": 0}
+        latest = max(files, key=lambda x: x.stat().st_mtime)
+        st = latest.stat()
+        return {"count": len(files), "latest": latest.name, "latest_mtime": datetime.fromtimestamp(st.st_mtime).astimezone().isoformat(timespec="seconds"), "latest_bytes": st.st_size}
+
+    jobs_path = HOME / ".hermes" / "cron" / "jobs.json"
+    cron_jobs: list[dict[str, Any]] = []
+    if jobs_path.exists():
+        try:
+            raw_jobs = json.loads(jobs_path.read_text()).get("jobs", [])
+        except Exception:
+            raw_jobs = []
+        for j in raw_jobs:
+            jid = str(j.get("id") or "")
+            out_meta = latest_output_for(jid) if jid else {"count": 0}
+            schedule_state = cron_schedule_state(j, now_ts)
+            workload_status: dict[str, Any] | None = None
+            if jid == "472d2152d8d6":
+                workload_path = HOME / ".hermes" / "cron" / "state" / "cold-archive-state-sync" / "latest-status.json"
+                try:
+                    candidate = json.loads(workload_path.read_text())
+                    if isinstance(candidate, dict) and candidate.get("health") in {"running", "ok", "failed"}:
+                        workload_status = candidate
+                        observed = str(candidate.get("observed_at") or "")
+                        last_run = str(j.get("last_run_at") or "")
+                        if observed and last_run:
+                            observed_ts = datetime.fromisoformat(observed.replace("Z", "+00:00")).timestamp()
+                            last_run_ts = datetime.fromisoformat(last_run.replace("Z", "+00:00")).timestamp()
+                            if observed_ts < last_run_ts:
+                                workload_status = None
+                except (OSError, json.JSONDecodeError, TypeError, ValueError):
+                    workload_status = None
+                if workload_status and workload_status.get("health") == "failed" and j.get("enabled", False):
+                    schedule_state = dict(schedule_state)
+                    schedule_state["classification"] = "failed"
+            run_age_hours = schedule_state["run_age_hours"]
+            notes = []
+            if not j.get("enabled", False): notes.append("disabled")
+            if j.get("state") == "paused" or j.get("paused_at"): notes.append("paused")
+            if j.get("last_status") and j.get("last_status") != "ok": notes.append("last status " + str(j.get("last_status")))
+            if j.get("last_delivery_error"): notes.append("delivery error")
+            if schedule_state["never_run"]: notes.append("never run")
+            if schedule_state["overdue"]: notes.append("overdue")
+            if workload_status:
+                notes.append("detached workload " + str(workload_status.get("health")))
+                if workload_status.get("reason"):
+                    notes.append(str(workload_status.get("reason")))
+            cron_jobs.append({
+                "id": jid,
+                "name": j.get("name") or jid,
+                "enabled": bool(j.get("enabled", False)),
+                "state": j.get("state"),
+                "schedule": j.get("schedule_display") or ((j.get("schedule") or {}).get("display")),
+                "last_run_at": j.get("last_run_at"),
+                "next_run_at": j.get("next_run_at"),
+                "last_status": j.get("last_status"),
+                "last_error": bool(j.get("last_error")),
+                "last_delivery_error": bool(j.get("last_delivery_error")),
+                "no_agent": bool(j.get("no_agent", False)),
+                "script": j.get("script"),
+                "deliver": j.get("deliver"),
+                "stale_hours": run_age_hours,
+                "run_age_hours": run_age_hours,
+                "overdue": schedule_state["overdue"],
+                "overdue_hours": schedule_state["overdue_hours"],
+                "never_run": schedule_state["never_run"],
+                "classification": schedule_state["classification"],
+                "execution_status": schedule_state["execution_status"],
+                "delivery_status": schedule_state["delivery_status"],
+                "workload_status": workload_status.get("health") if workload_status else None,
+                "workload_reason": workload_status.get("reason") if workload_status else None,
+                "workload_observed_at": workload_status.get("observed_at") if workload_status else None,
+                "schedule_basis": schedule_state["schedule_basis"],
+                "output": out_meta,
+                "notes": ", ".join(notes) or "ok",
+            })
+    cron_summary = {
+        "jobs": len(cron_jobs),
+        "enabled": sum(1 for j in cron_jobs if j.get("enabled")),
+        "disabled": sum(1 for j in cron_jobs if not j.get("enabled")),
+        "paused": sum(1 for j in cron_jobs if j.get("state") == "paused" or "paused" in str(j.get("notes"))),
+        # Active execution failures drive attention. Dormant jobs retain their raw
+        # historical status in the inventory but do not count as live incidents.
+        "last_status_not_ok": sum(1 for j in cron_jobs if j.get("classification") == "failed"),
+        "raw_last_status_not_ok": sum(1 for j in cron_jobs if j.get("last_status") and j.get("last_status") != "ok"),
+        "dormant_status_history": sum(1 for j in cron_jobs if j.get("classification") == "dormant" and j.get("last_status") and j.get("last_status") != "ok"),
+        "delivery_errors": sum(1 for j in cron_jobs if j.get("last_delivery_error")),
+        "overdue": sum(1 for j in cron_jobs if j.get("overdue")),
+        "never_run": sum(1 for j in cron_jobs if j.get("never_run")),
+        # Compatibility alias for old archive consumers; semantics are now schedule-aware overdue.
+        "stale_enabled_48h": sum(1 for j in cron_jobs if j.get("overdue")),
+        "no_agent": sum(1 for j in cron_jobs if j.get("no_agent")),
+    }
+    # Return the complete metadata-only job inventory. Focused sections and filter
+    # counts must use the same population as the summary counters; truncating this
+    # list caused attention counts to disagree with visible rows.
+    cron_job_rows = sorted(cron_jobs, key=lambda j: (j.get("classification") in {"failed", "delivery"}, j.get("overdue"), j.get("overdue_hours") or -1, j.get("run_age_hours") or -1), reverse=True)
+    cron_session_rows = []
+    cron_session_query_where = "started_at >= ? AND source = 'cron'"
+    cron_session_params: list[Any] = [cutoff]
+    if model:
+        if model == "unknown":
+            cron_session_query_where += " AND (model IS NULL OR model = '')"
+        else:
+            cron_session_query_where += " AND model = ?"
+            cron_session_params.append(model)
+    for r in con.execute(f"SELECT {session_cols} FROM summary_sessions WHERE {cron_session_query_where} ORDER BY started_at DESC LIMIT 24", cron_session_params).fetchall():
+        cs = dict(r); toks = total_tokens(cs); cost = cs.get("actual_cost_usd") if cs.get("actual_cost_usd") is not None else cs.get("estimated_cost_usd")
+        jid = (cs.get("id") or "").split("_")[1] if (cs.get("id") or "").startswith("cron_") and len((cs.get("id") or "").split("_")) > 1 else ""
+        cron_session_rows.append({
+            "id": cs.get("id"), "job_id": jid, "title": cs.get("title") or cs.get("id"), "model": safe_model(cs.get("model")),
+            "started_iso": iso(cs.get("started_at")), "ended_iso": iso(cs.get("ended_at")),
+            "duration_seconds": max(0.0, float((cs.get("ended_at") or now_ts) - (cs.get("started_at") or now_ts))),
+            "messages": int(cs.get("message_count") or 0), "tool_calls": int(cs.get("tool_call_count") or 0),
+            "total_tokens": toks, "cost_usd": float(cost or 0), "active": cs.get("ended_at") is None,
+        })
+    cron_heavy_sessions = sorted(cron_session_rows, key=lambda r: (r.get("cost_usd", 0), r.get("total_tokens", 0), r.get("tool_calls", 0)), reverse=True)[:10]
+    cron_health = {"summary": cron_summary, "jobs": cron_job_rows, "recent_sessions": cron_session_rows[:12], "heavy_sessions": cron_heavy_sessions}
+    archive_history = load_snapshot_history(90)
+    archive_trends = build_archive_trends(archive_history)
+    attention_seed = {"cron_health": cron_health, "anomalies": anomalies, "active_sessions": active_sessions, "archive_history": archive_history}
+    attention = build_attention(attention_seed)
+    return {
+        **readiness,
+        "generated_at": iso(readiness["summary_generated_at"]),
+        "db": str(db),
+        "days": days,
+        "source": source,
+        "model": model,
+        "period_start": datetime.fromtimestamp(cutoff, tz=timezone.utc).astimezone().isoformat(timespec="seconds"),
+        "period_end": iso(period_end_ts),
+        "totals": dict(totals),
+        "previous_totals": previous_totals,
+        "trend": trend_metrics,
+        "filters": {"sources": available_sources, "models": available_models},
+        "models": top_map(models, 14),
+        "platforms": top_map(platforms, 12),
+        "daily": day_rows,
+        "hours": [{"hour": h, "sessions": hours[h]} for h in range(24)],
+        "weekdays": [{"day": d, "sessions": weekdays[d]} for d in ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]],
+        "tools": [{"name": k, "calls": v} for k, v in tool_names.most_common(20)],
+        "skills": [{"name": k, "loads": v, "edits": skill_edits.get(k, 0)} for k, v in skills.most_common(20)],
+        "cost_status": [{"name": k, "sessions": v} for k, v in cost_status.most_common()],
+        "anomalies": anomalies,
+        "cron_health": cron_health,
+        "archive_history": archive_history,
+        "archive_trends": archive_trends,
+        "attention": attention,
+        "notable": {"longest": longest, "most_messages": most_messages, "most_tokens": most_tokens, "most_tools": most_tools},
+        "recent_sessions": recent_sessions,
+        "active_sessions": active_sessions,
+    }
+
+
+
+
+def latest_output_for_job(job_id: str) -> dict[str, Any]:
+    out_dir = HOME / ".hermes" / "cron" / "output" / job_id
+    if not out_dir.exists():
+        return {"count": 0, "files": []}
+    files = [x for x in out_dir.iterdir() if x.is_file()]
+    if not files:
+        return {"count": 0, "files": []}
+    rows = []
+    for f in sorted(files, key=lambda x: x.stat().st_mtime, reverse=True)[:12]:
+        st = f.stat()
+        rows.append({"name": f.name, "mtime": datetime.fromtimestamp(st.st_mtime).astimezone().isoformat(timespec="seconds"), "bytes": st.st_size})
+    return {"count": len(files), "latest": rows[0]["name"], "latest_mtime": rows[0]["mtime"], "latest_bytes": rows[0]["bytes"], "files": rows}
+
+
+@closes_read_connections
+def load_cron_detail(db: Path, job_id: str) -> dict[str, Any]:
+    if not job_id or not re.match(r"^[A-Za-z0-9_-]{6,64}$", job_id):
+        raise KeyError("cron job not found")
+    jobs_path = HOME / ".hermes" / "cron" / "jobs.json"
+    raw_jobs = []
+    if jobs_path.exists():
+        raw_jobs = json.loads(jobs_path.read_text()).get("jobs", [])
+    job = next((j for j in raw_jobs if str(j.get("id")) == job_id), None)
+    if not job:
+        raise KeyError("cron job not found")
+    now_ts = time.time()
+    schedule_state = cron_schedule_state(job, now_ts)
+    run_age_hours = schedule_state["run_age_hours"]
+    notes = []
+    if not job.get("enabled", False): notes.append("disabled")
+    if job.get("state") == "paused" or job.get("paused_at"): notes.append("paused")
+    if job.get("last_status") and job.get("last_status") != "ok": notes.append("last status " + str(job.get("last_status")))
+    if job.get("last_delivery_error"): notes.append("delivery error")
+    if schedule_state["never_run"]: notes.append("never run")
+    if schedule_state["overdue"]: notes.append("overdue")
+    if job.get("no_agent"): notes.append("no-agent script")
+    output_meta = latest_output_for_job(job_id)
+    repeat = job.get("repeat") or {}
+    suggestions = []
+    def suggest(level: str, title: str, detail: str) -> None:
+        suggestions.append({"level": level, "title": title, "detail": detail})
+    if job.get("no_agent") and job.get("script"):
+        suggest("ok", "Quiet script-only job", "no_agent is true and a script is configured; empty stdout means silent success.")
+    elif job.get("script"):
+        suggest("info", "Script-backed job", "A script is configured, but the job may still use the agent unless no_agent is true.")
+    else:
+        suggest("info", "Agent-driven job", "No script is configured; execution likely depends on the saved prompt/skills, which are not exposed here.")
+    if not job.get("enabled", False):
+        suggest("warn", "Job disabled", "This job is not enabled; no future runs are expected unless resumed.")
+    if job.get("state") == "paused" or job.get("paused_at"):
+        suggest("warn", "Paused job", "The job is paused; verify whether that is intentional.")
+    if job.get("last_status") and job.get("last_status") != "ok":
+        suggest("bad", "Last run did not finish OK", f"last_status is {job.get('last_status')}; inspect scheduler logs or the script externally.")
+    elif job.get("last_status") == "ok":
+        suggest("ok", "Last run OK", "The scheduler recorded the most recent run as successful.")
+    else:
+        suggest("warn", "No run status yet", "This job has not recorded a completed run yet.")
+    if job.get("last_delivery_error"):
+        suggest("bad", "Delivery error detected", "The last delivery had an error; check target chat/thread routing.")
+    else:
+        suggest("ok", "No delivery error recorded", "last_delivery_error is empty.")
+    if schedule_state["overdue"]:
+        suggest("warn", "Job is overdue", f"next_run_at is overdue beyond the one-hour grace period ({schedule_state['overdue_hours']:.1f}h overdue).")
+    elif schedule_state["never_run"]:
+        suggest("info", "Job has never run", "The job is enabled but has no last_run_at metadata yet.")
+    elif run_age_hours is not None:
+        suggest("ok", "Schedule is current", f"Last run was {run_age_hours:.1f}h ago and next_run_at is not overdue.")
+    if int(output_meta.get("count") or 0) == 0:
+        level = "info" if job.get("no_agent") else "warn"
+        suggest(level, "No output files recorded", "Normal for quiet watchdogs, but report jobs should usually leave output metadata.")
+    else:
+        suggest("ok", "Output metadata present", f"{int(output_meta.get('count') or 0)} output file(s) recorded; file bodies are intentionally omitted.")
+    if isinstance(repeat, dict) and repeat.get("times") is not None:
+        completed = int(repeat.get("completed") or 0); times = int(repeat.get("times") or 0)
+        if times and completed >= times:
+            suggest("info", "Repeat limit reached", f"repeat completed {completed}/{times}; this may be a completed one-shot job rather than a failure.")
+        else:
+            suggest("info", "Finite repeat job", f"repeat progress {completed}/{times}.")
+    safe = {
+        "id": job_id,
+        "name": job.get("name") or job_id,
+        "enabled": bool(job.get("enabled", False)),
+        "state": job.get("state"),
+        "schedule": job.get("schedule_display") or ((job.get("schedule") or {}).get("display")),
+        "repeat": repeat,
+        "created_at": job.get("created_at"),
+        "last_run_at": job.get("last_run_at"),
+        "next_run_at": job.get("next_run_at"),
+        "last_status": job.get("last_status"),
+        "last_error": bool(job.get("last_error")),
+        "last_delivery_error": bool(job.get("last_delivery_error")),
+        "deliver": job.get("deliver"),
+        "no_agent": bool(job.get("no_agent", False)),
+        "script": job.get("script"),
+        "skills": job.get("skills") or ([] if not job.get("skill") else [job.get("skill")]),
+        "model": job.get("model"),
+        "provider": job.get("provider"),
+        "enabled_toolsets": job.get("enabled_toolsets") or [],
+        "workdir": job.get("workdir"),
+        "stale_hours": run_age_hours,
+        "run_age_hours": run_age_hours,
+        "overdue": schedule_state["overdue"],
+        "overdue_hours": schedule_state["overdue_hours"],
+        "never_run": schedule_state["never_run"],
+        "classification": schedule_state["classification"],
+        "execution_status": schedule_state["execution_status"],
+        "delivery_status": schedule_state["delivery_status"],
+        "schedule_basis": schedule_state["schedule_basis"],
+        "notes": notes or ["ok"],
+        "output": output_meta,
+        "suggestions": suggestions,
+    }
+    con = open_read_connection(db)
+    cron_sessions = []
+    pattern = f"%{job_id}%"
+    for r in con.execute("""
+        SELECT id,source,model,started_at,ended_at,message_count,tool_call_count,input_tokens,output_tokens,title,cache_read_tokens,cache_write_tokens,reasoning_tokens,estimated_cost_usd,actual_cost_usd
+        FROM summary_sessions
+        WHERE source = 'cron' AND (id LIKE ? OR title LIKE ?)
+        ORDER BY started_at DESC
+        LIMIT 12
+    """, [pattern, pattern]).fetchall():
+        cs = dict(r); cost = cs.get("actual_cost_usd") if cs.get("actual_cost_usd") is not None else cs.get("estimated_cost_usd")
+        start=float(cs.get("started_at") or now_ts); end=float(cs.get("ended_at") or now_ts)
+        cron_sessions.append({"id": cs.get("id"), "title": cs.get("title") or cs.get("id"), "model": safe_model(cs.get("model")), "started_iso": iso(cs.get("started_at")), "ended_iso": iso(cs.get("ended_at")), "duration_seconds": max(0.0,end-start), "messages": int(cs.get("message_count") or 0), "tool_calls": int(cs.get("tool_call_count") or 0), "total_tokens": total_tokens(cs), "cost_usd": float(cost or 0), "active": cs.get("ended_at") is None})
+    return {"job": safe, "sessions": cron_sessions, "privacy": "metadata-only: request bodies, output bodies, script source, and transcripts are intentionally omitted"}
+
+@closes_read_connections
+def load_session_detail(db: Path, session_id: str) -> dict[str, Any]:
+    con = open_read_connection(db)
+    session_cols = """
+        id, source, user_id, model, parent_session_id, started_at, ended_at, end_reason,
+        message_count, tool_call_count, input_tokens, output_tokens, title,
+        cache_read_tokens, cache_write_tokens, reasoning_tokens, billing_provider,
+        billing_mode, estimated_cost_usd, actual_cost_usd, cost_status, cost_source,
+        api_call_count, cwd, git_branch, git_repo_root, session_key, chat_id, chat_type, thread_id,
+        display_name, archived, rewind_count
+    """
+    row = con.execute(f"SELECT {session_cols} FROM summary_sessions WHERE id = ?", (session_id,)).fetchone()
+    if not row:
+        raise KeyError("session not found")
+    sess = dict(row)
+    readiness = summary_readiness(db)
+    observed_ts = float(readiness["source_observed_at"] or readiness["summary_generated_at"] or 0)
+    now_ts = datetime.fromtimestamp(observed_ts, timezone.utc).timestamp()
+    toks = total_tokens(sess)
+    start = float(sess.get("started_at") or now_ts)
+    end = float(sess.get("ended_at") or now_ts)
+    cost = sess.get("actual_cost_usd") if sess.get("actual_cost_usd") is not None else sess.get("estimated_cost_usd")
+    sess.update({
+        "total_tokens": toks,
+        "cost_usd": float(cost or 0),
+        "duration_seconds": max(0.0, end - start),
+        "started_iso": iso(sess.get("started_at")),
+        "ended_iso": iso(sess.get("ended_at")),
+        "active": sess.get("ended_at") is None,
+    })
+    role_counts = {r["role"]: r["n"] for r in con.execute("SELECT role, count AS n FROM summary_session_roles WHERE session_id = ?", (session_id,)).fetchall()}
+    tool_rows = [dict(r) for r in con.execute("""
+        SELECT tool_name AS name, calls, first_ts, last_ts
+        FROM summary_session_tools
+        WHERE session_id = ?
+        ORDER BY calls DESC, name
+        LIMIT 80
+    """, (session_id,)).fetchall()]
+    for r in tool_rows:
+        r["first_iso"] = iso(r.get("first_ts")); r["last_iso"] = iso(r.get("last_ts"))
+    timeline = [dict(r) for r in con.execute("""
+        SELECT id, role, tool_name, timestamp, token_count, finish_reason, active, compacted,
+               content_chars, tool_calls_chars
+        FROM summary_message_metadata
+        WHERE session_id = ?
+        ORDER BY timestamp
+        LIMIT 300
+    """, (session_id,)).fetchall()]
+    for r in timeline:
+        r["timestamp_iso"] = iso(r.get("timestamp"))
+    skill_rows = [dict(r) for r in con.execute(
+        "SELECT skill_name AS name, loads, edits FROM summary_session_skills WHERE session_id = ? ORDER BY loads DESC, first_message_id, first_call_index LIMIT 80",
+        (session_id,),
+    ).fetchall()]
+    return {
+        "generated_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+        "session": sess,
+        "role_counts": role_counts,
+        "tools": tool_rows,
+        "skills": skill_rows,
+        "timeline": timeline,
+        "privacy": "metadata-only: message content, reasoning text, raw tool arguments, and raw tool output are intentionally omitted",
+    }
+
+def js_data(data: dict[str, Any]) -> str:
+    return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+
+
+def render(data: dict[str, Any]) -> str:
+    t = data["totals"]
+    avg_session = (t.get("active_seconds", 0) / t.get("sessions", 1)) if t.get("sessions") else 0
+    avg_msgs = (t.get("messages", 0) / t.get("sessions", 1)) if t.get("sessions") else 0
+    max_daily_tokens = max([d["tokens"] for d in data["daily"]] or [1])
+    max_hour = max([h["sessions"] for h in data["hours"]] or [1])
+    max_weekday = max([w["sessions"] for w in data["weekdays"]] or [1])
+
+    def kpi(label, value, sub="", cls=""):
+        return f'<article class="kpi {cls}"><span>{escape(label)}</span><strong>{escape(value)}</strong><em>{escape(sub)}</em></article>'
+
+    def bar_rows(rows, name_key, val_key, label_fmt=lambda r: ""):
+        out = []
+        maxv = max([r[val_key] for r in rows] or [1])
+        for r in rows:
+            pct = 0 if maxv == 0 else max(2, r[val_key] / maxv * 100)
+            out.append(f"""
+            <div class="bar-row">
+              <div class="bar-label" title="{escape(str(r[name_key]))}">{escape(str(r[name_key]))}</div>
+              <div class="bar-track"><div class="bar-fill" style="width:{pct:.2f}%"></div></div>
+              <div class="bar-value">{escape(label_fmt(r) or compact_num(r[val_key]))}</div>
+            </div>""")
+        return "\n".join(out) or '<p class="muted">No data.</p>'
+
+    daily_bars = "".join(f"""
+      <div class="daily-bar" title="{escape(d['date'])}: {fmt_int(d['tokens'])} tokens">
+        <div class="daily-fill" style="height:{(d['tokens']/max_daily_tokens*100 if max_daily_tokens else 0):.2f}%"></div>
+        <span>{escape(d['date'][5:] if len(d['date']) > 5 else d['date'])}</span>
+      </div>""" for d in data["daily"][-30:])
+
+    hour_bars = "".join(f"""
+      <div class="hour" title="{h['hour']:02d}:00 - {h['sessions']} sessions">
+        <div style="height:{(h['sessions']/max_hour*100 if max_hour else 0):.2f}%"></div><span>{h['hour']}</span>
+      </div>""" for h in data["hours"])
+
+    weekday_rows = "".join(f"""
+      <div class="weekday"><span>{w['day']}</span><div><b style="width:{(w['sessions']/max_weekday*100 if max_weekday else 0):.2f}%"></b></div><em>{w['sessions']}</em></div>""" for w in data["weekdays"])
+
+    def session_card(title, s):
+        if not s:
+            return ""
+        return f"""
+        <article class="session-card">
+          <span>{escape(title)}</span>
+          <strong title="{escape(s.get('id',''))}">{escape((s.get('title') or s.get('id') or 'unknown')[:56])}</strong>
+          <div class="session-meta">
+            <em>{escape(s.get('source') or 'unknown')}</em><em>{escape(s.get('model') or 'unknown')}</em><em>{escape(duration(s.get('duration_seconds')))}</em>
+          </div>
+          <details><summary>Inspect</summary><dl>
+            <dt>ID</dt><dd>{escape(s.get('id') or '')}</dd>
+            <dt>Started</dt><dd>{escape(s.get('started_iso') or '')}</dd>
+            <dt>Tokens</dt><dd>{fmt_int(s.get('total_tokens'))}</dd>
+            <dt>Messages</dt><dd>{fmt_int(s.get('message_count'))}</dd>
+            <dt>Tool calls</dt><dd>{fmt_int(s.get('tool_call_count'))}</dd>
+          </dl></details>
+        </article>"""
+
+    recent_rows = "".join(f"""
+      <tr>
+        <td><code title="{escape(s.get('id') or '')}">{escape((s.get('id') or '')[:22])}</code></td>
+        <td>{escape(s.get('source') or 'unknown')}</td>
+        <td>{escape(s.get('model') or 'unknown')}</td>
+        <td>{fmt_int(s.get('total_tokens'))}</td>
+        <td>{fmt_int(s.get('message_count'))}</td>
+        <td>{fmt_int(s.get('tool_call_count'))}</td>
+        <td>{escape((s.get('started_iso') or '').replace('T',' ')[:16])}</td>
+      </tr>""" for s in data["recent_sessions"])
+
+    active_cards = "".join(f"""
+      <article class="active-card">
+        <div class="live">● active · {escape(s.get('source') or 'unknown')}</div>
+        <strong title="{escape(s.get('id') or '')}">{escape((s.get('title') or s.get('id') or 'untitled')[:64])}</strong>
+        <div class="session-meta"><em>{escape(s.get('model') or 'unknown')}</em><em>{escape(duration(s.get('duration_seconds')))}</em><em>{fmt_int(s.get('total_tokens'))} tok</em></div>
+        <dl>
+          <dt>Started</dt><dd>{escape((s.get('started_iso') or '').replace('T',' ')[:16])}</dd>
+          <dt>Messages</dt><dd>{fmt_int(s.get('message_count'))}</dd>
+          <dt>Tools</dt><dd>{fmt_int(s.get('tool_call_count'))}</dd>
+        </dl>
+      </article>""" for s in data.get("active_sessions", [])) or '<p class="muted">No currently active sessions in this period.</p>'
+
+    def option_rows(values, selected):
+        rows = [f'<option value="" {"selected" if not selected else ""}>all</option>']
+        for v in values:
+            val = str(v or 'unknown')
+            rows.append(f'<option value="{escape(val)}" {"selected" if selected == val else ""}>{escape(val)}</option>')
+        return "".join(rows)
+
+    source_options = option_rows(data.get('filters', {}).get('sources', []), data.get('source'))
+    model_options = option_rows(data.get('filters', {}).get('models', []), data.get('model'))
+
+    def trend_value(metric):
+        key = metric.get('key')
+        val = metric.get('current') or 0
+        if key == 'cost_usd':
+            return fmt_money(val)
+        if key == 'active_seconds':
+            return duration(val)
+        return compact_num(val)
+
+    def trend_delta(metric):
+        pct = metric.get('pct')
+        delta = metric.get('delta') or 0
+        cls = 'up' if delta > 0 else ('down' if delta < 0 else 'flat')
+        if pct is None:
+            txt = 'new' if delta > 0 else '—'
+        else:
+            sign = '+' if pct > 0 else ''
+            txt = f'{sign}{pct:.1f}%'
+        return cls, txt
+
+    trend_cards = "".join(f"""
+      <article class="trend-card {trend_delta(m)[0]}">
+        <span>{escape(m['label'])}</span>
+        <strong>{escape(trend_value(m))}</strong>
+        <em>{escape(trend_delta(m)[1])} vs previous {data['days']}d</em>
+      </article>""" for m in data.get('trend', []))
+
+    json_blob = js_data(data)
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Hermes Insights Dashboard</title>
+<style>
+:root {{
+  --bg:#0d1117; --panel:#151b23; --panel2:#10161f; --text:#e6edf3; --muted:#8b949e; --line:#30363d;
+  --accent:#58a6ff; --accent2:#3fb950; --warn:#d29922; --bad:#f85149; --shadow:rgba(0,0,0,.35);
+  --radius:18px; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}}
+* {{ box-sizing:border-box; }}
+html, body {{ margin:0; min-height:100%; background:var(--bg); color:var(--text); font-family:var(--sans); }}
+body {{ overflow-x:hidden; }}
+.page {{ width:min(1520px, calc(100vw - 32px)); margin:0 auto; padding:28px 0 40px; }}
+.hero {{ display:grid; grid-template-columns: 1.2fr .8fr; gap:22px; align-items:stretch; margin-bottom:18px; }}
+.hero-main, .panel, .kpi, .session-card {{ background:linear-gradient(180deg, var(--panel), var(--panel2)); border:1px solid var(--line); border-radius:var(--radius); box-shadow:0 18px 60px var(--shadow); }}
+.hero-main {{ padding:28px; position:relative; overflow:hidden; }}
+.hero-main:after {{ content:""; position:absolute; inset:auto -80px -120px auto; width:340px; height:340px; background:radial-gradient(circle, rgba(88,166,255,.28), transparent 62%); pointer-events:none; }}
+.eyebrow {{ color:var(--accent2); text-transform:uppercase; letter-spacing:.14em; font-size:12px; font-weight:700; }}
+h1 {{ margin:10px 0 10px; font-size:clamp(34px, 5vw, 68px); line-height:.95; letter-spacing:-.055em; }}
+.lede {{ max-width:74ch; color:var(--muted); font-size:16px; line-height:1.6; margin:0; }}
+.hero-side {{ display:grid; gap:14px; }}
+.kpis {{ display:grid; grid-template-columns:repeat(4, 1fr); gap:14px; margin:14px 0 18px; }}
+.kpi {{ padding:18px; min-width:0; overflow:hidden; }}
+.kpi span {{ display:block; color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.08em; }}
+.kpi strong {{ display:block; margin-top:8px; font-size:clamp(24px, 3vw, 38px); letter-spacing:-.04em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
+.kpi em {{ display:block; color:var(--muted); font-style:normal; font-size:13px; margin-top:8px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
+.grid {{ display:grid; grid-template-columns:repeat(12, 1fr); gap:14px; }}
+.panel {{ padding:20px; min-width:0; overflow:hidden; }}
+.panel h2 {{ margin:0 0 14px; font-size:18px; letter-spacing:-.02em; }}
+.span-3 {{ grid-column:span 3; }} .span-4 {{ grid-column:span 4; }} .span-5 {{ grid-column:span 5; }} .span-6 {{ grid-column:span 6; }} .span-7 {{ grid-column:span 7; }} .span-8 {{ grid-column:span 8; }} .span-12 {{ grid-column:1 / -1; }}
+.bar-row {{ display:grid; grid-template-columns:minmax(86px, 170px) 1fr minmax(64px, auto); gap:10px; align-items:center; margin:10px 0; min-width:0; }}
+.bar-label {{ color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; min-width:0; }}
+.bar-track {{ height:9px; background:#222a35; border-radius:999px; overflow:hidden; }}
+.bar-fill {{ height:100%; background:linear-gradient(90deg, var(--accent), var(--accent2)); border-radius:999px; }}
+.bar-value {{ color:var(--muted); font-family:var(--mono); font-size:12px; text-align:right; white-space:nowrap; }}
+.daily-chart {{ height:190px; display:flex; gap:6px; align-items:end; border-bottom:1px solid var(--line); padding-top:12px; overflow-x:auto; }}
+.daily-bar {{ flex:1 0 18px; height:100%; min-width:18px; display:flex; flex-direction:column; justify-content:end; align-items:center; gap:6px; }}
+.daily-fill {{ width:100%; min-height:2px; border-radius:8px 8px 0 0; background:linear-gradient(180deg, var(--accent), rgba(88,166,255,.28)); }}
+.daily-bar span {{ color:var(--muted); font-size:10px; writing-mode:vertical-rl; max-height:42px; }}
+.hours {{ display:grid; grid-template-columns:repeat(24, 1fr); gap:4px; height:170px; align-items:end; border-bottom:1px solid var(--line); padding-top:10px; overflow:hidden; }}
+.hour {{ height:100%; display:flex; flex-direction:column; justify-content:end; align-items:center; gap:6px; min-width:0; }}
+.hour div {{ width:100%; min-height:2px; background:linear-gradient(180deg, var(--accent2), rgba(63,185,80,.22)); border-radius:7px 7px 0 0; }}
+.hour span {{ color:var(--muted); font-size:9px; }}
+.weekday {{ display:grid; grid-template-columns:38px 1fr 34px; gap:10px; align-items:center; margin:9px 0; }}
+.weekday span, .weekday em {{ color:var(--muted); font-size:13px; font-style:normal; }}
+.weekday div {{ height:9px; background:#222a35; border-radius:999px; overflow:hidden; }}
+.weekday b {{ display:block; height:100%; background:var(--warn); border-radius:999px; }}
+.session-grid {{ display:grid; grid-template-columns:repeat(4, 1fr); gap:14px; }}
+.session-card {{ padding:16px; min-width:0; }}
+.session-card span {{ color:var(--accent2); font-size:12px; text-transform:uppercase; letter-spacing:.08em; }}
+.session-card strong {{ display:block; margin:8px 0; font-size:16px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
+.active-grid {{ display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:12px; }}
+.active-card {{ border:1px solid var(--line); background:rgba(88,166,255,.06); border-radius:14px; padding:14px; min-width:0; }}
+.active-card .live {{ color:var(--accent2); font-size:11px; text-transform:uppercase; letter-spacing:.09em; }}
+.active-card strong {{ display:block; margin:6px 0 8px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
+.active-card dl {{ margin:8px 0 0; grid-template-columns:76px 1fr; font-size:12px; }}
+.session-meta {{ display:flex; flex-wrap:wrap; gap:6px; }}
+.session-meta em {{ color:var(--muted); border:1px solid var(--line); border-radius:999px; padding:4px 8px; font-size:12px; font-style:normal; max-width:100%; overflow:hidden; text-overflow:ellipsis; }}
+details {{ margin-top:12px; color:var(--muted); }} summary {{ cursor:pointer; color:var(--accent); }}
+dl {{ display:grid; grid-template-columns:86px 1fr; gap:6px 10px; }} dt {{ color:var(--muted); overflow-wrap:anywhere; }} dd {{ margin:0; overflow-wrap:anywhere; font-family:var(--mono); color:var(--text); }}
+.table-wrap {{ max-width:100%; overflow-x:auto; -webkit-overflow-scrolling:touch; }}
+table {{ width:100%; min-width:820px; border-collapse:collapse; }}
+th, td {{ padding:10px 8px; border-bottom:1px solid var(--line); text-align:left; font-size:13px; }}
+th {{ color:var(--muted); font-weight:600; }}
+td code {{ font-family:var(--mono); color:var(--accent); }}
+.footer {{ color:var(--muted); margin-top:18px; font-size:13px; display:flex; flex-wrap:wrap; gap:12px; }}
+.muted {{ color:var(--muted); }}
+.controls {{ display:flex; flex-wrap:wrap; gap:10px; margin-top:18px; }}
+button {{ border:1px solid var(--line); background:#1f2630; color:var(--text); border-radius:999px; padding:9px 12px; cursor:pointer; }}
+button:hover {{ border-color:var(--accent); }}
+.period-picker {{ display:flex; align-items:center; gap:8px; color:var(--muted); border:1px solid var(--line); background:#1f2630; border-radius:999px; padding:6px 8px 6px 12px; font-size:13px; }}
+.period-picker select {{ appearance:none; border:0; outline:0; color:var(--text); background:#151b23; border-radius:999px; padding:6px 28px 6px 10px; font:inherit; cursor:pointer; max-width:220px; }}
+.trend-grid {{ display:grid; grid-template-columns:repeat(6, minmax(0, 1fr)); gap:12px; }}
+.trend-card {{ border:1px solid var(--line); border-radius:14px; padding:14px; background:rgba(255,255,255,.025); min-width:0; }}
+.trend-card span {{ display:block; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.08em; }}
+.trend-card strong {{ display:block; margin:7px 0; font-size:24px; letter-spacing:-.03em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
+.trend-card em {{ color:var(--muted); font-style:normal; font-size:12px; }}
+.trend-card.up em {{ color:var(--accent2); }} .trend-card.down em {{ color:var(--bad); }}
+@media (max-width: 1100px) {{ .hero {{ grid-template-columns:1fr; }} .kpis {{ grid-template-columns:repeat(2,1fr); }} .span-3,.span-4,.span-5,.span-6,.span-7,.span-8 {{ grid-column:1 / -1; }} .session-grid {{ grid-template-columns:repeat(2, 1fr); }} .active-grid {{ grid-template-columns:repeat(2, minmax(0, 1fr)); }} .trend-grid {{ grid-template-columns:repeat(3, minmax(0, 1fr)); }} }}
+@media (max-width: 620px) {{ .page {{ width:min(100vw - 20px, 100%); padding-top:12px; }} .hero-main,.panel,.kpi,.session-card {{ border-radius:14px; }} .hero-main {{ padding:20px; }} .kpis {{ grid-template-columns:1fr; }} .bar-row {{ grid-template-columns:1fr; gap:6px; }} .bar-value {{ text-align:left; }} .hours {{ grid-template-columns:repeat(12, 1fr); height:220px; }} .session-grid,.active-grid,.trend-grid {{ grid-template-columns:1fr; }} h1 {{ font-size:40px; }} }}
+@media print {{ body {{ background:white; color:black; }} .hero-main,.panel,.kpi,.session-card {{ box-shadow:none; }} button {{ display:none; }} }}
+</style>
+</head>
+<body>
+<main class="page">
+  <section class="hero">
+    <div class="hero-main">
+      <div class="eyebrow">Hermes local operations</div>
+      <h1>Insights dashboard</h1>
+      <p class="lede">Generated from the Hermes session database. It mirrors the useful parts of <code>hermes insights</code>, then adds dense scan panels, recent sessions, costs, and responsive charts.</p>
+      <div class="controls">
+        <label class="period-picker">Period
+          <select id="periodSelect" onchange="setFilter('days', this.value)">
+            <option value="1">24 hours</option>
+            <option value="3">3 days</option>
+            <option value="7">7 days</option>
+            <option value="14">14 days</option>
+            <option value="30">30 days</option>
+            <option value="90">90 days</option>
+            <option value="365">1 year</option>
+          </select>
+        </label>
+        <label class="period-picker">Source <select id="sourceSelect" onchange="setFilter('source', this.value)">{source_options}</select></label>
+        <label class="period-picker">Model <select id="modelSelect" onchange="setFilter('model', this.value)">{model_options}</select></label>
+        <button onclick="downloadJson()">Download JSON</button><button onclick="window.print()">Print</button>
+      </div>
+    </div>
+    <div class="hero-side">
+      {kpi('Period', f"{data['days']}d", 'source: ' + (data['source'] or 'all') + ' · model: ' + (data.get('model') or 'all'))}
+      {kpi('Generated', data['generated_at'].replace('T',' ')[:16], 'local time')}
+    </div>
+  </section>
+  <section class="kpis">
+    {kpi('Sessions', compact_num(t.get('sessions')), f"avg {duration(avg_session)}")}
+    {kpi('Messages', compact_num(t.get('messages')), f"{fmt_int(t.get('user_messages'))} user")}
+    {kpi('Tool calls', compact_num(t.get('tool_calls')), 'recorded by session')}
+    {kpi('Total tokens', compact_num(t.get('total_tokens')), f"in {compact_num(t.get('input_tokens'))} / out {compact_num(t.get('output_tokens'))}")}
+    {kpi('Cache read', compact_num(t.get('cache_read_tokens')), 'prompt cache reuse')}
+    {kpi('Reasoning', compact_num(t.get('reasoning_tokens')), 'where recorded')}
+    {kpi('Cost', fmt_money(t.get('cost_usd')), 'actual or estimated')}
+    {kpi('Active time', duration(t.get('active_seconds')), f"avg {avg_msgs:.1f} msg/session")}
+  </section>
+  <section class="grid">
+    <article class="panel span-8"><h2>Daily token burn</h2><div class="daily-chart">{daily_bars}</div></article>
+    <article class="panel span-4"><h2>Weekday rhythm</h2>{weekday_rows}</article>
+    <article class="panel span-12"><h2>Trend vs previous period</h2><div class="trend-grid">{trend_cards}</div></article>
+    <article class="panel span-6"><h2>Platforms</h2>{bar_rows(data['platforms'], 'name', 'tokens', lambda r: compact_num(r['tokens']) + ' tok')}</article>
+    <article class="panel span-6"><h2>Models</h2>{bar_rows(data['models'], 'name', 'tokens', lambda r: compact_num(r['tokens']) + ' tok')}</article>
+    <article class="panel span-4"><h2>Top tools</h2>{bar_rows(data['tools'][:12], 'name', 'calls')}</article>
+    <article class="panel span-4"><h2>Top skills</h2>{bar_rows(data['skills'][:12], 'name', 'loads', lambda r: f"{r['loads']} load / {r['edits']} edit")}</article>
+    <article class="panel span-4"><h2>Hourly starts</h2><div class="hours">{hour_bars}</div></article>
+    <article class="panel span-12"><h2>Current active sessions</h2><div class="active-grid">{active_cards}</div></article>
+    <article class="panel span-12"><h2>Notable sessions</h2><div class="session-grid">
+      {session_card('Longest', data['notable'].get('longest'))}
+      {session_card('Most messages', data['notable'].get('most_messages'))}
+      {session_card('Most tokens', data['notable'].get('most_tokens'))}
+      {session_card('Most tool calls', data['notable'].get('most_tools'))}
+    </div></article>
+    <article class="panel span-12"><h2>Recent sessions</h2><div class="table-wrap"><table><thead><tr><th>Session</th><th>Source</th><th>Model</th><th>Tokens</th><th>Messages</th><th>Tools</th><th>Started</th></tr></thead><tbody>{recent_rows}</tbody></table></div></article>
+  </section>
+  <p class="footer"><span>DB: <code>{escape(data['db'])}</code></span><span>Period: {escape(data['period_start'])} to {escape(data['period_end'])}</span></p>
+</main>
+<script>
+const DASHBOARD_DATA = {json_blob};
+function currentDays() {{
+  return new URLSearchParams(location.search).get('days') || String(DASHBOARD_DATA.days || 7);
+}}
+function initControls() {{
+  const sel = document.getElementById('periodSelect');
+  if (sel) sel.value = currentDays();
+  const source = document.getElementById('sourceSelect');
+  if (source) source.value = DASHBOARD_DATA.source || '';
+  const model = document.getElementById('modelSelect');
+  if (model) model.value = DASHBOARD_DATA.model || '';
+}}
+function setFilter(key, value) {{
+  const url = new URL(location.href);
+  if (value) url.searchParams.set(key, value);
+  else url.searchParams.delete(key);
+  location.href = url.toString();
+}}
+function setPeriod(days) {{ setFilter('days', days); }}
+function downloadJson() {{
+  const blob = new Blob([JSON.stringify(DASHBOARD_DATA, null, 2)], {{type:'application/json'}});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `hermes-insights-${{DASHBOARD_DATA.days || currentDays()}}d.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}}
+initControls();
+</script>
+</body>
+</html>"""
+
+
+def render_shell() -> str:
+    """Lightweight dashboard shell. Data is fetched from /data.json and rendered client-side."""
+    return '<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Hermes Insights Dashboard</title>\n<style>\n:root{--bg:#0d1117;--panel:#151b23;--panel2:#10161f;--text:#e6edf3;--muted:#8b949e;--line:#30363d;--accent:#58a6ff;--accent2:#3fb950;--warn:#d29922;--bad:#f85149;--shadow:rgba(0,0,0,.35);--radius:18px;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--sans:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,\'Segoe UI\',sans-serif}*{box-sizing:border-box}html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text);font-family:var(--sans)}body{overflow-x:hidden}.page{width:min(1520px,calc(100vw - 32px));margin:0 auto;padding:28px 0 40px}.hero{display:grid;grid-template-columns:1.2fr .8fr;gap:22px;margin-bottom:18px}.hero-main,.panel,.kpi,.session-card{background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid var(--line);border-radius:var(--radius);box-shadow:0 18px 60px var(--shadow)}.hero-main{padding:28px;position:relative;overflow:hidden}.eyebrow{color:var(--accent2);text-transform:uppercase;letter-spacing:.14em;font-size:12px;font-weight:700}h1{margin:10px 0;font-size:clamp(34px,5vw,68px);line-height:.95;letter-spacing:-.055em}.lede{max-width:74ch;color:var(--muted);font-size:16px;line-height:1.6;margin:0}.hero-side{display:grid;gap:14px}.controls{display:flex;flex-wrap:wrap;gap:10px;margin-top:18px}button{border:1px solid var(--line);background:#1f2630;color:var(--text);border-radius:999px;padding:9px 12px;cursor:pointer}.period-picker{display:flex;align-items:center;gap:8px;color:var(--muted);border:1px solid var(--line);background:#1f2630;border-radius:999px;padding:6px 8px 6px 12px;font-size:13px}.period-picker select{appearance:none;border:0;outline:0;color:var(--text);background:#151b23;border-radius:999px;padding:6px 28px 6px 10px;font:inherit;cursor:pointer;max-width:220px}.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:14px 0 18px}.kpi{padding:18px;min-width:0;overflow:hidden}.kpi span{display:block;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.08em}.kpi strong{display:block;margin-top:8px;font-size:clamp(24px,3vw,38px);letter-spacing:-.04em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.kpi em{display:block;color:var(--muted);font-style:normal;font-size:13px;margin-top:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:14px}.panel{padding:20px;min-width:0;overflow:hidden}.panel h2{margin:0 0 14px;font-size:18px}.span-4{grid-column:span 4}.span-6{grid-column:span 6}.span-8{grid-column:span 8}.span-12{grid-column:1/-1}.bar-row{display:grid;grid-template-columns:minmax(86px,170px) 1fr minmax(64px,auto);gap:10px;align-items:center;margin:10px 0;min-width:0}.bar-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}.bar-track{height:9px;background:#222a35;border-radius:999px;overflow:hidden}.bar-fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));border-radius:999px}.bar-value{color:var(--muted);font-family:var(--mono);font-size:12px;text-align:right;white-space:nowrap}.daily-chart{height:190px;display:flex;gap:6px;align-items:end;border-bottom:1px solid var(--line);padding-top:12px;overflow-x:auto}.daily-bar{flex:1 0 18px;height:100%;min-width:18px;display:flex;flex-direction:column;justify-content:end;align-items:center;gap:6px}.daily-fill{width:100%;min-height:2px;border-radius:8px 8px 0 0;background:linear-gradient(180deg,var(--accent),rgba(88,166,255,.28))}.daily-bar span{color:var(--muted);font-size:10px;writing-mode:vertical-rl;max-height:42px}.hours{display:grid;grid-template-columns:repeat(24,1fr);gap:4px;height:170px;align-items:end;border-bottom:1px solid var(--line);padding-top:10px;overflow:hidden}.hour{height:100%;display:flex;flex-direction:column;justify-content:end;align-items:center;gap:6px;min-width:0}.hour div{width:100%;min-height:2px;background:linear-gradient(180deg,var(--accent2),rgba(63,185,80,.22));border-radius:7px 7px 0 0}.hour span{color:var(--muted);font-size:9px}.weekday{display:grid;grid-template-columns:38px 1fr 34px;gap:10px;align-items:center;margin:9px 0}.weekday span,.weekday em{color:var(--muted);font-size:13px;font-style:normal}.weekday div{height:9px;background:#222a35;border-radius:999px;overflow:hidden}.weekday b{display:block;height:100%;background:var(--warn);border-radius:999px}.session-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}.session-card{padding:16px;min-width:0}.session-card span{color:var(--accent2);font-size:12px;text-transform:uppercase;letter-spacing:.08em}.session-card strong{display:block;margin:8px 0;font-size:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.active-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.active-card{border:1px solid var(--line);background:rgba(88,166,255,.06);border-radius:14px;padding:14px;min-width:0}.active-card .live{color:var(--accent2);font-size:11px;text-transform:uppercase;letter-spacing:.09em}.active-card strong{display:block;margin:6px 0 8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.session-meta{display:flex;flex-wrap:wrap;gap:6px}.session-meta em{color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:4px 8px;font-size:12px;font-style:normal;max-width:100%;overflow:hidden;text-overflow:ellipsis}dl{display:grid;grid-template-columns:86px 1fr;gap:6px 10px}dt{color:var(--muted);overflow-wrap:anywhere}dd{margin:0;overflow-wrap:anywhere;font-family:var(--mono);color:var(--text)}details{margin-top:12px;color:var(--muted)}summary{cursor:pointer;color:var(--accent)}.table-wrap{max-width:100%;overflow-x:auto}table{width:100%;min-width:820px;border-collapse:collapse}th,td{padding:10px 8px;border-bottom:1px solid var(--line);text-align:left;font-size:13px}th{color:var(--muted);font-weight:600}td code{font-family:var(--mono);color:var(--accent)}.session-link{color:var(--accent);text-decoration:none}.session-link:hover{text-decoration:underline}a{color:inherit;text-decoration:none}.session-link{color:var(--accent);text-decoration:none}.session-link:hover{text-decoration:underline}.trend-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px}.trend-card{border:1px solid var(--line);border-radius:14px;padding:14px;background:rgba(255,255,255,.025);min-width:0}.trend-card span{display:block;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.08em}.trend-card strong{display:block;margin:7px 0;font-size:24px;letter-spacing:-.03em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.trend-card em{color:var(--muted);font-style:normal;font-size:12px}.trend-card.up em{color:var(--accent2)}.trend-card.down em{color:var(--bad)}.compare-controls{display:flex;flex-wrap:wrap;gap:10px;align-items:end;margin:8px 0 14px}.help-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.help-card{border:1px solid var(--line);border-radius:14px;background:#10161f;padding:12px}.help-card strong{display:block;margin-bottom:5px}.help-card p{margin:0;color:var(--muted);font-size:13px}.help-summary{cursor:pointer;list-style:none;display:flex;justify-content:space-between;gap:12px;align-items:center}.help-summary::-webkit-details-marker{display:none}.help-summary h2{margin:0}.help-summary span{color:var(--accent);font-size:13px}.compare-controls label{display:grid;gap:5px;color:var(--muted);font-size:12px}.delta-up{color:var(--accent2)}.delta-down{color:var(--bad)}.delta-flat{color:var(--muted)}.pillrow{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:12px}.pill{border:1px solid var(--line);border-radius:999px;padding:5px 9px;color:var(--muted);font-size:12px}.filter-chip{cursor:pointer}.filter-chip.active{background:rgba(88,166,255,.16);border-color:var(--accent);color:var(--text)}h3{font-size:14px;color:var(--muted);margin:16px 0 8px}.footer,.status{color:var(--muted);margin-top:18px;font-size:13px;display:flex;flex-wrap:wrap;gap:12px}.muted{color:var(--muted)}.loading{opacity:.68}.section-nav{position:sticky;top:0;z-index:20;display:flex;gap:8px;overflow-x:auto;padding:8px 0;margin:-4px 0 10px;background:linear-gradient(180deg,rgba(13,17,23,.96),rgba(13,17,23,.76));backdrop-filter:blur(10px);scrollbar-width:thin}.section-nav a{white-space:nowrap;border:1px solid var(--line);border-radius:999px;padding:7px 10px;background:#10161f;color:var(--accent);font-size:13px;text-decoration:none}.section-nav a:hover{border-color:var(--accent);background:rgba(88,166,255,.12)}body.compact .section-nav a{padding:5px 8px;font-size:12px}body.compact .page{padding-top:14px}body.compact .hero{margin-bottom:12px}body.compact .hero-main,body.compact .panel,body.compact .kpi{padding:12px}body.compact .grid,body.compact .kpis{gap:9px}body.compact th,body.compact td{padding:6px 7px}body.compact .daily-chart{height:180px}body.compact .hours{height:170px}body.compact .kpi strong{font-size:clamp(20px,2.2vw,28px)}body.compact .kpi em,body.compact .muted,body.compact .trend-card p,body.compact .help-card p{font-size:12px}body.compact .bar-row{gap:6px;margin:6px 0}body.compact .panel h2{margin-bottom:9px}body.compact .session-grid,body.compact .active-grid{gap:9px}.compact-toggle{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font-size:13px}.compact-toggle input{accent-color:var(--accent)}@media(max-width:1100px){.hero{grid-template-columns:1fr}.kpis{grid-template-columns:repeat(2,1fr)}.span-4,.span-6,.span-8{grid-column:1/-1}.session-grid,.active-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.trend-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}@media(max-width:620px){.help-grid{grid-template-columns:1fr}.page{width:min(100vw - 20px,100%);padding-top:12px}.hero-main,.panel,.kpi,.session-card{border-radius:14px}.hero-main{padding:20px}.kpis,.session-grid,.active-grid,.trend-grid,.trend-history-grid{grid-template-columns:1fr}.bar-row{grid-template-columns:1fr;gap:6px}.bar-value{text-align:left}.hours{grid-template-columns:repeat(12,1fr);height:220px}h1{font-size:40px}}\n</style></head><body><main class="page" id="app"><section class="hero"><div class="hero-main"><div class="eyebrow">Hermes local operations</div><h1>Insights dashboard</h1><p class="lede">Generated from the Hermes session database. Filters fetch <code>/data.json</code> and update without a full page reload.</p><div class="controls"><label class="period-picker">Period <select id="periodSelect"><option value="1">24 hours</option><option value="3">3 days</option><option value="7">7 days</option><option value="14">14 days</option><option value="30">30 days</option><option value="90">90 days</option><option value="365">1 year</option></select></label><label class="period-picker">Source <select id="sourceSelect"><option value="">all</option></select></label><label class="period-picker">Model <select id="modelSelect"><option value="">all</option></select></label><label class="compact-toggle"><input type="checkbox" id="compactToggle"> Compact</label><button id="downloadBtn">Download JSON</button><button onclick="window.print()">Print</button></div><div class="status" id="status">Loading data…</div></div><div class="hero-side" id="heroSide"></div></section><section id="attention"></section><nav class="section-nav" aria-label="Dashboard sections"><a href="#attention">Attention</a><a href="#dashboard-help">Guide</a><a href="#anomalies">Anomalies</a><a href="#cron-health">Cron</a><a href="#exports">Exports</a><a href="#historical-trends">Trends</a><a href="#snapshot-compare">Compare</a><a href="#dashboard-self-health">Health</a><a href="#active-sessions">Sessions</a></nav><section class="kpis" id="kpis"></section><section class="grid" id="grid"></section><p class="footer" id="footer"></p></main>\n<script>\nlet DASHBOARD_DATA=null;let CRON_FILTER=\'all\';function applyCompactMode(on){document.body.classList.toggle(\'compact\',!!on);try{localStorage.setItem(\'hermes-insights-compact\',on?\'1\':\'0\')}catch(e){}const cb=$(\'compactToggle\');if(cb)cb.checked=!!on}function initCompactMode(){let on=false;try{on=localStorage.getItem(\'hermes-insights-compact\')===\'1\'}catch(e){}applyCompactMode(on);const cb=$(\'compactToggle\');if(cb)cb.onchange=()=>applyCompactMode(cb.checked)}const $=id=>document.getElementById(id);const esc=s=>String(s??\'\').replace(/[&<>\'"]/g,c=>({\'&\':\'&amp;\',\'<\':\'&lt;\',\'>\':\'&gt;\',"\'":\'&#39;\',\'"\':\'&quot;\'}[c]));function compactNum(n){n=Number(n||0);const sign=n<0?\'-\':\'\';n=Math.abs(n);if(n>=1e9)return sign+(n/1e9).toFixed(2)+\'B\';if(n>=1e6)return sign+(n/1e6).toFixed(2)+\'M\';if(n>=1e3)return sign+(n/1e3).toFixed(1)+\'K\';return sign+(Number.isInteger(n)?String(n):n.toFixed(2))}function fmtInt(n){return Math.round(Number(n||0)).toLocaleString()}function fmtMoney(n){return \'$\'+Number(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}function duration(sec){let s=Math.max(0,Math.round(Number(sec||0)));if(s>=86400)return(s/86400).toFixed(1)+\'d\';if(s>=3600)return(s/3600).toFixed(1)+\'h\';if(s>=60)return Math.floor(s/60)+\'m\';return s+\'s\'}function kpi(label,value,sub=\'\'){return `<article class="kpi"><span>${esc(label)}</span><strong>${esc(value)}</strong><em>${esc(sub)}</em></article>`}function barRows(rows,nameKey,valKey,labelFn){rows=rows||[];if(!rows.length)return \'<p class="muted">No data.</p>\';const max=Math.max(...rows.map(r=>Number(r[valKey]||0)),1);return rows.map(r=>{const pct=Math.max(2,Number(r[valKey]||0)/max*100),label=labelFn?labelFn(r):compactNum(r[valKey]);return `<div class="bar-row"><div class="bar-label" title="${esc(r[nameKey])}">${esc(r[nameKey])}</div><div class="bar-track"><div class="bar-fill" style="width:${pct.toFixed(2)}%"></div></div><div class="bar-value">${esc(label)}</div></div>`}).join(\'\')}function optionRows(select,values,selected){const cur=selected||\'\';select.innerHTML=`<option value="" ${cur?\'\':\'selected\'}>all</option>`+(values||[]).map(v=>{v=String(v||\'unknown\');return `<option value="${esc(v)}" ${cur===v?\'selected\':\'\'}>${esc(v)}</option>`}).join(\'\')}function activeQuery(){const q=new URLSearchParams();q.set(\'days\',($(\'periodSelect\')?.value||new URL(location.href).searchParams.get(\'days\')||\'7\'));const src=$(\'sourceSelect\').value;if(src)q.set(\'source\',src);const mod=$(\'modelSelect\').value;if(mod)q.set(\'model\',mod);return q.toString()}function exportLink(path){const q=activeQuery();return path+(q?\'?\'+q:\'\')}function updateExportLinks(){const map={exportCurrent:\'/export/current.json\',exportDataDownload:\'/data.json\',exportHealth:\'/export/health.json\',exportArchive:\'/export/archive-history.json\',exportCron:\'/export/cron-health.json\',exportAttention:\'/export/attention.json\'};Object.entries(map).forEach(([id,path])=>{const el=$(id);if(!el)return;let href=path;if(id===\'exportDataDownload\'){const q=activeQuery();href=\'/data.json?\'+(q?q+\'&\':\'\')+\'download=1\'}else if(![\'exportHealth\',\'exportArchive\'].includes(id)){href=exportLink(path)}el.href=href})}function setParamsFromControls(push=true){const url=new URL(location.href);url.searchParams.set(\'days\',$(\'periodSelect\').value||\'7\');for(const [key,id]of[[\'source\',\'sourceSelect\'],[\'model\',\'modelSelect\']]){const v=$(id).value;if(v)url.searchParams.set(key,v);else url.searchParams.delete(key)}if(push)history.pushState(null,\'\',url);loadData()}async function loadData(){const url=new URL(\'/data.json\',location.href),cur=new URL(location.href);url.search=cur.search;if(!url.searchParams.get(\'days\'))url.searchParams.set(\'days\',\'7\');$(\'status\').textContent=\'Loading data…\';$(\'app\').classList.add(\'loading\');const started=performance.now(),controller=new AbortController(),timer=setTimeout(()=>controller.abort(),60000);try{const res=await fetch(url,{cache:\'no-store\',signal:controller.signal}),age=res.headers.get(\'X-Hermes-Cache-Age\');if(!res.ok)throw new Error(await res.text());DASHBOARD_DATA=await res.json();renderAll(age,performance.now()-started)}catch(e){$(\'status\').textContent=\'Dashboard data failed to load: \'+(e.name===\'AbortError\'?\'request timed out after 60s\':e.message);console.error(e)}finally{clearTimeout(timer);$(\'app\').classList.remove(\'loading\')}}function snapshotMetric(row,key){if(!row)return 0;if(key===\'sessions\')return Number(row.sessions||row.totals?.sessions||0);if(key===\'messages\')return Number(row.messages||row.totals?.messages||0);if(key===\'tool_calls\')return Number(row.tool_calls||row.totals?.tool_calls||0);if(key===\'total_tokens\')return Number(row.total_tokens||row.tokens||row.totals?.total_tokens||0);if(key===\'cost_usd\')return Number(row.cost_usd||row.totals?.cost_usd||0);if(key===\'anomalies\')return Number(row.anomalies||0);if(key===\'cron_overdue\')return Number(row.cron_overdue??row.cron_stale??0);if(key===\'active_sessions\')return Number(row.active_sessions||0);return 0}function renderSnapshotComparison(){const hist=DASHBOARD_DATA?.archive_history||[], el=$(\'snapshotCompareBody\');if(!el)return;if(hist.length<2){$(\'snapshotCompareControls\').innerHTML=\'\';el.innerHTML=\'<tr><td colspan="5" class="muted">Need at least two daily snapshots. The daily archive cron is enabled, so this will populate automatically after the next snapshot.</td></tr>\';return}const sorted=[...hist].sort((a,b)=>String(a.date).localeCompare(String(b.date)));const dates=sorted.map(x=>x.date);let from=$(\'compareFrom\')?.value||dates[Math.max(0,dates.length-2)],to=$(\'compareTo\')?.value||dates[dates.length-1];if(!dates.includes(from))from=dates[Math.max(0,dates.length-2)];if(!dates.includes(to))to=dates[dates.length-1];const opts=dates.map(d=>`<option value="${esc(d)}">${esc(d)}</option>`).join(\'\');$(\'snapshotCompareControls\').innerHTML=`<label>From<select id="compareFrom">${opts}</select></label><label>To<select id="compareTo">${opts}</select></label>`;$(\'compareFrom\').value=from;$(\'compareTo\').value=to;$(\'compareFrom\').onchange=renderSnapshotComparison;$(\'compareTo\').onchange=renderSnapshotComparison;const a=sorted.find(x=>x.date===from),b=sorted.find(x=>x.date===to);const metrics=[[\'sessions\',\'Sessions\',fmtInt],[\'messages\',\'Messages\',fmtInt],[\'tool_calls\',\'Tool calls\',fmtInt],[\'total_tokens\',\'Total tokens\',compactNum],[\'cost_usd\',\'Cost\',fmtMoney],[\'anomalies\',\'Anomalies\',fmtInt],[\'cron_overdue\',\'Overdue cron jobs\',fmtInt],[\'active_sessions\',\'Active sessions\',fmtInt]];el.innerHTML=metrics.map(([key,label,fmt])=>{const av=snapshotMetric(a,key),bv=snapshotMetric(b,key),delta=bv-av,pct=av?delta/av*100:null,cls=delta>0?\'delta-up\':delta<0?\'delta-down\':\'delta-flat\',sign=delta>0?\'+\':\'\';return `<tr><td>${esc(label)}</td><td>${fmt(av)}</td><td>${fmt(bv)}</td><td class="${cls}">${esc(sign+(key===\'cost_usd\'?delta.toFixed(4):compactNum(delta)))}</td><td class="${cls}">${pct==null?\'n/a\':esc(sign+pct.toFixed(1)+\'%\')}</td></tr>`}).join(\'\')}function cronRow(j){return `<tr><td><a class="session-link" href="/cron/${encodeURIComponent(j.id||\'\')}"><code title="${esc(j.id)}">${esc(String(j.id||\'\').slice(0,12))}</code></a></td><td>${esc(j.name||\'\')}</td><td>${esc(j.enabled?\'enabled\':\'disabled\')} / ${esc(j.state||\'\')}</td><td><span class="pill">exec ${esc(j.execution_status||j.last_status||\'unknown\')}</span> <span class="pill">delivery ${esc(j.delivery_status||\'unknown\')}</span>${j.workload_status?` <span class="pill">workload ${esc(j.workload_status)}</span>`:\'\'}</td><td>${esc(String(j.last_run_at||\'\').replace(\'T\',\' \').slice(0,16))}</td><td>${esc(String(j.next_run_at||\'\').replace(\'T\',\' \').slice(0,16))}</td><td>${esc(j.output?.latest||\'\')}</td><td>${esc(j.notes||\'\')}</td></tr>`}function cronFilterDefs(jobs){jobs=jobs||[];const count=fn=>jobs.filter(fn).length;return [{id:\'all\',label:\'All\',count:jobs.length,fn:j=>true},{id:\'overdue\',label:\'Overdue\',count:count(j=>j.overdue),fn:j=>!!j.overdue},{id:\'paused\',label:\'Paused\',count:count(j=>j.state===\'paused\'||String(j.notes||\'\').includes(\'paused\')),fn:j=>j.state===\'paused\'||String(j.notes||\'\').includes(\'paused\')},{id:\'disabled\',label:\'Disabled\',count:count(j=>!j.enabled),fn:j=>!j.enabled},{id:\'delivery\',label:\'Delivery errors\',count:count(j=>j.last_delivery_error),fn:j=>!!j.last_delivery_error},{id:\'status\',label:\'Active status issues\',count:count(j=>j.classification===\'failed\'),fn:j=>j.classification===\'failed\'},{id:\'no-agent\',label:\'No-agent\',count:count(j=>j.no_agent),fn:j=>!!j.no_agent},{id:\'with-output\',label:\'With output\',count:count(j=>Number(j.output?.count||0)>0),fn:j=>Number(j.output?.count||0)>0},{id:\'no-output\',label:\'No output\',count:count(j=>Number(j.output?.count||0)===0),fn:j=>Number(j.output?.count||0)===0}]}function renderCronFilterChips(jobs){return cronFilterDefs(jobs).map(f=>`<button type="button" class="pill filter-chip ${CRON_FILTER===f.id?\'active\':\'\'}" data-cron-filter="${esc(f.id)}">${esc(f.label)} ${fmtInt(f.count)}</button>`).join(\'\')}function applyCronFilter(){const cron=DASHBOARD_DATA?.cron_health||{},jobs=cron.jobs||[],defs=cronFilterDefs(jobs),def=defs.find(x=>x.id===CRON_FILTER)||defs[0],rows=jobs.filter(def.fn),tbody=$(\'cronJobRows\');if(!tbody)return;tbody.innerHTML=rows.map(cronRow).join(\'\')||\'<tr><td colspan="8" class="muted">No jobs match this filter.</td></tr>\';$(\'cronFilterTitle\').textContent=`Job state — ${def.label} (${fmtInt(rows.length)})`;document.querySelectorAll(\'[data-cron-filter]\').forEach(b=>b.classList.toggle(\'active\',b.dataset.cronFilter===CRON_FILTER))}function bindCronFilters(){document.querySelectorAll(\'[data-cron-filter]\').forEach(b=>b.onclick=()=>{CRON_FILTER=b.dataset.cronFilter||\'all\';applyCronFilter()});applyCronFilter()}function renderAll(age,ms){const d=DASHBOARD_DATA,t=d.totals||{};$(\'periodSelect\').value=String(d.days||7);optionRows($(\'sourceSelect\'),d.filters?.sources||[],d.source);optionRows($(\'modelSelect\'),d.filters?.models||[],d.model);const avgSession=t.sessions?Number(t.active_seconds||0)/Number(t.sessions):0,avgMsgs=t.sessions?Number(t.messages||0)/Number(t.sessions):0;$(\'heroSide\').innerHTML=kpi(\'Period\',`${d.days}d`,`source: ${d.source||\'all\'} · model: ${d.model||\'all\'}`)+kpi(\'Generated\',String(d.generated_at||\'\').replace(\'T\',\' \').slice(0,16),\'local time\');$(\'kpis\').innerHTML=kpi(\'Sessions\',compactNum(t.sessions),`avg ${duration(avgSession)}`)+kpi(\'Messages\',compactNum(t.messages),`${fmtInt(t.user_messages)} user`)+kpi(\'Tool calls\',compactNum(t.tool_calls),\'recorded by session\')+kpi(\'Total tokens\',compactNum(t.total_tokens),`in ${compactNum(t.input_tokens)} / out ${compactNum(t.output_tokens)}`)+kpi(\'Cache read\',compactNum(t.cache_read_tokens),\'prompt cache reuse\')+kpi(\'Reasoning\',compactNum(t.reasoning_tokens),\'where recorded\')+kpi(\'Cost\',fmtMoney(t.cost_usd),\'actual or estimated\')+kpi(\'Active time\',duration(t.active_seconds),`avg ${avgMsgs.toFixed(1)} msg/session`);const daily=d.daily||[],maxDaily=Math.max(...daily.map(x=>Number(x.tokens||0)),1),dailyBars=daily.slice(-30).map(x=>`<div class="daily-bar" title="${esc(x.date)}: ${fmtInt(x.tokens)} tokens"><div class="daily-fill" style="height:${(Number(x.tokens||0)/maxDaily*100).toFixed(2)}%"></div><span>${esc(String(x.date||\'\').slice(5)||x.date)}</span></div>`).join(\'\'),maxWeek=Math.max(...(d.weekdays||[]).map(x=>Number(x.sessions||0)),1),weekdays=(d.weekdays||[]).map(w=>`<div class="weekday"><span>${esc(w.day)}</span><div><b style="width:${(Number(w.sessions||0)/maxWeek*100).toFixed(2)}%"></b></div><em>${fmtInt(w.sessions)}</em></div>`).join(\'\'),maxHour=Math.max(...(d.hours||[]).map(x=>Number(x.sessions||0)),1),hours=(d.hours||[]).map(h=>`<div class="hour" title="${String(h.hour).padStart(2,\'0\')}:00 - ${h.sessions} sessions"><div style="height:${(Number(h.sessions||0)/maxHour*100).toFixed(2)}%"></div><span>${h.hour}</span></div>`).join(\'\');const trend=(d.trend||[]).map(m=>{const pct=m.pct,delta=Number(m.delta||0),cls=delta>0?\'up\':delta<0?\'down\':\'flat\',val=m.key===\'cost_usd\'?fmtMoney(m.current):m.key===\'active_seconds\'?duration(m.current):compactNum(m.current),txt=pct==null?(delta>0?\'new\':\'—\'):`${pct>0?\'+\':\'\'}${Number(pct).toFixed(1)}%`;return `<article class="trend-card ${cls}"><span>${esc(m.label)}</span><strong>${esc(val)}</strong><em>${esc(txt)} vs previous ${d.days}d</em></article>`}).join(\'\');const active=(d.active_sessions||[]).map(s=>`<article class="active-card"><div class="live">● active · ${esc(s.source||\'unknown\')}</div><a class="session-link" href="/session/${encodeURIComponent(s.id)}"><strong title="${esc(s.id)}">${esc((s.title||s.id||\'untitled\').slice(0,64))}</strong></a><div class="session-meta"><em>${esc(s.model||\'unknown\')}</em><em>${duration(s.duration_seconds)}</em><em>${fmtInt(s.total_tokens)} tok</em></div><dl><dt>Started</dt><dd>${esc(String(s.started_iso||\'\').replace(\'T\',\' \').slice(0,16))}</dd><dt>Messages</dt><dd>${fmtInt(s.message_count)}</dd><dt>Tools</dt><dd>${fmtInt(s.tool_call_count)}</dd></dl></article>`).join(\'\')||\'<p class="muted">No currently active sessions in this period.</p>\';const anomalies=(d.anomalies||[]).map(a=>`<tr><td><a class="session-link" href="/session/${encodeURIComponent(a.id)}"><code title="${esc(a.id)}">${esc(String(a.id||\'\').slice(0,22))}</code></a></td><td>${esc(a.source||\'unknown\')}</td><td>${esc(a.model||\'unknown\')}</td><td>${esc(a.reason||\'\')}</td><td>${compactNum(a.total_tokens)}</td><td>${fmtMoney(a.cost_usd)}</td><td>${fmtInt(a.tool_calls)}</td><td>${duration(a.duration_seconds)}</td><td>${esc(String(a.started_iso||\'\').replace(\'T\',\' \').slice(0,16))}</td></tr>`).join(\'\')||\'<tr><td colspan="9" class="muted">No anomalies in this period.</td></tr>\';const cron=d.cron_health||{},cs=cron.summary||{};const cronSummary=`<div class="pillrow"><span class="pill">jobs ${fmtInt(cs.jobs)}</span><span class="pill">enabled ${fmtInt(cs.enabled)}</span><span class="pill">disabled ${fmtInt(cs.disabled)}</span><span class="pill">active status issues ${fmtInt(cs.last_status_not_ok)}</span><span class="pill">dormant history ${fmtInt(cs.dormant_status_history||0)}</span><span class="pill">delivery errors ${fmtInt(cs.delivery_errors)}</span><span class="pill">overdue ${fmtInt(cs.overdue??cs.stale_enabled_48h)}</span><span class="pill">never run ${fmtInt(cs.never_run)}</span><span class="pill">no-agent ${fmtInt(cs.no_agent)}</span></div>`;const cronRow=j=>`<tr><td><a class="session-link" href="/cron/${encodeURIComponent(j.id||\'\')}"><code title="${esc(j.id)}">${esc(String(j.id||\'\').slice(0,12))}</code></a></td><td>${esc(j.name||\'\')}</td><td>${esc(j.enabled?\'enabled\':\'disabled\')} / ${esc(j.state||\'\')}</td><td><span class="pill">exec ${esc(j.execution_status||j.last_status||\'unknown\')}</span> <span class="pill">delivery ${esc(j.delivery_status||\'unknown\')}</span>${j.workload_status?` <span class="pill">workload ${esc(j.workload_status)}</span>`:\'\'}</td><td>${esc(String(j.last_run_at||\'\').replace(\'T\',\' \').slice(0,16))}</td><td>${esc(String(j.next_run_at||\'\').replace(\'T\',\' \').slice(0,16))}</td><td>${esc(j.output?.latest||\'\')}</td><td>${esc(j.notes||\'\')}</td></tr>`;const focusedCronTable=(rows,empty)=>rows.length?rows.map(cronRow).join(\'\'):`<tr><td colspan="8" class="muted">${esc(empty)}</td></tr>`;const overdueCron=(cron.jobs||[]).filter(j=>j.overdue);const deliveryCron=(cron.jobs||[]).filter(j=>j.last_delivery_error);const statusCron=(cron.jobs||[]).filter(j=>j.classification===\'failed\');const cronJobs=(cron.jobs||[]).map(cronRow).join(\'\')||\'<tr><td colspan="8" class="muted">No cron jobs found.</td></tr>\';const cronSessions=(cron.heavy_sessions||[]).map(s=>`<tr><td><a class="session-link" href="/session/${encodeURIComponent(s.id)}"><code title="${esc(s.id)}">${esc(String(s.id||\'\').slice(0,22))}</code></a></td><td>${esc(s.title||\'\')}</td><td>${compactNum(s.total_tokens)}</td><td>${fmtMoney(s.cost_usd)}</td><td>${fmtInt(s.tool_calls)}</td><td>${duration(s.duration_seconds)}</td><td>${esc(String(s.started_iso||\'\').replace(\'T\',\' \').slice(0,16))}</td></tr>`).join(\'\')||\'<tr><td colspan="7" class="muted">No cron sessions in this period.</td></tr>\';const hist=(d.archive_history||[]).slice(0,30).map(r=>`<tr><td>${esc(r.date||\'\')}</td><td>${fmtInt(r.sessions)}</td><td>${fmtInt(r.messages)}</td><td>${compactNum(r.total_tokens)}</td><td>${fmtMoney(r.cost_usd)}</td><td>${fmtInt(r.anomalies)}</td><td>${fmtInt(r.cron_overdue??r.cron_stale)}</td><td><code>${esc(r.file||\'\')}</code></td></tr>`).join(\'\')||\'<tr><td colspan="8" class="muted">No daily snapshots archived yet. The next 24h/all-source refresh writes one.</td></tr>\';const sh=d.dashboard_self_health||{};const ph=sh.prewarm||{};const rh=sh.retention||{};const selfHealthRows=`<tr><td>Service uptime</td><td>${duration(sh.uptime_seconds)}</td><td>${esc(sh.service_started_at||\'\')}</td></tr><tr><td>Cache</td><td>${fmtInt(sh.cache_entries)} memory / ${fmtInt(sh.disk_cache_files)} disk files</td><td>${compactNum(sh.disk_cache_bytes)} bytes · refreshing ${fmtInt(sh.refreshing_entries)}</td></tr><tr><td>Prewarm</td><td>${esc(ph.state||\'unknown\')} · ${fmtInt(ph.completed)}/${fmtInt(ph.total)}</td><td>errors ${fmtInt(ph.errors)} · last ${esc(ph.last_finished_at||ph.last_started_at||\'\')}</td></tr><tr><td>Archive</td><td>${fmtInt(sh.archive_files)} files</td><td>${esc(sh.latest_archive||\'none\')}</td></tr><tr><td>Source DB</td><td>${compactNum(sh.db_size_bytes)} bytes</td><td>${esc(sh.db_mtime||\'\')}</td></tr><tr><td>Retention</td><td>cache ${fmtInt(rh.cache_policy_days)}d / archive ${fmtInt(rh.archive_policy_days)}d</td><td>old cache ${fmtInt(rh.old_cache_files)} · old archive ${fmtInt(rh.old_archive_files)} · cleanup ${esc(rh.cleanup_script||\'\')}</td></tr>${(sh.last_refresh_errors||[]).length?`<tr><td>Refresh errors</td><td colspan="2">${esc((sh.last_refresh_errors||[]).join(\' · \'))}</td></tr>`:\'\'}`;const archiveTrendCards=(d.archive_trends||[]).map(t=>{const pts=t.points||[],max=Number(t.max||0)||1;const bars=pts.length>1?pts.map(p=>`<div class="spark-bar" title="${esc(p.date)}: ${esc(compactNum(p.value))}" style="height:${Math.max(5,Number(p.value||0)/max*100).toFixed(1)}%"></div>`).join(\'\'):`<div class="spark-empty">Need more daily snapshots</div>`;const first=pts[0]?.date||\'\',last=pts[pts.length-1]?.date||\'\';return `<article class="spark-card"><div class="spark-head"><strong>${esc(t.label)}</strong><span>${esc(compactNum(t.latest))}</span></div><div class="spark-bars">${bars}</div><div class="spark-foot">${esc(first)}${first&&last?\' → \':\'\'}${esc(last)}</div></article>`;}).join(\'\')||\'<p class="muted">No archived snapshots yet.</p>\';const att=d.attention||{state:\'green\',title:\'All clear\',items:[],subtitle:\'live operational summary\'};const attentionItems=(att.items||[]).map(i=>{const body=`<strong>${esc(i.value)}</strong> ${esc(i.label)}`;return i.href?`<a class="attention-item ${esc(i.level||\'\')}" href="${esc(i.href)}">${body}</a>`:`<span class="attention-item ${esc(i.level||\'\')}">${body}</span>`;}).join(\'\')||\'<div class="attention-empty">No current attention items.</div>\';const attentionBlock=`<section class="attention ${esc(att.state||\'green\')}"><div class="attention-head"><div class="attention-title">${esc(att.title||\'All clear\')}</div><div class="attention-sub">${esc(att.subtitle||\'\')}</div></div><div class="attention-items">${attentionItems}</div></section>`;$(\'attention\').innerHTML=attentionBlock;function sessionCard(title,s){if(!s)return\'\';return `<article class="session-card"><span>${esc(title)}</span><a class="session-link" href="/session/${encodeURIComponent(s.id)}"><strong title="${esc(s.id)}">${esc((s.title||s.id||\'unknown\').slice(0,56))}</strong></a><div class="session-meta"><em>${esc(s.source||\'unknown\')}</em><em>${esc(s.model||\'unknown\')}</em><em>${duration(s.duration_seconds)}</em></div><details><summary>Inspect</summary><dl><dt>ID</dt><dd>${esc(s.id)}</dd><dt>Started</dt><dd>${esc(s.started_iso)}</dd><dt>Tokens</dt><dd>${fmtInt(s.total_tokens)}</dd><dt>Messages</dt><dd>${fmtInt(s.message_count)}</dd><dt>Tool calls</dt><dd>${fmtInt(s.tool_call_count)}</dd></dl></details></article>`}const n=d.notable||{},recent=(d.recent_sessions||[]).map(s=>`<tr><td><a class="session-link" href="/session/${encodeURIComponent(s.id)}"><code title="${esc(s.id)}">${esc(String(s.id||\'\').slice(0,22))}</code></a></td><td>${esc(s.source||\'unknown\')}</td><td>${esc(s.model||\'unknown\')}</td><td>${fmtInt(s.total_tokens)}</td><td>${fmtInt(s.message_count)}</td><td>${fmtInt(s.tool_call_count)}</td><td>${esc(String(s.started_iso||\'\').replace(\'T\',\' \').slice(0,16))}</td></tr>`).join(\'\');$(\'grid\').innerHTML=`<article class="panel span-12" id="dashboard-help"><details><summary class="help-summary"><h2>How to read this dashboard</h2><span>open guide</span></summary><div class="help-grid"><div class="help-card"><strong>Attention header</strong><p>Top-level operational summary. Green means clear; amber means review; red means delivery/status failures. Links jump to focused problem sections.</p></div><div class="help-card"><strong>KPI cards</strong><p>Current filtered period totals from Hermes metadata: sessions, messages, tools, tokens, cost, active time, and cache activity.</p></div><div class="help-card"><strong>Trend metrics</strong><p>Compares the selected period against the previous equal-length period to show direction and magnitude.</p></div><div class="help-card"><strong>Cost/token anomalies</strong><p>Metadata-only sessions ranked by high cost, tokens, tool calls, reasoning/cache tokens, duration, or tokens per message.</p></div><div class="help-card"><strong>Cron health</strong><p>Shows scheduler state. Overdue means next_run_at is past a one-hour grace period; jobs without valid next-run metadata use a 48-hour fallback. Never-run and dormant jobs are classified separately; historical failures on disabled or paused jobs remain visible but do not count as active incidents. Detached systemd workloads expose a separate reconciled workload status, so submission acceptance cannot mask an incomplete run. Execution and delivery statuses are separate, so a successful run with a notification failure is not presented as an execution failure.</p></div><div class="help-card"><strong>Cron drill-down</strong><p><code>/cron/&lt;job_id&gt;</code> shows job metadata, output file metadata, related sessions, and read-only suggestions without raw output bodies.</p></div><div class="help-card"><strong>Historical trends</strong><p>Built from compact daily snapshots written by the quiet no-agent daily snapshot cron.</p></div><div class="help-card"><strong>Snapshot comparison</strong><p>Compares two archived daily snapshots and shows absolute and percentage deltas.</p></div><div class="help-card"><strong>Dashboard self-health</strong><p>Reports cache/prewarm/archive/source DB/service/retention state so the dashboard explains its own freshness.</p></div><div class="help-card"><strong>Exports</strong><p>Download metadata-only JSON for the current view, health, archive history, cron health, and attention state.</p></div><div class="help-card"><strong>Privacy model</strong><p>Metadata-only. Raw prompts, message content, reasoning text, tool payloads, script source, and output bodies are intentionally omitted.</p></div><div class="help-card"><strong>Cache layers</strong><p><code>fresh</code> was generated now, <code>disk</code> came from persistent cache, and age shows how old the served aggregate is.</p></div></div></details></article><article class="panel span-8"><h2>Daily token burn</h2><div class="daily-chart">${dailyBars}</div></article><article class="panel span-4"><h2>Weekday rhythm</h2>${weekdays}</article><article class="panel span-12"><h2>Trend vs previous period</h2><div class="trend-grid">${trend}</div></article><article class="panel span-6"><h2>Platforms</h2>${barRows(d.platforms,\'name\',\'tokens\',r=>compactNum(r.tokens)+\' tok\')}</article><article class="panel span-6"><h2>Models</h2>${barRows(d.models,\'name\',\'tokens\',r=>compactNum(r.tokens)+\' tok\')}</article><article class="panel span-4"><h2>Top tools</h2>${barRows((d.tools||[]).slice(0,12),\'name\',\'calls\')}</article><article class="panel span-4"><h2>Top skills</h2>${barRows((d.skills||[]).slice(0,12),\'name\',\'loads\',r=>`${r.loads} load / ${r.edits} edit`)}</article><article class="panel span-4"><h2>Hourly starts</h2><div class="hours">${hours}</div></article><article class="panel span-12" id="anomalies"><h2>Cost & token anomalies</h2><div class="table-wrap"><table><thead><tr><th>Session</th><th>Source</th><th>Model</th><th>Reason</th><th>Tokens</th><th>Cost</th><th>Tools</th><th>Duration</th><th>Started</th></tr></thead><tbody>${anomalies}</tbody></table></div></article><article class="panel span-12" id="cron-health"><h2>Cron & automation health</h2>${cronSummary}<h3 id="overdue-cron">Overdue enabled jobs</h3><div class="table-wrap"><table><thead><tr><th>Job</th><th>Name</th><th>State</th><th>Status</th><th>Last run</th><th>Next run</th><th>Output</th><th>Notes</th></tr></thead><tbody>${focusedCronTable(overdueCron,\'No overdue enabled jobs.\')}</tbody></table></div><h3 id="cron-delivery-errors">Jobs with delivery errors</h3><div class="table-wrap"><table><thead><tr><th>Job</th><th>Name</th><th>State</th><th>Status</th><th>Last run</th><th>Next run</th><th>Output</th><th>Notes</th></tr></thead><tbody>${focusedCronTable(deliveryCron,\'No delivery-error jobs in the visible cron set.\')}</tbody></table></div><h3 id="cron-status-issues">Active jobs with status issues</h3><div class="table-wrap"><table><thead><tr><th>Job</th><th>Name</th><th>State</th><th>Status</th><th>Last run</th><th>Next run</th><th>Output</th><th>Notes</th></tr></thead><tbody>${focusedCronTable(statusCron,\'No active status-issue jobs in the visible cron set.\')}</tbody></table></div><h3 id="cronFilterTitle">Job state</h3><div class="pillrow" id="cronFilterChips">${renderCronFilterChips(cron.jobs||[])}</div><div class="table-wrap"><table><thead><tr><th>Job</th><th>Name</th><th>State</th><th>Status</th><th>Last run</th><th>Next run</th><th>Output</th><th>Notes</th></tr></thead><tbody id="cronJobRows">${cronJobs}</tbody></table></div><h3>Token-heavy cron sessions</h3><div class="table-wrap"><table><thead><tr><th>Session</th><th>Title</th><th>Tokens</th><th>Cost</th><th>Tools</th><th>Duration</th><th>Started</th></tr></thead><tbody>${cronSessions}</tbody></table></div></article><article class="panel span-12" id="exports"><h2>Exports</h2><p class="muted">Download metadata-only JSON for the active filter state. Current filters are applied to current, cron health, and attention exports.</p><div class="pillrow"><a class="pill" id="exportCurrent" href="/export/current.json">Current view JSON</a><a class="pill" id="exportDataDownload" href="/data.json?download=1">Current data.json</a><a class="pill" id="exportHealth" href="/export/health.json">Health JSON</a><a class="pill" id="exportArchive" href="/export/archive-history.json">Archive history JSON</a><a class="pill" id="exportCron" href="/export/cron-health.json">Cron health JSON</a><a class="pill" id="exportAttention" href="/export/attention.json">Attention JSON</a></div></article><article class="panel span-12" id="historical-trends"><h2>Historical trends</h2><p class="muted">Built from compact daily snapshots. With one snapshot, cards show sparse-state placeholders and will fill in automatically over time.</p><div class="trend-history-grid">${archiveTrendCards}</div></article><article class="panel span-12" id="snapshot-compare"><h2>Snapshot comparison</h2><p class="muted">Compare two compact daily archive snapshots. Metadata-only; no raw messages or tool payloads.</p><div class="compare-controls" id="snapshotCompareControls"></div><div class="table-wrap"><table><thead><tr><th>Metric</th><th>From</th><th>To</th><th>Δ</th><th>%</th></tr></thead><tbody id="snapshotCompareBody"><tr><td colspan="5" class="muted">Loading comparison…</td></tr></tbody></table></div></article><article class="panel span-12"><h2>Daily snapshot archive</h2><p class="muted">Compact aggregate snapshots only; no raw messages, prompts, reasoning, or tool payloads.</p><div class="table-wrap"><table><thead><tr><th>Date</th><th>Sessions</th><th>Messages</th><th>Tokens</th><th>Cost</th><th>Anomalies</th><th>Cron overdue</th><th>File</th></tr></thead><tbody>${hist}</tbody></table></div></article><article class="panel span-12" id="dashboard-self-health"><h2>Dashboard self-health</h2><div class="table-wrap"><table><thead><tr><th>Signal</th><th>Status</th><th>Detail</th></tr></thead><tbody>${selfHealthRows}</tbody></table></div></article><article class="panel span-12" id="active-sessions"><h2>Current active sessions</h2><div class="active-grid">${active}</div></article><article class="panel span-12"><h2>Notable sessions</h2><div class="session-grid">${sessionCard(\'Longest\',n.longest)}${sessionCard(\'Most messages\',n.most_messages)}${sessionCard(\'Most tokens\',n.most_tokens)}${sessionCard(\'Most tool calls\',n.most_tools)}</div></article><article class="panel span-12"><h2>Recent sessions</h2><div class="table-wrap"><table><thead><tr><th>Session</th><th>Source</th><th>Model</th><th>Tokens</th><th>Messages</th><th>Tools</th><th>Started</th></tr></thead><tbody>${recent}</tbody></table></div></article>`;$(\'footer\').innerHTML=`<span>DB: <code>${esc(d.db)}</code></span><span>Period: ${esc(d.period_start)} to ${esc(d.period_end)}</span>`;renderSnapshotComparison();updateExportLinks();bindCronFilters();$(\'status\').textContent=`Loaded /data.json in ${(ms/1000).toFixed(2)}s · cache age ${age??\'n/a\'}s`}\n$(\'periodSelect\').addEventListener(\'change\',()=>setParamsFromControls(true));$(\'sourceSelect\').addEventListener(\'change\',()=>setParamsFromControls(true));$(\'modelSelect\').addEventListener(\'change\',()=>setParamsFromControls(true));$(\'downloadBtn\').addEventListener(\'click\',()=>{const blob=new Blob([JSON.stringify(DASHBOARD_DATA,null,2)],{type:\'application/json\'}),a=document.createElement(\'a\');a.href=URL.createObjectURL(blob);a.download=`hermes-insights-${DASHBOARD_DATA?.days||\'data\'}d.json`;a.click();URL.revokeObjectURL(a.href)});window.addEventListener(\'popstate\',loadData);initCompactMode();loadData();\n</script></body></html>'
+
+def render_session_shell(session_id: str) -> str:
+    shell = '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Hermes Session Detail</title><style>\n:root{--bg:#0d1117;--panel:#151b23;--panel2:#10161f;--text:#e6edf3;--muted:#8b949e;--line:#30363d;--accent:#58a6ff;--accent2:#3fb950;--bad:#f85149;--shadow:rgba(0,0,0,.35);--radius:18px;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--sans:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,\'Segoe UI\',sans-serif}*{box-sizing:border-box}html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text);font-family:var(--sans)}body{overflow-x:hidden}.page{width:min(1320px,calc(100vw - 32px));margin:0 auto;padding:28px 0 40px}a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}.hero,.panel,.kpi{background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid var(--line);border-radius:var(--radius);box-shadow:0 18px 60px var(--shadow)}.hero{padding:26px;margin-bottom:16px}.eyebrow{color:var(--accent2);text-transform:uppercase;letter-spacing:.14em;font-size:12px;font-weight:700}h1{margin:10px 0;font-size:clamp(30px,4vw,54px);line-height:1;letter-spacing:-.04em;overflow-wrap:anywhere}.lede,.muted{color:var(--muted)}.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:14px 0}.kpi{padding:16px;overflow:hidden}.kpi span{display:block;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.08em}.kpi strong{display:block;margin-top:8px;font-size:clamp(22px,3vw,34px);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.kpi em{display:block;color:var(--muted);font-style:normal;font-size:13px;margin-top:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:12px}.panel{padding:18px;min-width:0;overflow:hidden}.span-6{grid-column:span 6}.span-12{grid-column:1/-1}dl{display:grid;grid-template-columns:150px 1fr;gap:7px 12px}dt{color:var(--muted)}dd{margin:0;font-family:var(--mono);overflow-wrap:anywhere}.pillrow{display:flex;flex-wrap:wrap;gap:7px}.pill{border:1px solid var(--line);border-radius:999px;padding:5px 9px;color:var(--muted);font-size:12px}.bar-row{display:grid;grid-template-columns:minmax(110px,180px) 1fr 70px;gap:10px;align-items:center;margin:9px 0}.bar-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.bar-track{height:9px;background:#222a35;border-radius:999px;overflow:hidden}.bar-fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2))}.bar-value{color:var(--muted);font-family:var(--mono);font-size:12px;text-align:right}.table-wrap{overflow-x:auto}table{width:100%;min-width:880px;border-collapse:collapse}th,td{padding:9px 8px;border-bottom:1px solid var(--line);text-align:left;font-size:13px}th{color:var(--muted)}td code{font-family:var(--mono);color:var(--accent)}.status{color:var(--muted);margin-top:10px}@media(max-width:900px){.kpis{grid-template-columns:repeat(2,1fr)}.span-6{grid-column:1/-1}}@media(max-width:620px){.page{width:min(100vw - 20px,100%)}.kpis{grid-template-columns:1fr}dl{grid-template-columns:1fr}.bar-row{grid-template-columns:1fr}.bar-value{text-align:left}}\n</style></head><body><main class="page"><div class="hero"><div class="eyebrow"><a href="/">Back to Hermes insights</a> / session detail</div><h1 id="title">Loading session...</h1><p class="lede">Metadata-only drill-down. Raw message bodies, reasoning text, tool arguments, and tool output are intentionally omitted.</p><div class="status" id="status">Loading data...</div></div><section class="kpis" id="kpis"></section><section class="grid" id="grid"></section></main><script>\nconst SESSION_ID = __SESSION_ID__;\nconst $=id=>document.getElementById(id);const esc=s=>String(s??\'\').replace(/[&<>\'"]/g,c=>({\'&\':\'&amp;\',\'<\':\'&lt;\',\'>\':\'&gt;\',"\'":\'&#39;\',\'"\':\'&quot;\'}[c]));function compactNum(n){n=Number(n||0);const sign=n<0?\'-\':\'\';n=Math.abs(n);if(n>=1e9)return sign+(n/1e9).toFixed(2)+\'B\';if(n>=1e6)return sign+(n/1e6).toFixed(2)+\'M\';if(n>=1e3)return sign+(n/1e3).toFixed(1)+\'K\';return sign+(Number.isInteger(n)?String(n):n.toFixed(2))}function fmtInt(n){return Math.round(Number(n||0)).toLocaleString()}function fmtMoney(n){return \'$\'+Number(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}function duration(sec){let s=Math.max(0,Math.round(Number(sec||0)));if(s>=86400)return(s/86400).toFixed(1)+\'d\';if(s>=3600)return(s/3600).toFixed(1)+\'h\';if(s>=60)return Math.floor(s/60)+\'m\';return s+\'s\'}function kpi(label,value,sub=\'\'){return `<article class="kpi"><span>${esc(label)}</span><strong>${esc(value)}</strong><em>${esc(sub)}</em></article>`}function barRows(rows,nameKey,valKey){rows=rows||[];if(!rows.length)return \'<p class="muted">No data.</p>\';const max=Math.max(...rows.map(r=>Number(r[valKey]||0)),1);return rows.map(r=>`<div class="bar-row"><div class="bar-label" title="${esc(r[nameKey])}">${esc(r[nameKey])}</div><div class="bar-track"><div class="bar-fill" style="width:${Math.max(2,Number(r[valKey]||0)/max*100).toFixed(2)}%"></div></div><div class="bar-value">${fmtInt(r[valKey])}</div></div>`).join(\'\')}async function load(){try{const res=await fetch(\'/session-data/\'+encodeURIComponent(SESSION_ID),{cache:\'no-store\'});if(!res.ok)throw new Error(await res.text());render(await res.json())}catch(e){$(\'status\').textContent=\'Session detail failed: \'+e.message;console.error(e)}}function render(d){const s=d.session||{},roles=d.role_counts||{};$(\'title\').textContent=s.title||s.id||\'Session\';$(\'status\').textContent=`Generated ${d.generated_at} · ${d.privacy}`;$(\'kpis\').innerHTML=kpi(\'Total tokens\',compactNum(s.total_tokens),`in ${compactNum(s.input_tokens)} / out ${compactNum(s.output_tokens)}`)+kpi(\'Messages\',compactNum(s.message_count),`${fmtInt(roles.user)} user · ${fmtInt(roles.assistant)} assistant · ${fmtInt(roles.tool)} tool`)+kpi(\'Tool calls\',compactNum(s.tool_call_count),`${fmtInt(s.api_call_count)} API calls`)+kpi(\'Cost\',fmtMoney(s.cost_usd),s.cost_status||\'unknown\')+kpi(\'Duration\',duration(s.duration_seconds),s.active?\'active\':\'ended\')+kpi(\'Cache read\',compactNum(s.cache_read_tokens),\'prompt cache reuse\')+kpi(\'Reasoning\',compactNum(s.reasoning_tokens),\'where recorded\')+kpi(\'Source\',s.source||\'unknown\',s.model||\'unknown\');const meta=`<dl><dt>ID</dt><dd>${esc(s.id)}</dd><dt>Title</dt><dd>${esc(s.title)}</dd><dt>Source</dt><dd>${esc(s.source)}</dd><dt>Model</dt><dd>${esc(s.model||\'unknown\')}</dd><dt>Started</dt><dd>${esc(s.started_iso)}</dd><dt>Ended</dt><dd>${esc(s.ended_iso||\'active\')}</dd><dt>End reason</dt><dd>${esc(s.end_reason||\'\')}</dd><dt>Billing</dt><dd>${esc([s.billing_provider,s.billing_mode,s.cost_source].filter(Boolean).join(\' · \'))}</dd><dt>CWD</dt><dd>${esc(s.cwd||\'\')}</dd><dt>Git branch</dt><dd>${esc(s.git_branch||\'\')}</dd><dt>Repo root</dt><dd>${esc(s.git_repo_root||\'\')}</dd><dt>Chat/thread</dt><dd>${esc([s.chat_type,s.chat_id,s.thread_id].filter(Boolean).join(\' / \'))}</dd></dl>`;const token=`<dl><dt>Input</dt><dd>${fmtInt(s.input_tokens)}</dd><dt>Output</dt><dd>${fmtInt(s.output_tokens)}</dd><dt>Cache read</dt><dd>${fmtInt(s.cache_read_tokens)}</dd><dt>Cache write</dt><dd>${fmtInt(s.cache_write_tokens)}</dd><dt>Reasoning</dt><dd>${fmtInt(s.reasoning_tokens)}</dd><dt>Total</dt><dd>${fmtInt(s.total_tokens)}</dd></dl>`;const skills=(d.skills||[]).map(x=>`<span class="pill">${esc(x.name)} · ${x.loads} load / ${x.edits} edit</span>`).join(\'\')||\'<p class="muted">No skill tool calls recorded.</p>\';const timeline=(d.timeline||[]).map(x=>`<tr><td>${esc(x.timestamp_iso)}</td><td>${esc(x.role)}</td><td>${esc(x.tool_name||\'\')}</td><td>${fmtInt(x.token_count)}</td><td>${fmtInt(x.content_chars)}</td><td>${fmtInt(x.tool_calls_chars)}</td><td>${esc(x.finish_reason||\'\')}</td></tr>`).join(\'\');$(\'grid\').innerHTML=`<article class="panel span-6"><h2>Summary</h2>${meta}</article><article class="panel span-6"><h2>Token breakdown</h2>${token}</article><article class="panel span-6"><h2>Tool usage</h2>${barRows(d.tools,\'name\',\'calls\')}</article><article class="panel span-6"><h2>Skills</h2><div class="pillrow">${skills}</div></article><article class="panel span-12"><h2>Metadata timeline</h2><div class="table-wrap"><table><thead><tr><th>Time</th><th>Role</th><th>Tool</th><th>Tokens</th><th>Content chars</th><th>Tool-call JSON chars</th><th>Finish</th></tr></thead><tbody>${timeline}</tbody></table></div></article>`}load();\n</script></body></html>'
+    return shell.replace('__SESSION_ID__', json.dumps(session_id))
+
+
+def render_cron_shell(job_id: str) -> str:
+    shell = '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Hermes Cron Job Detail</title><style>\n:root{--bg:#0d1117;--panel:#151b23;--panel2:#10161f;--text:#e6edf3;--muted:#8b949e;--line:#30363d;--accent:#58a6ff;--accent2:#3fb950;--bad:#f85149;--warn:#d29922;--shadow:rgba(0,0,0,.35);--radius:18px;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--sans:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at top left,#182236,#0d1117 45%);color:var(--text);font-family:var(--sans);line-height:1.45}.page{width:min(1180px,calc(100vw - 32px));margin:0 auto;padding:24px 0 48px}.top{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:18px}.back{color:var(--accent);text-decoration:none}.hero,.panel,.kpi{border:1px solid var(--line);border-radius:var(--radius);background:linear-gradient(180deg,var(--panel),var(--panel2));box-shadow:0 18px 60px var(--shadow)}.hero{padding:24px;margin-bottom:16px}h1{margin:0;font-size:clamp(30px,5vw,54px);letter-spacing:-.04em}h2{margin:0 0 14px;font-size:18px}.muted{color:var(--muted)}code{font-family:var(--mono);font-size:.9em;overflow-wrap:anywhere}.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px}.kpi{padding:16px}.kpi .label{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.08em}.kpi .value{font-size:24px;font-weight:760;margin-top:6px;overflow-wrap:anywhere}.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:14px}.panel{grid-column:span 12;padding:18px}.table-wrap{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:9px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{color:var(--muted);font-weight:600}.pillrow{display:flex;flex-wrap:wrap;gap:8px}.pill{border:1px solid var(--line);border-radius:999px;padding:7px 10px;background:#1f2630}.suggestions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.suggestion{border:1px solid var(--line);border-radius:14px;padding:12px;background:#10161f}.suggestion.ok{border-color:rgba(63,185,80,.45)}.suggestion.info{border-color:rgba(88,166,255,.35)}.suggestion.warn{border-color:rgba(210,153,34,.55)}.suggestion.bad{border-color:rgba(248,81,73,.55)}.suggestion strong{display:block;margin-bottom:5px}.suggestion p{margin:0;color:var(--muted);font-size:13px}.warn{color:var(--warn)}.bad{color:var(--bad)}.session-link{color:var(--accent);text-decoration:none}.footer{color:var(--muted);font-size:12px;margin-top:18px}@media(max-width:760px){.page{width:min(100vw - 20px,100%)}.top{align-items:flex-start;flex-direction:column}.kpis,.suggestions{grid-template-columns:1fr}.hero,.panel,.kpi{border-radius:14px}}\n</style></head><body><main class="page"><div class="top"><a class="back" href="/">← Dashboard</a><span class="muted">metadata-only cron drill-down</span></div><section class="hero"><h1 id="title">Cron job</h1><p class="muted" id="subtitle">Loading…</p></section><section class="kpis" id="kpis"></section><section class="grid" id="grid"></section><p class="footer" id="footer"></p></main><script>\nconst JOB_ID=__JOB_ID__;const $=id=>document.getElementById(id);const esc=s=>String(s??\'\').replace(/[&<>\'"]/g,c=>({\'&\':\'&amp;\',\'<\':\'&lt;\',\'>\':\'&gt;\',"\'":\'&#39;\',\'"\':\'&quot;\'}[c]));function compactNum(n){n=Number(n||0);const sign=n<0?\'-\':\'\';n=Math.abs(n);if(n>=1e9)return sign+(n/1e9).toFixed(2)+\'B\';if(n>=1e6)return sign+(n/1e6).toFixed(2)+\'M\';if(n>=1e3)return sign+(n/1e3).toFixed(1)+\'K\';return sign+Math.round(n).toLocaleString()}function fmtMoney(n){n=Number(n||0);return n?\'$\'+n.toFixed(4):\'$0\'}function duration(s){s=Number(s||0);if(s<60)return Math.round(s)+\'s\';if(s<3600)return Math.round(s/60)+\'m\';if(s<86400)return (s/3600).toFixed(1)+\'h\';return (s/86400).toFixed(1)+\'d\'}function kpi(label,value,note){return `<article class="kpi"><div class="label">${esc(label)}</div><div class="value">${esc(value)}</div><div class="muted">${esc(note||\'\')}</div></article>`}function row(k,v){return `<tr><th>${esc(k)}</th><td>${esc(v??\'\')}</td></tr>`}async function load(){try{const r=await fetch(\'/cron-data/\'+encodeURIComponent(JOB_ID),{cache:\'no-store\'});if(!r.ok)throw new Error(await r.text());const d=await r.json(),j=d.job||{},out=j.output||{};document.title=\'Hermes Cron · \'+(j.name||j.id);$(\'title\').textContent=j.name||j.id;$(\'subtitle\').innerHTML=`<code>${esc(j.id)}</code> · ${esc(d.privacy||\'metadata-only\')}`;$(\'kpis\').innerHTML=kpi(\'State\',`${j.enabled?\'enabled\':\'disabled\'} / ${j.state||\'unknown\'}`,j.notes?.join(\', \')||\'\')+kpi(\'Last status\',j.last_status||\'unknown\',j.last_run_at||\'never\')+kpi(\'Next run\',j.next_run_at||\'none\',j.schedule||\'\')+kpi(\'Outputs\',compactNum(out.count),out.latest||\'none\');const notes=(j.notes||[]).map(n=>`<span class="pill">${esc(n)}</span>`).join(\'\');const files=(out.files||[]).map(f=>`<tr><td><code>${esc(f.name)}</code></td><td>${esc(f.mtime)}</td><td>${compactNum(f.bytes)}</td></tr>`).join(\'\')||\'<tr><td colspan="3" class="muted">No output files recorded.</td></tr>\';const suggestions=(j.suggestions||[]).map(s=>`<div class="suggestion ${esc(s.level||\'info\')}"><strong>${esc(s.title||\'Suggestion\')}</strong><p>${esc(s.detail||\'\')}</p></div>`).join(\'\')||\'<p class="muted">No suggestions.</p>\';const sessions=(d.sessions||[]).map(s=>`<tr><td><a class="session-link" href="/session/${encodeURIComponent(s.id)}"><code>${esc(String(s.id||\'\').slice(0,24))}</code></a></td><td>${esc(s.title||\'\')}</td><td>${compactNum(s.total_tokens)}</td><td>${fmtMoney(s.cost_usd)}</td><td>${duration(s.duration_seconds)}</td><td>${esc(String(s.started_iso||\'\').replace(\'T\',\' \').slice(0,16))}</td></tr>`).join(\'\')||\'<tr><td colspan="6" class="muted">No matching cron sessions found by job id/title.</td></tr>\';$(\'grid\').innerHTML=`<article class="panel"><h2>Suggestions</h2><div class="suggestions">${suggestions}</div></article><article class="panel"><h2>Job metadata</h2><div class="pillrow">${notes}</div><div class="table-wrap"><table><tbody>${row(\'schedule\',j.schedule)}${row(\'repeat\',JSON.stringify(j.repeat||{}))}${row(\'created\',j.created_at)}${row(\'last run\',j.last_run_at)}${row(\'next run\',j.next_run_at)}${row(\'deliver\',j.deliver)}${row(\'no_agent\',j.no_agent)}${row(\'script\',j.script)}${row(\'skills\',(j.skills||[]).join(\', \'))}${row(\'model/provider\',[j.model,j.provider].filter(Boolean).join(\' / \'))}${row(\'toolsets\',(j.enabled_toolsets||[]).join(\', \'))}${row(\'workdir\',j.workdir)}</tbody></table></div></article><article class="panel"><h2>Output file metadata</h2><p class="muted">Filenames, mtimes, and sizes only; output bodies are intentionally omitted.</p><div class="table-wrap"><table><thead><tr><th>File</th><th>Mtime</th><th>Size</th></tr></thead><tbody>${files}</tbody></table></div></article><article class="panel"><h2>Related cron sessions</h2><div class="table-wrap"><table><thead><tr><th>Session</th><th>Title</th><th>Tokens</th><th>Cost</th><th>Duration</th><th>Started</th></tr></thead><tbody>${sessions}</tbody></table></div></article>`;$(\'footer\').textContent=\'Prompt bodies, script source, output contents, and transcripts are not included.\'}catch(e){$(\'subtitle\').textContent=\'Failed to load cron job: \'+e.message;console.error(e)}}load();\n</script></body></html>'
+    return shell.replace('__JOB_ID__', json.dumps(job_id))
+
+def serve(db: Path, host: str, port: int, default_days: int, default_source: str | None) -> None:
+    cache: dict[tuple[int, str | None, str | None], dict[str, Any]] = {}
+    cache_lock = threading.Lock()
+    refresh_ttl = 60.0
+    service_started_ts = time.time()
+    prewarm_state: dict[str, Any] = {"state": "starting", "completed": 0, "errors": 0, "total": len(PREWARM_DAYS) * len(PREWARM_SOURCES), "last_started_at": datetime.now().astimezone().isoformat(timespec="seconds"), "last_finished_at": None, "last_error": None}
+    cache_retention_days = int(os.environ.get("HERMES_INSIGHTS_CACHE_RETENTION_DAYS", "14"))
+    archive_retention_days = int(os.environ.get("HERMES_INSIGHTS_ARCHIVE_RETENTION_DAYS", "365"))
+
+    def retention_status() -> dict[str, Any]:
+        now = time.time()
+        cache_files = list(CACHE_DIR.glob("*.json")) if CACHE_DIR.exists() else []
+        archive_files = list(ARCHIVE_DIR.glob("*.json")) if ARCHIVE_DIR.exists() else []
+        def older(files: list[Path], days: int) -> list[Path]:
+            cutoff = now - days * 86400
+            return [f for f in files if f.stat().st_mtime < cutoff]
+        old_cache = older(cache_files, cache_retention_days)
+        old_archive = older(archive_files, archive_retention_days)
+        return {
+            "cache_policy_days": cache_retention_days,
+            "archive_policy_days": archive_retention_days,
+            "old_cache_files": len(old_cache),
+            "old_archive_files": len(old_archive),
+            "cache_files": len(cache_files),
+            "archive_files": len(archive_files),
+            "cleanup_script": "hermes_insights_daily_snapshot.sh",
+        }
+
+    def self_health() -> dict[str, Any]:
+        now = time.time()
+        disk_files = list(CACHE_DIR.glob('*.json')) if CACHE_DIR.exists() else []
+        archive_files = sorted(ARCHIVE_DIR.glob('*.json')) if ARCHIVE_DIR.exists() else []
+        db_stat = db.stat() if db.exists() else None
+        with cache_lock:
+            entries = len(cache)
+            refreshing = sum(1 for e in cache.values() if e.get("refreshing"))
+            errors = [str(e.get("error")) for e in cache.values() if e.get("error")]
+            prewarm = dict(prewarm_state)
+        return {
+            "ok": True,
+            "service_started_at": datetime.fromtimestamp(service_started_ts).astimezone().isoformat(timespec="seconds"),
+            "uptime_seconds": int(now - service_started_ts),
+            "cache_entries": entries,
+            "refreshing_entries": refreshing,
+            "disk_cache_files": len(disk_files),
+            "disk_cache_bytes": sum(f.stat().st_size for f in disk_files) if disk_files else 0,
+            "archive_files": len(archive_files),
+            "latest_archive": archive_files[-1].name if archive_files else None,
+            "db_mtime": datetime.fromtimestamp(db_stat.st_mtime).astimezone().isoformat(timespec="seconds") if db_stat else None,
+            "db_size_bytes": db_stat.st_size if db_stat else None,
+            "prewarm": prewarm,
+            "retention": retention_status(),
+            "last_refresh_errors": errors[:5],
+        }
+
+    def make_entry(data: dict[str, Any], layer: str, ts: float | None = None) -> dict[str, Any]:
+        now = time.time()
+        ts = ts or now
+        payload = dict(data)
+        payload["cache"] = {"layer": layer, "age_seconds": int(max(0, now - ts))}
+        return {"data": payload, "json": json.dumps(payload, indent=2, ensure_ascii=False), "ts": ts, "refreshing": False, "error": None, "layer": layer}
+
+    def refresh_key(key: tuple[int, str | None, str | None]) -> None:
+        days, source, model = key
+        try:
+            data = load_data(db, days, source, model)
+            write_daily_snapshot(data)
+            write_disk_cache(days, source, model, data)
+            entry = make_entry(data, "fresh", time.time())
+            with cache_lock:
+                cache[key] = entry
+        except Exception as e:
+            with cache_lock:
+                entry = cache.setdefault(key, {})
+                entry["refreshing"] = False
+                entry["error"] = str(e)
+
+    def prewarm_common() -> None:
+        with cache_lock:
+            prewarm_state.update({"state": "warming", "last_started_at": datetime.now().astimezone().isoformat(timespec="seconds"), "last_finished_at": None})
+        for d in PREWARM_DAYS:
+            for src in PREWARM_SOURCES:
+                try:
+                    key = (d, src, None)
+                    cached = read_disk_cache(d, src, None, DISK_CACHE_TTL_SECONDS)
+                    if cached is not None:
+                        with cache_lock:
+                            cache[key] = make_entry(cached, "disk", time.time() - int(cached.get("cache", {}).get("age_seconds", 0)))
+                            prewarm_state["completed"] = int(prewarm_state.get("completed") or 0) + 1
+                        continue
+                    refresh_key(key)
+                    with cache_lock:
+                        prewarm_state["completed"] = int(prewarm_state.get("completed") or 0) + 1
+                except Exception as e:
+                    with cache_lock:
+                        prewarm_state["errors"] = int(prewarm_state.get("errors") or 0) + 1
+                        prewarm_state["last_error"] = str(e)
+                    print(f"prewarm failed days={d} source={src}: {e}")
+        with cache_lock:
+            prewarm_state["state"] = "idle"
+            prewarm_state["last_finished_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+
+    def get_entry(days: int, source: str | None, model: str | None) -> dict[str, Any]:
+        key = (days, source, model)
+        now = time.time()
+        with cache_lock:
+            entry = cache.get(key)
+            if entry and now - float(entry.get("ts") or 0) <= refresh_ttl:
+                return entry
+            if entry and not entry.get("refreshing"):
+                entry["refreshing"] = True
+                threading.Thread(target=refresh_key, args=(key,), daemon=True).start()
+                return entry
+            if entry and entry.get("refreshing"):
+                return entry
+        disk_data = read_disk_cache(days, source, model, None)
+        if disk_data is not None:
+            path = cache_path(days, source, model)
+            ts = path.stat().st_mtime if path.exists() else now
+            entry = make_entry(disk_data, "disk", ts)
+            with cache_lock:
+                cache[key] = entry
+                if now - ts > DISK_CACHE_TTL_SECONDS and not entry.get("refreshing"):
+                    entry["refreshing"] = True
+                    threading.Thread(target=refresh_key, args=(key,), daemon=True).start()
+            return entry
+        with cache_lock:
+            cache[key] = {"refreshing": True, "ts": 0}
+        refresh_key(key)
+        with cache_lock:
+            return cache[key]
+
+    threading.Thread(target=prewarm_common, daemon=True).start()
+
+    class Handler(BaseHTTPRequestHandler):
+        server_version = "HermesInsightsDashboard/1.0"
+
+        def log_message(self, fmt: str, *args: Any) -> None:
+            print(f"{self.address_string()} - {fmt % args}")
+
+        def _params(self) -> tuple[int, str | None, str | None]:
+            qs = parse_qs(urlparse(self.path).query)
+            try:
+                days = int((qs.get("days") or [default_days])[0])
+            except Exception:
+                days = default_days
+            days = max(1, min(days, 365))
+            source = (qs.get("source") or [default_source])[0]
+            source = source or None
+            model = (qs.get("model") or [None])[0]
+            model = model or None
+            return days, source, model
+
+        def _send(self, status: int, body: bytes, ctype: str, age: int | None = None, headers: dict[str, str] | None = None) -> None:
+            self.send_response(status)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+            self.send_header("Pragma", "no-cache")
+            if age is not None:
+                self.send_header("X-Hermes-Cache-Age", str(age))
+            for hk, hv in (headers or {}).items():
+                self.send_header(hk, hv)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _json_response(self, payload: Any, filename: str | None = None, age: int | None = None) -> None:
+            body = json.dumps(payload, indent=2, ensure_ascii=False).encode()
+            headers = {}
+            if filename:
+                safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", filename).strip("-") or "hermes-insights.json"
+                headers["Content-Disposition"] = f'attachment; filename="{safe}"'
+            self._send(200, body, "application/json; charset=utf-8", age=age, headers=headers)
+
+        def do_GET(self) -> None:
+            path = urlparse(self.path).path
+            qs = parse_qs(urlparse(self.path).query)
+            download = (qs.get("download") or [""])[0] in ("1", "true", "yes")
+            if path == "/archive-history.json":
+                self._json_response({"ok": True, "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"), "archive_history": load_snapshot_history(365), "archive_trends": build_archive_trends(load_snapshot_history(365))}, filename="hermes-insights-archive-history.json")
+                return
+            if path == "/export/health.json":
+                h = self_health(); data = load_data(db, 1, None, None); h.update({"generated_at": data["generated_at"], "sessions": data["totals"].get("sessions", 0)})
+                self._json_response(h, filename="hermes-insights-health.json")
+                return
+            if path == "/export/archive-history.json":
+                self._json_response({"ok": True, "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"), "archive_history": load_snapshot_history(365), "archive_trends": build_archive_trends(load_snapshot_history(365))}, filename="hermes-insights-archive-history.json")
+                return
+            if path in ("/export/current.json", "/export/cron-health.json", "/export/attention.json"):
+                days, source, model = self._params()
+                entry = get_entry(days, source, model)
+                if "data" not in entry:
+                    err = entry.get("error") or "cache warming failed"
+                    self._send(500, f"dashboard error: {escape(str(err))}".encode(), "text/plain; charset=utf-8")
+                    return
+                payload = dict(entry["data"]); payload["dashboard_self_health"] = self_health()
+                suffix = f"{days}d" + (f"-{source}" if source else "-all") + (f"-{model}" if model else "")
+                if path == "/export/current.json":
+                    self._json_response(payload, filename=f"hermes-insights-current-{suffix}.json", age=max(0, int(time.time() - float(entry.get("ts") or 0))))
+                elif path == "/export/cron-health.json":
+                    self._json_response({"ok": True, "generated_at": payload.get("generated_at"), "days": days, "source": source, "model": model, "cron_health": payload.get("cron_health")}, filename=f"hermes-insights-cron-health-{suffix}.json")
+                else:
+                    self._json_response({"ok": True, "generated_at": payload.get("generated_at"), "days": days, "source": source, "model": model, "attention": payload.get("attention")}, filename=f"hermes-insights-attention-{suffix}.json")
+                return
+            if path in ("/health", "/readyz"):
+                try:
+                    h = self_health()
+                    readiness = summary_readiness(db)
+                    data = load_data(db, 1, None, None)
+                    h.update(readiness)
+                    h.update({"ok": True if path == "/health" else readiness["ready"], "generated_at": data["generated_at"], "sessions": data["totals"].get("sessions", 0)})
+                    body = json.dumps(h, indent=2, ensure_ascii=False).encode()
+                    status = 200 if path == "/health" or readiness["ready"] else 503
+                    self._send(status, body, "application/json; charset=utf-8")
+                except Exception as e:
+                    payload = {"ok": path == "/health", "ready": False, "data_status": "error", "error": str(e)}
+                    self._send(200 if path == "/health" else 503, json.dumps(payload).encode(), "application/json; charset=utf-8")
+                return
+            if path.startswith("/cron-data/"):
+                job_id = path.split("/cron-data/", 1)[1]
+                try:
+                    from urllib.parse import unquote
+                    data = load_cron_detail(db, unquote(job_id))
+                    self._send(200, json.dumps(data, indent=2, ensure_ascii=False).encode(), "application/json; charset=utf-8")
+                except KeyError:
+                    self._send(404, json.dumps({"ok": False, "error": "cron job not found"}).encode(), "application/json; charset=utf-8")
+                except Exception as e:
+                    self._send(500, json.dumps({"ok": False, "error": str(e)}).encode(), "application/json; charset=utf-8")
+                return
+            if path.startswith("/cron/"):
+                from urllib.parse import unquote
+                job_id = unquote(path.split("/cron/", 1)[1])
+                if not job_id:
+                    self._send(404, b"not found", "text/plain; charset=utf-8")
+                    return
+                self._send(200, render_cron_shell(job_id).encode(), "text/html; charset=utf-8", age=0)
+                return
+            if path.startswith("/session-data/"):
+                session_id = path.split("/session-data/", 1)[1]
+                try:
+                    from urllib.parse import unquote
+                    data = load_session_detail(db, unquote(session_id))
+                    self._send(200, json.dumps(data, indent=2, ensure_ascii=False).encode(), "application/json; charset=utf-8")
+                except KeyError:
+                    self._send(404, json.dumps({"ok": False, "error": "session not found"}).encode(), "application/json; charset=utf-8")
+                except Exception as e:
+                    self._send(500, json.dumps({"ok": False, "error": str(e)}).encode(), "application/json; charset=utf-8")
+                return
+            if path.startswith("/session/"):
+                from urllib.parse import unquote
+                session_id = unquote(path.split("/session/", 1)[1])
+                if not session_id:
+                    self._send(404, b"not found", "text/plain; charset=utf-8")
+                    return
+                self._send(200, render_session_shell(session_id).encode(), "text/html; charset=utf-8", age=0)
+                return
+            if path not in ("/", "/index.html", "/index.json", "/data.json"):
+                self._send(404, b"not found", "text/plain; charset=utf-8")
+                return
+            if path in ("/", "/index.html"):
+                self._send(200, render_shell().encode(), "text/html; charset=utf-8", age=0)
+                return
+            try:
+                days, source, model = self._params()
+                entry = get_entry(days, source, model)
+                if "data" not in entry:
+                    err = entry.get("error") or "cache warming failed"
+                    self._send(500, f"dashboard error: {escape(str(err))}".encode(), "text/plain; charset=utf-8")
+                    return
+                age = max(0, int(time.time() - float(entry.get("ts") or 0)))
+                payload = dict(entry["data"])
+                payload["dashboard_self_health"] = self_health()
+                filename = None
+                if download:
+                    suffix = f"{days}d" + (f"-{source}" if source else "-all") + (f"-{model}" if model else "")
+                    filename = f"hermes-insights-current-{suffix}.json"
+                self._json_response(payload, filename=filename, age=age)
+            except Exception as e:
+                self._send(500, f"dashboard error: {escape(str(e))}".encode(), "text/plain; charset=utf-8")
+
+    httpd = ThreadingHTTPServer((host, port), Handler)
+    print(f"Serving Hermes Insights dashboard on http://{host}:{port} from {db}")
+    httpd.serve_forever()
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--db", type=Path, default=DEFAULT_DB)
+    ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
+    ap.add_argument("--days", type=int, default=7)
+    ap.add_argument("--source")
+    ap.add_argument("--model")
+    ap.add_argument("--serve", action="store_true", help="Run an HTTP server that regenerates data on every request")
+    ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--port", type=int, default=18766)
+    ap.add_argument("--require-ready", action="store_true", help="Refuse output unless the compact summary is complete and fresh")
+    ap.add_argument("--max-age-seconds", type=float, default=1800)
+    args = ap.parse_args()
+    if args.serve:
+        serve(args.db, args.host, args.port, args.days, args.source)
+        return
+    if args.require_ready:
+        readiness = summary_readiness(args.db, max_age_seconds=args.max_age_seconds)
+        if not readiness["ready"]:
+            raise SystemExit("summary is not ready: " + readiness["data_status"])
+    data = load_data(args.db, args.days, args.source, args.model)
+    snapshot_path = write_daily_snapshot(data)
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text(render(data), encoding="utf-8")
+    json_path = args.out.with_suffix(".json")
+    json_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(json.dumps({"html": str(args.out), "json": str(json_path), "sessions": data["totals"].get("sessions",0), "tokens": data["totals"].get("total_tokens",0), "snapshot": str(snapshot_path) if snapshot_path else None}, indent=2))
+
+if __name__ == "__main__":
+    main()
