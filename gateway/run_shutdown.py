@@ -1946,18 +1946,8 @@ class GatewayShutdownMixin(GatewayShutdownBudgetMixin, GatewaySessionEndMixin):
         if finalized is False or finalized is None:
             ctx.budget_exhausted = True
         # Idle cached agents too: their MemoryProviders may never have seen on_session_end().
-        _cache_lock = getattr(self, "_agent_cache_lock", None)
-        _cache = getattr(self, "_agent_cache", None)
-        if _cache_lock is not None and _cache is not None:
-            with _cache_lock:
-                _idle_agents = list(_cache.items())
-                _cache.clear()
-            for _key, _entry in _idle_agents:
-                # Bounded + off-loop: a wedged memory provider here once made SIGTERM hang forever.
-                await self._cleanup_agent_resources_off_loop(
-                    _entry[0] if isinstance(_entry, tuple) else _entry, context="shutdown idle-cache",
-                    session_key=_key, timeout=self._shutdown_remaining(ctx.cleanup_deadline),
-                )
+        from gateway.run_shutdown_cache import cleanup_idle_cached_agents
+        await cleanup_idle_cached_agents(self, ctx.cleanup_deadline)
         # Settle completion flush tasks while adapters are alive so every watcher gets a retryable result.
         cancel_completion_batches = getattr(self, "_cancel_process_completion_batch_tasks", None)
         if cancel_completion_batches is not None:
