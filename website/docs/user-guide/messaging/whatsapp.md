@@ -207,7 +207,12 @@ The gateway starts the WhatsApp bridge automatically using the saved session.
 
 ## Session Persistence
 
-The Baileys bridge saves its session under `~/.hermes/platforms/whatsapp/session`. This means:
+The Baileys bridge normally saves its session under `platforms/whatsapp/session`
+inside the selected profile's Hermes home. Existing installations may retain the
+legacy `whatsapp/session` directory. An explicit
+`platforms.whatsapp.extra.session_path` overrides that choice. Check the selected
+profile's configuration and bridge startup log before inspecting or restoring a
+session; do not assume that the default profile owns it. This means:
 
 - **Sessions survive restarts** — you don't need to re-scan the QR code every time
 - The session data includes encryption keys and device credentials
@@ -227,6 +232,33 @@ hermes whatsapp
 This generates a fresh QR code. Scan it again and the session is re-established. The gateway
 handles **temporary** disconnections (network blips, phone going offline briefly) automatically
 with reconnection logic.
+
+### Repeated timeouts or a damaged login file
+
+A bridge that repeatedly starts, requests a QR scan, and then disappears may be
+waiting for device linking rather than failing to launch. Connection refusal
+between retry attempts can be a consequence of gateway timeout cleanup. Check
+the bridge startup and connection messages before changing ports or dependencies.
+Keep QR codes, phone identifiers, and credential contents out of shared logs.
+
+The presence of `creds.json` alone does not prove a usable login. An empty file or
+invalid JSON is damaged state; valid JSON alone does not prove WhatsApp still
+accepts the device. Inspect only the necessary metadata without printing keys.
+
+Before restoring or re-pairing, preserve the existing session directory, including
+its credential and encryption-key files, in a private backup. Check that any
+proposed recovery copy contains usable credentials for this exact profile;
+a successful quick snapshot or an archive integrity check does not establish
+that coverage. Do not delete keys or copy another profile's session to make
+startup succeed. Coordinate through Hermes' supported pairing flow so a gateway
+bridge and pairing process cannot write the same session concurrently.
+
+If usable credentials cannot be recovered, device linking needs the account
+owner's phone: **Settings → Linked Devices → Link a Device**. Generate the fresh
+QR code when the owner is ready to scan. If linking is deferred, preserve the
+session and record WhatsApp recovery as deferred; a telemetry or gateway health
+check does not establish WhatsApp connectivity. Recheck the bridge and adapter
+connection after linking before reporting recovery.
 
 ---
 
