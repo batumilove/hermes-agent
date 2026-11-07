@@ -169,41 +169,40 @@ def _load_script_maker():
 
 
 def _store_script_maker(python_exe: Path):
-    """Load only PM's authenticated, pinned standalone launcher supplier.
+    """Load the pinned standalone supplier without adopting ambient or partial modules.
 
-    pm.python_bootstrap promotes this package before removing pip and before
-    PM records the store digest. Never resolve a maker from ambient sys.path.
+    PM authenticates and promotes this package before removing pip. Refuse malformed
+    suppliers so native publication can fail closed; cancellation still propagates.
     """
-    entry = Path(python_exe).parent
-    package = entry / "Lib" / "site-packages" / "distlib"
-    from pm.python_bootstrap import _checked_distlib
-    try:
-        _checked_distlib(package, entry)
-        for resource in ("__init__.py", "scripts.py", "LICENSE.txt", "resources.py", "t32.exe", "t64.exe", "t64-arm.exe"):
-            path = package / resource
-            if (not path.is_file() or not path.resolve().is_relative_to(entry.resolve())
-                    or (resource.endswith('.exe') and not path.read_bytes().startswith(b'MZ'))):
-                raise ValueError(f"invalid native launcher resource: {resource}")
-    except (OSError, ValueError, SyntaxError):
-        return None
     import hashlib
     import importlib
     import importlib.util
+    from hermes_cli._launcher_supplier import _check_package, _check_modules, _discard_modules
 
-    # One private package per store copy: a later repin's pip never reuses the first one's.
-    name = f"_hermes_store_distlib_{hashlib.sha256(str(package).encode()).hexdigest()[:12]}"
+    entry = Path(python_exe).parent
+    package = entry / "Lib" / "site-packages" / "distlib"
+    name = "_hermes_store_distlib_" + hashlib.sha256(str(package).encode()).hexdigest()[:12]
     try:
+        _check_package(package, entry)
+        _check_modules(name, package)
         if name not in sys.modules:
             spec = importlib.util.spec_from_file_location(
                 name, package / "__init__.py", submodule_search_locations=[str(package)])
             if spec is None or spec.loader is None:
-                return None
+                raise ImportError("launcher supplier has no loader")
             sys.modules[name] = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(sys.modules[name])
-        maker = importlib.import_module(f"{name}.scripts").ScriptMaker
+        scripts = importlib.import_module(name + ".scripts")
+        _check_modules(name, package)
+        maker = scripts.ScriptMaker
+        if not isinstance(maker, type):
+            raise ImportError("malformed private distlib ScriptMaker")
         return maker
-    except (ImportError, OSError, SyntaxError, AttributeError):  # Refuse a torn selected supplier.
-        sys.modules.pop(name, None)
+    except (KeyboardInterrupt, SystemExit):
+        _discard_modules(name)
+        raise
+    except (ImportError, OSError, SyntaxError, AttributeError, TypeError, ValueError, RuntimeError):
+        _discard_modules(name)
         return None
 
 
