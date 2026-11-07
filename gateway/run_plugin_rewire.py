@@ -107,8 +107,9 @@ def reload_plugins_verb(runner: Any, loop: asyncio.AbstractEventLoop) -> Callabl
         scope = (_profile_runtime_scope(requested, hydrate_secrets=False) if profile_name
                  else contextlib.nullcontext())
         with scope:
-            discover_plugins(force=True)
             manager = get_plugin_manager()
+            manager.set_runtime_role("gateway")
+            discover_plugins(force=True)
             # A plugin that failed on a dependency this gateway booted without rides along, so the
             # enabling caller asks for the restart that loads it.
             names = sorted(manager._plugins)
