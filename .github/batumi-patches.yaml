@@ -16,6 +16,27 @@ patches:
   tests:
   - scripts/run_tests.sh tests/gateway/test_plugin_runtime_role.py
   retirement: Remove when upstream declares gateway role across served-profile startup and reload paths with equivalent passive and unserved refusal coverage.
+- id: insights-private-stage-metadata
+  kind: extension
+  rationale: Preserve bounded read-only Insights metadata extraction and new-only private
+    summary staging without copying message or tool-call payloads or publishing live state.
+    Offline tests require the repository PM-managed test environment and disposable SQLite
+    fixtures; private-stage execution requires native POSIX effective IDs, no-follow and
+    descriptor-relative filesystem support. Native Windows coverage is separately marked.
+  paths:
+  - hermes_cli/insights_metadata_read.py
+  - hermes_cli/insights_refresh_stage.py
+  - hermes_cli/insights_summary_schema.sql
+  - tests/hermes_cli/fixtures/insights/consumer.py.txt
+  - tests/hermes_cli/test_insights_metadata_read.py
+  - tests/hermes_cli/test_insights_refresh_stage.py
+  - tests/hermes_cli/test_insights_stage_platform.py
+  tests:
+  - scripts/run_tests.sh tests/hermes_cli/test_insights_metadata_read.py tests/hermes_cli/test_insights_refresh_stage.py tests/hermes_cli/test_insights_stage_platform.py -j 2
+  - scripts/run_tests.sh tests/hermes_cli/test_state_db_cmd.py -j 2
+  retirement: Remove when upstream provides equivalent bounded metadata-only reads,
+    consumer-compatible summary schema and private-stage filesystem refusal contracts
+    with equivalent behavioral and native-platform regression coverage.
 - id: cron-strict-topic-recovery
   kind: core
   rationale: Preserve explicitly scheduled Telegram destinations through durable reconnect
@@ -60,12 +81,16 @@ patches:
     equivalent completion-order and newer-turn protection.
 - id: process-registry-rewrite-test-isolation
   kind: core
-  rationale: Keep command-rewrite assertions scoped to the terminal job rather than unrelated supervisor subprocesses.
+  rationale: Keep command-rewrite, environment, scope-routing and orphan-cleanup assertions
+    scoped to the terminal registry job rather than unrelated supervisor subprocesses.
+    Fake process IDs must not enter host supervision; reader-thread mocks stay local.
+    Split command-rewrite cases to respect the existing test file-size cap.
   paths:
   - tests/tools/test_process_registry.py
+  - tests/tools/test_process_registry_spawn_rewrite.py
   tests:
-  - scripts/run_tests.sh tests/tools/test_process_registry.py
-  retirement: Drop when upstream scopes the rewrite regression to the registry job-spawn seam.
+  - scripts/run_tests.sh tests/tools/test_process_registry.py tests/tools/test_process_registry_spawn_rewrite.py
+  retirement: Drop when upstream provides equivalent registry launch/thread mock isolation.
 - id: watchdog-early-thread-attribution
   kind: core
   rationale: Attribute pre-prompt watchdog diagnostics to the admitted scheduling owner without resetting interrupt state.
@@ -1656,7 +1681,7 @@ patches:
 - id: provider-telemetry-runtime-ownership
   kind: compatibility
   rationale: Retain stable platform-health gauges and the generic profile-owned runtime-role and
-    discovery-order contracts, including scalar context properties across process isolation. The provider collector, configuration reader and consumer tests live
+    discovery-order contracts, including secondary gateway startup and scalar context properties across process isolation. The provider collector, configuration reader and consumer tests live
     in batumilove/hermes-provider-telemetry. The legacy writer-capability property remains a
     compatibility surface for installed plugins; settings and the legacy config-key declaration belong to the external manifest.
   paths:
@@ -1669,10 +1694,13 @@ patches:
   - hermes_cli/plugin_host.py
   - hermes_cli/plugin_host_child.py
   - tests/hermes_cli/test_plugin_host_context_properties.py
+  - gateway/run_adapters.py
+  - tests/gateway/test_secondary_plugin_runtime_role.py
   - website/docs/developer-guide/plugins/index.md
   tests:
   - scripts/run_tests.sh tests/monitoring/test_gateway_health.py tests/hermes_cli/test_plugin_runtime_role.py
     tests/hermes_cli/test_plugin_role_registration_ordering.py tests/hermes_cli/test_plugin_host_context_properties.py
+    tests/gateway/test_secondary_plugin_runtime_role.py
   retirement: Remove the generic host delta when upstream preserves stable health series, profile-owned
     runtime-role detection, scalar host-property transport and discovery transitions. Remove the legacy capability only after installed
     external consumers migrate; collector lifecycle and export behavior are owned by the external plugin.
@@ -2782,6 +2810,8 @@ patches:
   - scripts/releases/r2.py
   - scripts/bundles/release_artifacts.py
   - CONTRIBUTING.md
+  - website/docs/developer-guide/install-ci.md
+  - website/docs/developer-guide/contributing.md
   - skills/autonomous-ai-agents/hermes-agent/references/contributor-guide.md
   - skills/autonomous-ai-agents/hermes-agent/references/troubleshooting.md
   - skills/autonomous-ai-agents/hermes-agent/references/windows-quirks.md
@@ -2845,3 +2875,39 @@ patches:
   tests:
   - scripts/run_tests.sh tests/hermes_cli/test_session_recovery_lost_and_found.py
   retirement: Remove when upstream missing-CLI tests run actual discovery instead of retaining cached host probe diagnostics.
+
+- id: bounded-turn-evidence-custody
+  kind: core
+  rationale: Retain original in-process receipt readers through host turn closure and scoped callback
+    quiescence. Account for queued stream work, async cancellation and abandoned helpers, reject inherited
+    fork custody, and bind bounded local collectors to one host turn. Collected local proof does not establish
+    remote backend delivery or authorize activation.
+  paths:
+  - .github/workflows/telemetry-pair.yml
+  - agent/plugin_stream_hooks.py
+  - agent/turn_facade.py
+  - hermes_cli/plugin_isolation.py
+  - hermes_cli/plugins.py
+  - hermes_cli/plugins_dispatch.py
+  - hermes_cli/plugins_hook_activity.py
+  - hermes_cli/plugins_ledger.py
+  - hermes_cli/plugins_turn_boundary.py
+  - hermes_cli/plugins_turn_evidence_collector.py
+  - tests/agent/test_plugin_stream_evidence.py
+  - tests/agent/test_turn_evidence_boundary.py
+  - tests/hermes_cli/test_plugin_turn_boundary.py
+  - tests/hermes_cli/test_plugin_turn_boundary_async.py
+  - tests/hermes_cli/test_turn_evidence_collector.py
+  - tests/hermes_cli/fixtures/turn_evidence/LICENSE.txt
+  - tests/hermes_cli/fixtures/turn_evidence/PROVENANCE.json
+  - tests/hermes_cli/fixtures/turn_evidence/delivery_receipts.py.fixture
+  - website/docs/developer-guide/observer-hooks.md
+  - website/docs/developer-guide/turn-evidence-collector.md
+  tests:
+  - scripts/run_tests.sh tests/hermes_cli/test_plugin_turn_boundary.py tests/hermes_cli/test_plugin_turn_boundary_async.py
+    tests/hermes_cli/test_turn_evidence_collector.py tests/agent/test_plugin_stream_evidence.py tests/agent/test_turn_evidence_boundary.py
+  - scripts/run_tests.sh tests/hermes_cli/test_plugins.py tests/hermes_cli/test_plugin_hook_failure_reporting.py
+    tests/agent/test_plugin_stream_hooks.py tests/agent/test_cross_process_turn_lease.py
+  retirement: Remove when upstream provides equivalent bounded host-turn custody and collector attachment
+    with original-reader freshness, callback lifetime, process/profile/registration binding and concurrent
+    single-admission regression coverage.

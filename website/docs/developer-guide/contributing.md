@@ -262,6 +262,9 @@ Run the relevant JS workspace checks for JS changes. Native install/update
 E2E runs on disposable CI hosts, never against the developer's live app.
 See [Package management](../reference/package-management.md) for PM commands and runtime ownership.
 
+Fork maintainers: see [Install and update CI](install-ci.md) for GitHub-hosted
+macOS runners, the historical installer runtime, upgrade evidence, and failure diagnosis.
+
 ## Code Style
 
 - **PEP 8** with practical exceptions (no strict line length enforcement)

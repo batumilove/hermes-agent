@@ -344,3 +344,48 @@ explicit file selected with `HERMES_NEMO_RELAY_PLUGINS_TOML`, can add
 [ATOF, ATIF, or OTEL](https://docs.nvidia.com/nemo/relay/configure-plugins/observability/about)
 exporters and execution middleware; see
 [Relay shared metrics](relay-shared-metrics.md).
+
+
+## Experimental in-process turn evidence custody
+
+`PluginContext.retain_turn_evidence(reader)` retains an original synchronous reader
+on the host-owned `run_conversation` turn and returns an opaque handle, or `None`
+when custody cannot be established. A receipt producer can supply its original
+receipt object's terminal-proof method. Registration must happen while the turn
+is open; session-finalize and arbitrary background callbacks cannot create a turn.
+
+The same context calls `collect_turn_evidence(handle, timeout=1.0)` later.
+`pending` means turn admission is still open or tracked callback work is queued or running.
+`collected` transfers a fresh reader result exactly once after closure and callback
+quiescence. `unverified` is terminal: failures, skipped/timed-out callbacks,
+registration changes, expiry, wrong process, or reader failure cannot pass.
+No caller-supplied completion flags or serialized handle can authorize collection.
+Collection does not itself mean the reader's value is valid or that delivery succeeded.
+
+Custody is limited to 256 retained readers per process, 16 per turn, and a
+five-minute eligibility window. Expired objects are removed on the next custody
+operation; there is no background retention task. In-flight readers keep their
+capacity slot until they actually exit, including after timeout. Reader timeouts
+are limited to five seconds. A hung reader produces no reusable result.
+
+Stream queues reserve activity before enqueueing; a dropped event invalidates the
+turn evidence. Already admitted work keeps its activity until completion. Async
+deadlines and caller cancellation invalidate evidence even if a callback suppresses
+cancellation. Abandoned helper threads retain activity until they actually exit.
+Forked children discard inherited custody before accessing its locks and cannot
+collect the parent's retained handles.
+
+A copied turn context keeps the same admission boundary. After closure, tracked
+callbacks for a retained turn cannot enter, including policy callbacks (which
+return the existing block directive). Unrelated turn/profile work preserves its
+existing dispatch behavior and invalidates the old evidence scope. Turns without
+an evidence consumer retain normal late-hook behavior.
+
+This is a same-process capability, not an authentication protocol for remote
+proof transfer. Isolated plugin hosts explicitly reject these methods. It covers
+plugin hook dispatch only: detached SDK exporter work, plugin-created threads,
+event-bus subscriptions, middleware, unscoped work, and first-party observers are
+not certified. Plugins must not make detached mutations to retained evidence.
+The receipt consumer still owns exact inventory/backend validation and storage
+retention. A complete live collector, authenticated remote transfer, and runtime
+acceptance remain separate prerequisites; no collector is activated by this API.
