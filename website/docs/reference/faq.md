@@ -857,6 +857,18 @@ The full backup excludes:
 
 `hermes backup --quick` saves selected state files instead of a full archive.
 It is not a replacement for the full backup before a machine migration.
+In particular, the quick snapshot's gateway pairing records are distinct from
+WhatsApp's device credentials and encryption keys: it does not capture the
+WhatsApp session directory. Check the resolved session path for each profile,
+including legacy locations and any `session_path` override, when planning
+recovery coverage. A custom path outside the Hermes data root needs its own
+backup coverage.
+
+Archive integrity and database checks prove only the data actually captured.
+Before relying on a backup for device-login recovery, verify its member inventory
+and the required credential files privately. A readable archive containing an
+empty credential file preserves damaged state; it does not provide a working
+login. See [WhatsApp recovery](../user-guide/messaging/whatsapp.md#repeated-timeouts-or-a-damaged-login-file).
 
 Full backups report files that fail to copy. An archive can therefore exist
 with missing data. Review the skipped-file report before you remove the source installation.
