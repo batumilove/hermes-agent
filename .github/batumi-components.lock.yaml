@@ -3,7 +3,7 @@ components:
 - id: hermes-extensions
   repository: batumilove/hermes-extensions
   url: https://github.com/batumilove/hermes-extensions.git
-  commit: 93c23dd26ca26632d84c49b5bd113101b1ac924d
+  commit: 156864a030d20cb692843ad8525c1f94c23afb7b
   kind: plugin-bundle
   plugins:
   - batumi-policy
