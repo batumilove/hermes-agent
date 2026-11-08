@@ -20,7 +20,11 @@ patches:
   - tests/hermes_cli/test_insights_metadata_read.py
   - tests/hermes_cli/test_insights_refresh_stage.py
   - tests/hermes_cli/test_insights_stage_platform.py
+  - tests/hermes_cli/test_insights_refresh_capacity.py
+  - tests/hermes_cli/test_insights_refresh_bytes.py
+  - website/docs/developer-guide/insights-private-refresh.md
   tests:
+  - scripts/run_tests.sh tests/hermes_cli/test_insights_refresh_capacity.py -j 2
   - scripts/run_tests.sh tests/hermes_cli/test_insights_metadata_read.py tests/hermes_cli/test_insights_refresh_stage.py tests/hermes_cli/test_insights_stage_platform.py -j 2
   - scripts/run_tests.sh tests/hermes_cli/test_state_db_cmd.py -j 2
   retirement: Remove when upstream provides equivalent bounded metadata-only reads,
