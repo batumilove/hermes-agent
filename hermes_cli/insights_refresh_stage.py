@@ -117,8 +117,8 @@ def refresh_stage(args):
     from hermes_constants import get_hermes_home
 
     _require_private_stage_support()
-    if not (1 <= args.max_rows <= 100_000 and 1 <= args.max_bytes <= 64 * 1024 * 1024
-            and 0 < args.seconds <= 30):
+    if not (1 <= args.max_rows <= 2_000_000 and 1 <= args.max_bytes <= 512 * 1024 * 1024
+            and 0 < args.seconds <= 300):
         raise ValueError('invalid budget')
     if not re.fullmatch('[0-9a-f]{64}', args.schema_sha256):
         raise ValueError('invalid pin')
@@ -174,7 +174,15 @@ def refresh_stage(args):
             if time.monotonic() >= deadline:
                 raise ValueError('deadline')
             out.commit()
-            owner.write(out.serialize())
+            # Projection bytes are not a memory bound: SQLite pages and serialize()
+            # coexist. Operators must also impose an OS address-space/CPU budget.
+            size = out.execute('PRAGMA page_count').fetchone()[0] * out.execute('PRAGMA page_size').fetchone()[0]
+            if size > args.max_bytes:
+                raise ValueError('artifact byte budget exhausted')
+            payload = out.serialize()
+            if time.monotonic() >= deadline:
+                raise ValueError('deadline')
+            owner.write(payload)
             out.close()
             out = None
         return {'complete': True, 'sessions': counts[0], 'messages': counts[1],
@@ -192,7 +200,7 @@ def refresh_stage(args):
 def cmd_refresh_stage(args):
     try:
         result = refresh_stage(args)
-    except (OSError, ValueError, sqlite3.Error):
+    except (OSError, ValueError, sqlite3.Error, MemoryError):
         print('Insights private stage refresh refused', file=sys.stderr)
         return 1
     print(json.dumps(result, sort_keys=True))
@@ -203,7 +211,10 @@ def register_cli(actions):
     parser = actions.add_parser('insights-refresh-stage', help='Build metadata into a NEW private stage; never publish')
     parser.add_argument('--stage-dir', required=True)
     parser.add_argument('--schema-sha256', required=True)
-    parser.add_argument('--max-rows', type=int, default=10_000)
-    parser.add_argument('--max-bytes', type=int, default=8 * 1024 * 1024)
-    parser.add_argument('--seconds', type=float, default=5)
+    parser.add_argument('--max-rows', type=int, default=10_000,
+                        help='Combined session/message rows (default 10000; maximum 2000000)')
+    parser.add_argument('--max-bytes', type=int, default=8 * 1024 * 1024,
+                        help='Projection and serialized DB bytes (default 8 MiB; maximum 512 MiB; not a RAM bound)')
+    parser.add_argument('--seconds', type=float, default=5,
+                        help='Cooperative deadline (default 5; maximum 300 seconds); also use OS memory/CPU limits')
     parser.set_defaults(func=cmd_refresh_stage)
