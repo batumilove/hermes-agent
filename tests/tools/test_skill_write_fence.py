@@ -317,3 +317,114 @@ def test_capability_cannot_alias_control_or_installable_state(profile, relative)
                     expires_at=(datetime.now(UTC) + timedelta(minutes=5)).isoformat(), receipt=path)
     assert not path.exists()
     assert fence.status() == before
+
+
+def owner_args(home):
+    observed = fence.status()
+    return {"receipt": home.parent / "capabilities" / "capability.json",
+            "names": ["fence-example"], "expected_state_sha256": observed["state_sha256"],
+            "expected_epochs": {"fence-example": observed["state"]["epochs"]["fence-example"]},
+            "plan_sha256": "a" * 64, "owner": "test-operator"}
+
+
+def test_public_owner_validator_inside_existing_descriptor_envelope(profile):
+    import fcntl
+    from contextlib import ExitStack
+    create(profile)
+    started = begin(profile)
+    args = owner_args(profile)
+    before = fence.status()
+    paths = [profile / "hermes-runtime-tree.lock", profile / ".skills.shared-skills-state" / "lock",
+             smt._skill_lock_path("fence-example")]
+    outcome = profile / "outcome.json"
+    outcome.write_text(json.dumps({"lease_id": started["lease_id"], "plan_sha256": "a" * 64,
+                                   "selected": started["selected"], "status": "COMPLETE"}))
+    outcome.chmod(0o600)
+    with ExitStack() as stack:
+        for path in paths:
+            stream = stack.enter_context(path.open("r+"))
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        result = fence.validate_owner(**args)
+        assert result["status"] == "OWN_LEASE_AUTHENTICATED_CALLER_ENVELOPE_REQUIRED"
+        assert result["epochs"] == {"fence-example": 1} and "token" not in result
+        command = [sys.executable, "-m", "tools.skill_write_fence", "validate-owner",
+                   "--receipt", str(args["receipt"]), "--name", "fence-example",
+                   "--expected-state-sha256", args["expected_state_sha256"],
+                   "--expected-epochs-json", json.dumps(args["expected_epochs"]),
+                   "--plan-sha256", args["plan_sha256"], "--owner", args["owner"]]
+        checked = subprocess.run(command, capture_output=True, text=True, timeout=20, check=False)
+        assert checked.returncode == 0, checked.stderr
+        assert json.loads(checked.stdout) == result
+        release = subprocess.run([sys.executable, "-m", "tools.skill_write_fence", "end",
+                                  "--receipt", str(args["receipt"]),
+                                  "--expected-state-sha256", args["expected_state_sha256"],
+                                  "--outcome", str(outcome), "--outcome-sha256",
+                                  hashlib.sha256(outcome.read_bytes()).hexdigest()],
+                                 capture_output=True, text=True, timeout=20, check=False)
+        assert release.returncode == 1 and "active" in release.stderr
+        assert fence.status() == before
+        assert "Original." in (profile / "skills" / "fence-example" / "SKILL.md").read_text()
+    end(profile, started)
+    with pytest.raises(fence.FenceError):
+        fence.validate_owner(**args)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("names", ["different-package"]), ("owner", "different-owner"),
+    ("plan_sha256", "b" * 64), ("expected_state_sha256", "b" * 64),
+    ("expected_epochs", {"fence-example": 2}), ("expected_epochs", {}),
+    ("expected_epochs", {"fence-example": True}),
+])
+def test_public_owner_validator_rejects_inexact_bindings_without_changes(profile, field, value):
+    create(profile)
+    begin(profile)
+    args = owner_args(profile)
+    before = fence.status()
+    args[field] = value
+    with pytest.raises(fence.FenceError):
+        fence.validate_owner(**args)
+    assert fence.status() == before
+
+
+def test_public_owner_validator_authenticates_token_and_profile(profile, monkeypatch):
+    create(profile)
+    begin(profile)
+    args = owner_args(profile)
+    before = fence.status()
+    bad = json.loads(args["receipt"].read_text())
+    bad["token"] = "not-the-token"
+    fake = args["receipt"].with_name("forged.json")
+    fake.write_text(json.dumps(bad))
+    fake.chmod(0o600)
+    with pytest.raises(fence.FenceError, match="capability"):
+        fence.validate_owner(**{**args, "receipt": fake})
+    other = profile.parent / "different-profile"
+    other.mkdir(mode=0o700)
+    with monkeypatch.context() as context:
+        context.setenv("HERMES_HOME", str(other))
+        with pytest.raises(fence.FenceError, match="profile"):
+            fence.validate_owner(**args)
+        assert list(other.iterdir()) == []
+    assert fence.status() == before
+
+
+def test_public_owner_validator_expiry_denies_but_preserves_recovery(profile, monkeypatch):
+    create(profile)
+    started = begin(profile)
+    args = owner_args(profile)
+    before = fence.status()
+    real_datetime = datetime
+
+    class ExpiredClock(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return real_datetime.now(tz) + timedelta(days=1)
+
+    with monkeypatch.context() as context:
+        context.setattr(fence, "datetime", ExpiredClock)
+        with pytest.raises(fence.FenceError, match="expired"):
+            fence.validate_owner(**args)
+        assert fence.status() == before
+        assert dispatch(action="patch", name="fence-example", old_string="Original.",
+                        new_string="Forbidden.")["skill_write_fenced"]
+    end(profile, started)

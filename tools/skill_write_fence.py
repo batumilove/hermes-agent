@@ -110,6 +110,49 @@ def status():
             "enforcement_scope": "SKILL_MANAGE_FLAT_BATCH_AND_STAGED_REPLAY_ONLY"}
 
 
+def validate_owner(receipt, *, names, expected_state_sha256, expected_epochs,
+                   plan_sha256, owner):
+    """Authenticate an operator lease without acquiring locks or changing state.
+
+    The consumer MUST already hold the same tree, helper-state and all selected
+    canonical package mutexes as begin/end, in their documented order. Keep
+    that descriptor envelope through the protected phase and validate again
+    before every later mutation/recovery phase. Those locks serialize cooperating
+    lease changes; this function does not attest to caller lock custody or to
+    gateway activation and is not an ordinary-writer authorization bypass.
+    """
+    capability = _private_read(Path(receipt))
+    selected = _names(names)
+    fields = {"profile", "selected", "plan_sha256", "owner", "expires_at", "token_sha256"}
+    if (not isinstance(capability, dict) or set(capability) != fields | {"lease_id", "token"}
+            or not selected or not owner or capability["profile"] != str(_home())
+            or capability["selected"] != selected or capability["owner"] != owner
+            or capability["plan_sha256"] != plan_sha256
+            or not isinstance(capability["lease_id"], str) or not isinstance(capability["token"], str)):
+        raise FenceError("Operator capability does not match this profile, scope, plan or owner")
+    if (not isinstance(expected_epochs, dict) or set(expected_epochs) != set(selected)
+            or any(type(value) is not int or value <= 0 for value in expected_epochs.values())):
+        raise FenceError("Exact selected admission epochs are required")
+    state = _read()
+    if _digest(state) != expected_state_sha256:
+        raise FenceError("Fence state changed before operator validation")
+    lease = state["leases"].get(capability["lease_id"])
+    if lease != {key: capability[key] for key in fields}:
+        raise FenceError("Operator lease is absent or ownership changed")
+    if hashlib.sha256(capability["token"].encode()).hexdigest() != lease["token_sha256"]:
+        raise FenceError("Wrong operator capability")
+    expiry = datetime.fromisoformat(lease["expires_at"])
+    if expiry.tzinfo is None or expiry <= datetime.now(UTC):
+        raise FenceError("Operator lease expired; preserve recovery custody")
+    if any(state["epochs"].get(name) != expected_epochs[name] for name in selected):
+        raise FenceError("Selected admission epoch changed")
+    return {"protocol": "skill-write-admission/v1", "profile": str(_home()),
+            "lease_id": capability["lease_id"], "owner": owner, "selected": selected,
+            "plan_sha256": plan_sha256, "state_sha256": expected_state_sha256,
+            "epochs": dict(expected_epochs), "expires_at": lease["expires_at"],
+            "status": "OWN_LEASE_AUTHENTICATED_CALLER_ENVELOPE_REQUIRED"}
+
+
 def _check(binding, names, state):
     epochs = binding.get("epochs")
     if (not isinstance(epochs, dict) or any(type(v) is not int or v < 0 for v in epochs.values())
@@ -350,6 +393,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("status")
+    validate = commands.add_parser("validate-owner")
+    validate.add_argument("--receipt", required=True)
+    validate.add_argument("--name", action="append", required=True)
+    validate.add_argument("--expected-state-sha256", required=True)
+    validate.add_argument("--expected-epochs-json", type=json.loads, required=True)
+    validate.add_argument("--plan-sha256", required=True)
+    validate.add_argument("--owner", required=True)
     start = commands.add_parser("begin")
     start.add_argument("--name", action="append", required=True)
     start.add_argument("--expected-state-sha256", required=True)
@@ -367,6 +417,10 @@ def main():
     try:
         if command == "status":
             result = status()
+        elif command == "validate-owner":
+            args["names"] = args.pop("name")
+            args["expected_epochs"] = args.pop("expected_epochs_json")
+            result = validate_owner(**args)
         elif command == "begin":
             names = args.pop("name")
             result = begin(names, **args)

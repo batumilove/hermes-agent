@@ -66,6 +66,44 @@ Expiry never releases a fence or replays a payload. Ending one's own lease does
 not change user curator locks or restore unrelated flags. Epoch history remains
 in profile state; never delete, reset or roll it back to simulate release.
 
+## Read-only validation inside an existing transaction envelope
+
+`validate_owner(receipt, *, names, expected_state_sha256, expected_epochs,
+plan_sha256, owner)` authenticates the private capability against the exact
+current lease and epoch vector, including profile, physical package names,
+plan, operator and future expiry. It changes no state and acquires no locks.
+It returns nonsecret evidence only, never the capability token.
+
+The consumer MUST already hold the same runtime-tree, helper-state and all
+selected canonical package mutex descriptors, in that order. Keep that
+verified envelope throughout the protected phase; revalidate at each later
+mutation or recovery boundary. Cooperating begin/end operations require the
+same locks and cannot change the lease while the envelope is held. The function
+does not verify that the caller holds those locks, instrument an old gateway,
+authorize a user-locked mutation or exclude independent file writers.
+
+Capture status immediately after begin and require its digest to equal the
+begin receipt before retaining its exact selected epoch vector. Do not invent
+or recapture epochs for an old transaction. A released, expired, foreign or
+changed lease must refuse; expiry retains recovery custody.
+
+A cross-process consumer can invoke the same read-only check while retaining
+its own descriptor envelope:
+
+```text
+python -m tools.skill_write_fence validate-owner \
+  --receipt <private-capability-file> \
+  --name category/selected-skill \
+  --expected-state-sha256 <bound-state-digest> \
+  --expected-epochs-json '{"selected-skill": 1}' \
+  --plan-sha256 <exact-approved-plan-digest> --owner <existing-repair-owner>
+```
+
+The epoch value above is illustrative, never a live default. The unchanged
+executor must retain all original descriptor, source, metadata, pending-store,
+custody, permission and recovery gates. No private admission context injection
+or ordinary-writer bypass is supported.
+
 ## Activation and acceptance boundary
 
 Passing isolated tests is not activation. Use the included owning updater and
