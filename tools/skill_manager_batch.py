@@ -10,6 +10,8 @@ import shutil
 import tempfile
 from pathlib import Path
 
+from tools import skill_write_fence as _write_fence
+
 logger = logging.getLogger("tools.skill_manager_tool")
 
 _BATCH_OP_ACTIONS = {"create", "patch", "write_file", "remove_file"}
@@ -216,6 +218,7 @@ def _rollback(snapshots, find_skill, results):
 _ADVISORY_KEYS = ("lint_warnings", "lint_hint")
 
 
+@_write_fence.guard_entry
 def _skill_manage_batch(operations, default_name: str | None = None, task_id: str | None = None,
                         session_id: str | None = None) -> str:
     """Apply operations atomically: every touched skill is snapshotted first and any
@@ -254,6 +257,7 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
     # skill_manage() calls re-enter them. Without the outer fence a concurrent writer landing
     # between the snapshot and a rollback would be silently reverted.
     with _smt._skill_mutation_locks(names):
+        _write_fence.recheck(names)
         snap_root = Path(tempfile.mkdtemp(prefix="skill_batch_"))
         create_targets = {names[i]: _smt._resolve_skill_dir(names[i], op.get("category"))
                           for i, op in enumerate(operations) if op.get("action") == "create"}

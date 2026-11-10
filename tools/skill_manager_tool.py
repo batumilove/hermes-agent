@@ -15,6 +15,8 @@ import logging
 import re
 import shutil
 from pathlib import Path
+
+from tools import skill_write_fence as _write_fence
 from typing import Any, Dict, List, Optional, Tuple
 
 import hermes_yaml as yaml
@@ -81,12 +83,14 @@ def _skills_dir() -> Path:
     return configured if configured != _SKILLS_DIR_AT_IMPORT else get_hermes_home() / "skills"
 
 
-def _skill_lock_path(name: str) -> Path:
+def _skill_lock_path(name: str, *, canonical: bool = False) -> Path:
     """Per-skill lock file under ``<skills>/.locks/`` (same idiom as the usage ledger's
     ``.usage.json.lock``), never inside the skill dir so delete/recreate cannot unlink it under a
-    waiting writer. Keyed by a digest of the basename so ``foo`` and ``category/foo`` share one
-    lock and no name can hit a filesystem limit (callers validate the basename first)."""
-    digest = hashlib.sha256(Path(name).name.encode("utf-8", "surrogatepass")).hexdigest()
+    waiting writer. Keyed by the resolved package directory basename, including frontmatter
+    aliases, so all supported references share one lock. Canonical keys can be pinned by
+    the operator fence without resolving a possibly changed alias again."""
+    key = Path(name).name if canonical else _write_fence.canonical_name(name)
+    digest = hashlib.sha256(key.encode("utf-8", "surrogatepass")).hexdigest()
     return _skills_dir() / ".locks" / f"{digest}.lock"
 
 
@@ -683,6 +687,7 @@ def _run_write_gate(build_staging):
     if decision.blocked:
         return tool_error(decision.message, success=False)
     payload, gist = build_staging(wa)
+    payload = _write_fence.staged_payload(payload)
     record = wa.stage_write(wa.SKILLS, payload, summary=gist, origin=wa.current_origin())
     return json.dumps({"success": True, "staged": True, "pending_id": record["id"],
                        "gist": gist, "message": decision.message}, ensure_ascii=False)
@@ -717,7 +722,8 @@ def apply_skill_pending(payload: dict[str, Any]) -> str:
     """Replay a staged skill write, bypassing the gate (the /skills approve handler)."""
     token = _skill_gate_bypass.set(True)
     try:
-        return _skill_manage_from(payload)
+        with _write_fence.replay_binding(payload):
+            return _skill_manage_from(payload)
     finally:
         _skill_gate_bypass.reset(token)
 
@@ -780,6 +786,7 @@ def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
             forget(name)
 
 
+@_write_fence.guard_entry
 def skill_manage(
     action: str, name: str, content: str | None = None, category: str | None = None, file_path: str | None = None,
     file_content: str | None = None, old_string: str | None = None, new_string: str | None = None,
@@ -809,6 +816,7 @@ def skill_manage(
     # to a helper: guards, ledger capture, patch matching, validation, rollback,
     # and the atomic replacement all belong to the same ownership window.
     with _skill_mutation_lock(name):
+        _write_fence.recheck([name])
         # Ledger pre-capture: telemetry, not a gate — failures must NEVER block the mutation. delete
         # destroys the whole package (consolidation may have re-homed support files first), so
         # complete it from the newest curator backup or a restore is hollow.
