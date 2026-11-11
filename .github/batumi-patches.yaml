@@ -5,6 +5,17 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: operational-routing-acceptance-docs
+  kind: compatibility
+  rationale: Explain complete Mattermost mention tokens and observable routing acceptance,
+    and distinguish launch-time update recovery from an observation-only plan handler.
+  paths:
+  - website/docs/user-guide/messaging/mattermost.md
+  - website/docs/developer-guide/source-update-completion.md
+  tests:
+  - python scripts/check_fork_delta.py
+  retirement: Remove when upstream documents equivalent mention-boundary acceptance and
+    launch-time completion receipt reconciliation.
 - id: insights-private-stage-metadata
   kind: extension
   rationale: Preserve bounded read-only Insights metadata extraction and new-only private
