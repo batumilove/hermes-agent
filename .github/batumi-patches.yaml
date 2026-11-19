@@ -2571,15 +2571,20 @@ patches:
   retirement: Remove after upstream provides equivalent retained cleanup ownership, mandatory worker policy and bounded shutdown contracts.
 - id: browser-vault-authorized-otp-instructions
   kind: operations
-  rationale: Allow explicitly user-authorized email and SMS one-time code entry on the verified
-    account/site tab while retaining password and payment protections. Document that ordinary
-    browser input does not provide vault secret isolation; handlers and schemas are unchanged.
+  rationale: Allow user-given or user-authorized-fetch credential input while retaining the
+    page-supplied-secret prohibition, authorized OTP origin binding and payment protections.
+    Preserve configured credential discovery and recommend vault storage without repeating secrets.
+    Ordinary browser input does not provide vault secret isolation.
   paths:
   - tools/browser_vault_tool.py
+  - model_tools.py
+  - tests/fixtures/prompt_surface/surfaces.json
+  - tests/fixtures/prompt_surface/tools/browser_exec.json
+  - tests/tools/test_browser_vault_guidance.py
   - contributors/emails/codex-agent@example.invalid
   tests:
-  - scripts/run_tests.sh tests/tools/test_browser_vault.py
-  retirement: Remove when upstream documents equivalent authorized OTP input and secret-isolation boundaries.
+  - scripts/run_tests.sh tests/tools/test_browser_vault_guidance.py tests/tools/test_browser_vault.py tests/tools/test_browser_vault_origin_guard.py tests/ci/test_prompt_surface.py
+  retirement: Remove when upstream provides equivalent authorized credential guidance, OTP origin binding and secret-isolation boundaries.
 - id: ci-aggregate-bounded-context
   kind: operations
   rationale: Pass every dependency result and detector lane selection to the required gate without
