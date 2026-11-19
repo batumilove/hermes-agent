@@ -91,6 +91,31 @@ status stays 0; only a user action (local changes left in the stash) still exits
 
 ## Parent lifecycle and failures
 
+### Observation commands and prior recovery
+
+`update --plan` does not apply the update selected by its plan handler. That does
+not make the entire launcher invocation free of side effects: startup can finish
+dependency preparation or a pending source-completion tail before dispatching the
+requested command. Inspect the installed launch path and pending obligations
+without starting Hermes when an observation must not perform maintenance. Do not
+bypass recovery markers or locks to obtain a plan.
+
+When recovery runs before a plan, retain its output, PM result and remaining
+follow-ups separately from the plan. Correlate the original update receipt with
+later dependency/completion receipts by their recorded source and run identities;
+`latest.json`, exit zero or a printed completion message alone cannot prove that
+the original update satisfied every obligation. Receipt schemas and exit semantics
+are version-specific: preserve an older partial/failed outcome and record later
+recovery alongside it rather than rewriting the historical result.
+
+If another updater already moved the installation, reconcile its actual argv,
+source transition, backup disposition and restarted services before retrying.
+Current health and changed-behavior acceptance do not establish compliance with an
+earlier exact-target or service-scope restriction. A rollback or another update is
+a separate operational action, not documentation reconciliation.
+
+### Command parent and completion child
+
 The parent waits and propagates the child's exact nonzero result (a signal is
 mapped to shell-style 128+signal); post-commit step failures never produce one. A child cannot succeed by merely exiting zero:
 a terminal response with the matching receipt identity is required. The response

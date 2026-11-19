@@ -235,6 +235,35 @@ To find a channel ID in Mattermost: open the channel, click the channel name hea
 
 When the bot is `@mentioned`, the mention is automatically stripped from the message before processing.
 
+### Complete mention tokens
+
+Mentions match the bot's complete username, case-insensitively. For a bot named
+`hermes`, `@hermes` is a mention, but `@hermes+tag` and `@hermes%tag` are not.
+Those longer tokens must not be stripped as though they contained a valid mention.
+In a free-response channel, the bot can still respond to such a message and should
+receive the complete token. A token that is not a valid fleet mention must not
+suppress that channel's primary bot.
+
+### Verify mention routing
+
+Use messages sent by an authorized user after the bot has joined the channel.
+Check that the channel allowlist permits the channel and confirm its mention and
+free-response settings before interpreting the result.
+
+1. In a channel that requires mentions and is not a free-response channel, send
+   `@hermes+tag suffix boundary check`. It should not start an agent turn.
+2. In the same channel, send `@hermes hi`. It should reach the intended profile
+   with the valid mention removed and receive a reply.
+3. In a free-response channel, send the suffix message. It may start a turn, but
+   the agent input should retain `@hermes+tag` intact.
+
+Replace `hermes` with the bot's actual username. Retain message links and correlate
+the posts with the intended profile's available admission or stored-input evidence.
+Silence alone cannot distinguish correct gating from a disconnected bot; the valid
+mention is the control. A bot's prose claiming that it stripped a token is not
+parser evidence. Scope the acceptance result to the suffixes and channel modes
+actually exercised; keep private transcripts and identifiers out of public reports.
+
 ## Channel allowlist (`allowed_channels`)
 
 Restrict the bot to a fixed set of Mattermost channels. When set, the bot **only** responds in channels whose ID appears in the list — messages from any other channel are silently ignored, even if the bot is `@mentioned`.
