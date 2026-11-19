@@ -2009,6 +2009,8 @@ patches:
     recovery, release drain ownership before startup acceptance, suppress scheduled and catch-up dispatch
     for the full owned transaction, and run a sealed one-restart bounded-handoff transaction whose occupancy
     and post-replacement acceptance are proven through PID-bound live status.
+    Keep native SystemdOperations tests in the Linux lane while pure controller
+    tests continue running on every host.
   paths:
   - tests/e2e/core/delivery/_cron_clock.py
   - tests/e2e/core/delivery/test_cron_virtual_clock_soak.py
