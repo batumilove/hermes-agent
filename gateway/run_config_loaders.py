@@ -638,7 +638,8 @@ class GatewayConfigLoadersMixin:
         agent._fallback_chain = new_chain
         agent._fallback_model = new_chain[0] if new_chain else None
         if not getattr(agent, "_fallback_activated", False):
-            agent._fallback_index = 0
+            from agent.chat_completion_helpers import _reset_fallback_episode
+            _reset_fallback_episode(agent)
         # A config edit means the user changed something — drop the session-scoped unavailability
         # memo so re-configured entries (e.g. credentials added mid-uptime) get retried. Only on real
         # content change, so the per-message no-op refresh keeps the memo's rate-limiting benefit.
