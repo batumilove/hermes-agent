@@ -541,6 +541,7 @@ def test_rotated_compress_keeps_atomically_published_foreign_tail(tmp_path, monk
     monkeypatch.setenv("HERMES_HOME", str(root))
     monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
     store = SessionStore(sessions_dir=root / "sessions", config=GatewayConfig(multiplex_profiles=True))
+    store._ensure_loaded()
     parent, child = "parent", "child"
     entry = SessionEntry(
         session_key=f"agent:{profile}:discord:thread:123:123", session_id=parent,
@@ -550,6 +551,8 @@ def test_rotated_compress_keeps_atomically_published_foreign_tail(tmp_path, monk
     store._entries[entry.session_key] = entry
     db = store._db_for_key(entry.session_key)
     db.create_session(parent, "discord")
+    # A live /compress starts from an already loaded, durable parent route.
+    store._save()
     db.append_message(parent, "assistant", "old turn")
     watermark = db.get_active_message_watermark(parent)
     db.append_message(parent, "assistant", "concurrent foreign turn")

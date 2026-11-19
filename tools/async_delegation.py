@@ -199,7 +199,10 @@ def _persist_dispatch(record: dict[str, Any]) -> None:
             (record["delegation_id"], record.get("session_key", ""), record.get("origin_ui_session_id", ""),
              record.get("parent_session_id"), record["dispatched_at"], now, os.getpid(), owner_started_at,
              json.dumps(task_payload), record.get("origin_session_id", "")))
-    _prune_durable_records()
+    try:
+        _prune_durable_records()
+    except Exception:  # health: allow BLE001 -- Retention failure must not veto an already committed dispatch.
+        logger.warning("Async delegation durable-record pruning failed", exc_info=True)
 
 
 def _prune_durable_records() -> None:
@@ -901,6 +904,20 @@ def _batch_status(combined: dict[str, Any]) -> str:
     return "error" if child_results and all(r.get("status") not in ok for r in child_results) else "completed"
 
 
+def _discard_unscheduled(delegation_id: str) -> None:
+    """Release the slot and best-effort remove a record that never reached a worker."""
+    with _records_lock:
+        _records.pop(delegation_id, None)
+    try:
+        if remote := worker_ledger():
+            remote.unscheduled(delegation_id)
+        else:
+            with _DB_LOCK, _transaction() as conn:
+                conn.execute("DELETE FROM async_delegations WHERE delegation_id=?", (delegation_id,))
+    except Exception:  # health: allow BLE001 -- Preserve dispatch refusal and slot release when ledger cleanup also fails.
+        logger.warning("Failed to clean up unscheduled async delegation %s", delegation_id, exc_info=True)
+
+
 def _dispatch(**kwargs) -> dict[str, Any]:
     from hermes_cli.backend_retirement import retirement
 
@@ -956,10 +973,14 @@ def _dispatch_admitted(
             return {"status": "rejected", "reason": "capacity", "error": capacity_error}
         _records[delegation_id] = record
         live_units = sum(1 for r in _records.values() if r.get("status") in _LIVE_STATES)
-    _persist_dispatch(record)
     # Units of one call share a slot, so live units can exceed slots: size the pool by units or a
     # unit queues behind a full pool and the stale monitor kills it before its child ever starts.
-    executor = _get_executor(max(max_async_children, live_units))
+    try:
+        _persist_dispatch(record)
+        executor = _get_executor(max(max_async_children, live_units))
+    except Exception as exc:  # health: allow BLE001 -- Storage or executor preparation must refuse work before submission and release its slot.
+        _discard_unscheduled(delegation_id)
+        return {"status": "rejected", "error": f"Failed to persist or prepare async delegation{label}: {exc}"}
 
     def _worker() -> None:
         result: dict[str, Any] = {}
@@ -988,13 +1009,7 @@ def _dispatch_admitted(
         future.add_done_callback(lambda _: retirement.release())
     except Exception as exc:  # pragma: no cover — pool submit failure is rare
         retirement.release()
-        with _records_lock:
-            _records.pop(delegation_id, None)
-        if remote := worker_ledger():
-            remote.unscheduled(delegation_id)
-        else:
-            with _DB_LOCK, _transaction() as conn:
-                conn.execute("DELETE FROM async_delegations WHERE delegation_id=?", (delegation_id,))
+        _discard_unscheduled(delegation_id)
         return {"status": "rejected", "error": f"Failed to schedule async delegation{label}: {exc}"}
     if progress_fn is not None:
         _ensure_stale_monitor()

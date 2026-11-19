@@ -1,4 +1,3 @@
-# health: allow FILE_LINES -- platform-tables refactor: core's _PLATFORM_DEFAULTS row for this platform moved onto its register() call as display_tier; the growth is only that kwarg
 """Buzz platform adapter (Block's Nostr-based human+agent community relay).
 
 Outbound and polling go through the ``buzz`` CLI ("JSON in, JSON out", never a shell);
@@ -11,13 +10,13 @@ BUZZ_PRIVATE_KEY (nsec or hex): it reaches the CLI via the subprocess env and is
 
 import asyncio
 import contextlib
-import hashlib
 import json
 import logging
 import mimetypes
 import os
 import re
 import shutil
+import sys
 import tempfile
 import time
 from collections import OrderedDict
@@ -63,7 +62,7 @@ def _scoped_platform_setting(env_name, extra, key):
 logger = logging.getLogger(__name__)
 
 from gateway.platforms.base import (
-    BasePlatformAdapter, CachedMedia, SendResult, cache_media_bytes_async,
+    BasePlatformAdapter, CachedMedia, SendResult,
 )
 from gateway.platforms.helpers import cancel_task
 from gateway.platforms.event import MessageEvent, MessageType
@@ -140,7 +139,9 @@ def _attachment_origin(value: str) -> Optional[tuple[str, int]]:
     try:
         parsed = urlsplit(raw if "://" in raw else f"//{raw}")
         host = (parsed.hostname or "").lower().rstrip(".")
-        port = parsed.port or 443
+        port = 443 if parsed.port is None else parsed.port
+        if port == 0:
+            return None
     except ValueError:
         return None
     if (parsed.scheme and parsed.scheme not in {"https", "wss"}) or not host:
@@ -527,11 +528,15 @@ _MEDIA_KIND_PRIORITY = (("image", MessageType.PHOTO), ("audio", MessageType.AUDI
 _ATTACHMENT_KIND_TYPES = {"image": MessageType.PHOTO, "video": MessageType.VIDEO, "audio": MessageType.AUDIO, "document": MessageType.DOCUMENT}
 
 
+from plugins.platforms.buzz.attachments import BuzzAttachmentMixin
 from plugins.platforms.buzz.conversations import BuzzConversationMixin
 
 
-class BuzzAdapter(BuzzConversationMixin, BuzzCursorMixin, BasePlatformAdapter):
+class BuzzAdapter(BuzzAttachmentMixin, BuzzConversationMixin, BuzzCursorMixin, BasePlatformAdapter):
     """Buzz adapter (WebSocket push with poll fallback) for the BasePlatformAdapter interface."""
+
+    # Bind the loader-owned facade once; subclasses retain its shared seams.
+    _attachment_runtime = sys.modules[__name__]
 
     serial_receive_loop = True  # WS listener and poll sweep both await each event batch before reading the next
     def __init__(self, config, **kwargs):
@@ -1421,58 +1426,6 @@ class BuzzAdapter(BuzzConversationMixin, BuzzCursorMixin, BasePlatformAdapter):
         """Return a fixed-width diagnostic for malformed or excess metadata."""
         return f"[{rejected if rejected <= 999 else '999+'} Buzz attachment(s) rejected as malformed or over limits.]"
 
-    async def _download_attachment(self, metadata: dict) -> Optional[CachedMedia]:
-        """Download, integrity-check, and cache one authorized Buzz attachment."""
-        url = metadata["url"]
-        try:
-            parsed_url = urlsplit(url)
-            origin = ((parsed_url.hostname or "").lower().rstrip("."), parsed_url.port or 443)
-        except ValueError:
-            parsed_url, origin = None, ("", 0)
-        if parsed_url is None or parsed_url.scheme != "https" or origin not in self._attachment_origins:
-            logger.warning("Buzz: refusing attachment from untrusted origin %s:%s", origin[0] or "<missing>", origin[1])
-            return None
-        import httpx
-        try:
-            timeout = httpx.Timeout(_ATTACHMENT_DOWNLOAD_TIMEOUT)
-            async with (
-                asyncio.timeout(_ATTACHMENT_DOWNLOAD_TIMEOUT),
-                httpx.AsyncClient(follow_redirects=False, timeout=timeout, headers={"Accept-Encoding": "identity"}) as client,
-                client.stream("GET", url) as response,
-            ):
-                if response.status_code != 200:
-                    logger.warning("Buzz: attachment download returned HTTP %s", response.status_code)
-                    return None
-                if content_length := response.headers.get("content-length"):
-                    try:
-                        declared_response_size = int(content_length)
-                    except ValueError:
-                        return None
-                    if declared_response_size != metadata["size"]:
-                        logger.warning("Buzz: attachment Content-Length does not match imeta size")
-                        return None
-                data = bytearray()
-                async for chunk in response.aiter_bytes():
-                    data.extend(chunk)
-                    if len(data) > metadata["size"]:
-                        logger.warning("Buzz: attachment exceeded its declared size")
-                        return None
-        except (TimeoutError, httpx.HTTPError, OSError, ValueError) as exc:
-            logger.warning("Buzz: attachment download failed: %s", exc)
-            return None
-        for bad, what in ((len(data) != metadata["size"], "size"), (hashlib.sha256(data).hexdigest() != metadata["sha256"], "SHA-256")):
-            if bad:
-                logger.warning("Buzz: attachment %s does not match imeta", what)
-                return None
-        try:
-            return await cache_media_bytes_async(bytes(data), filename=metadata["filename"], mime_type=metadata["mime_type"])
-        except (OSError, ValueError) as exc:
-            logger.warning("Buzz: attachment cache write failed: %s", exc)
-            return None
-
-    async def _cache_inbound_attachments(self, metadata_items: list[dict]) -> list[CachedMedia]:
-        return [a for m in metadata_items if (a := await self._download_attachment(m)) is not None]
-
     async def _handle_event(self, channel_id: str, state: dict, event: dict) -> None:
         """De-dupe, filter, and dispatch a single ``messages get`` event."""
         event_id = str(event.get("id") or "")
@@ -1489,7 +1442,7 @@ class BuzzAdapter(BuzzConversationMixin, BuzzCursorMixin, BasePlatformAdapter):
         if not pubkey or not isinstance(content, str) or not (content.strip() or attachment_metadata or rejected_attachments):
             return
         # Cache before any early return so self-echo and concurrent-author traffic can still be reply parents.
-        self._remember_event(state, event)
+        self._remember_event(state, event, attachment_authorized=False)
         # See #75826.
         if pubkey == self._self_pubkey:
             return
@@ -1517,12 +1470,14 @@ class BuzzAdapter(BuzzConversationMixin, BuzzCursorMixin, BasePlatformAdapter):
         # Attachment fetch spends credentials: only the gateway's explicit ``True`` permits it (else fail closed).
         # The message still dispatches so GatewayRunner can apply denial/pairing.
         chat_type = "dm" if is_dm else "group"
-        fetch_allowed = bool(attachment_metadata) and self._is_sender_authorized(pubkey, chat_type, channel_id) is True
-        attachments = await self._cache_inbound_attachments(attachment_metadata) if fetch_allowed else []
+        attachments, current_failed, quoted_failed = await self._collect_inbound_attachments(
+            state, event, attachment_metadata, reply_parent_id, channel_id, chat_type, pubkey)
+        if quoted_failed:
+            dispatch_text = f"{dispatch_text}\n[Quoted Buzz attachment unavailable or failed integrity checks.]".strip()
         if rejected_attachments:
             dispatch_text = f"{dispatch_text}\n{self._attachment_rejection_note(rejected_attachments)}".strip()
-        if fetch_allowed and (failed := len(attachment_metadata) - len(attachments)):
-            dispatch_text = f"{dispatch_text}\n[{failed} Buzz attachment(s) could not be downloaded or failed integrity checks.]".strip()
+        if current_failed:
+            dispatch_text = f"{dispatch_text}\n[{current_failed} Buzz attachment(s) could not be downloaded or failed integrity checks.]".strip()
         message_type = MessageType.TEXT
         if attachments:
             # Mixed kinds use document semantics so an audio member is not mistaken for a voice note (STT).
@@ -1601,14 +1556,6 @@ class BuzzAdapter(BuzzConversationMixin, BuzzCursorMixin, BasePlatformAdapter):
     def _resolve_reply_anchor(self, anchor: Optional[str]) -> Optional[str]:
         """Thread root when the trigger was inside a thread (reply joins it), else the anchor unchanged."""
         return (self._thread_roots.get(str(anchor)) or anchor) if anchor else anchor
-
-    def _remember_event(self, state: dict, event: dict) -> None:
-        """Record author + content snippet for later NIP-10 parent lookup."""
-        event_id = str(event.get("id") or "")
-        content = event.get("content")
-        if event_id:
-            snippet = content[:_EVENT_META_CONTENT_CAP] if isinstance(content, str) else ""
-            self._store_event_meta(state, event_id, str(event.get("pubkey") or "").lower(), snippet)
 
     def _remember_event_meta(self, channel_id: str, event_id: str, pubkey: str, content: str) -> None:
         state = self._channel_state.get(channel_id)

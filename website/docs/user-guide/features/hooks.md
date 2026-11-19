@@ -1844,6 +1844,26 @@ Fires after a provider response has been normalized successfully. This is observ
 
 Fires for a failed provider attempt with status/retry timing, an `error` object, and sanitized `request`. This is observer-only. Error messages may still contain provider or user data.
 
+### Provider fallback lifecycle hooks
+
+These plugin hooks observe routing transitions; their return values are ignored and callback
+exceptions do not change routing or recovery. Register them with `ctx.register_hook(...)`.
+
+| Hook | When it fires | Payload |
+|---|---|---|
+| `on_fallback_activated` | A fallback route activates successfully | `from_provider`, `from_model`, `to_provider`, `to_model`, `reason`, `session_id`, `platform` |
+| `on_fallback_chain_exhausted` | A non-empty chain exhausts, once per fallback episode | `provider`, `model`, `primary_provider`, `primary_model`, `reason`, `chain_length`, `session_id`, `platform` |
+| `on_primary_restored` | The primary runtime is restored successfully | `provider`, `model`, `session_id`, `platform` |
+
+`reason` is the classifier's string value, or `None` when no reason is supplied. A new episode
+re-arms exhaustion reporting when the primary is restored, a model is switched, recovery restarts
+the chain, or an inactive cached agent's fallback configuration is refreshed. Refresh leaves an
+active fallback in its cooldown window alone. An empty chain emits no exhaustion event.
+
+These payloads include session identifiers: plugins should apply their own privacy and opt-in
+policy before retaining or exporting them. Gateway `/agents --diagnostics` instead exposes local,
+aggregate counters under the existing shared-metrics opt-in, including shutdown cache-clear counts.
+
 ### Auxiliary-call observer hooks
 
 #### `pre_auxiliary_call` / `post_auxiliary_call`

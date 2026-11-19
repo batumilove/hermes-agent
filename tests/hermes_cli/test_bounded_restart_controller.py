@@ -450,6 +450,7 @@ def test_execute_releases_lifecycle_lease_on_unexpected_error(tmp_path, controll
     assert ops.events == ["lifecycle:acquire", "lifecycle:release"]
 
 
+@pytest.mark.platforms("linux")
 def test_systemd_lifecycle_lease_binds_exact_candidate_provenance(
     tmp_path, controller_path, monkeypatch
 ):
@@ -483,6 +484,7 @@ def test_systemd_lifecycle_lease_binds_exact_candidate_provenance(
     }
 
 
+@pytest.mark.platforms("linux")
 def test_systemd_lifecycle_lease_real_filesystem_seam(tmp_path, controller_path, monkeypatch):
     manifest = load_manifest(tmp_path, controller_path)
     operations = SystemdOperations()
@@ -744,6 +746,7 @@ def test_force_kill_precommand_identity_block_is_not_reconciled(tmp_path, contro
     assert ops.events.count("drain:clear") == 0
 
 
+@pytest.mark.platforms("linux")
 def test_systemd_force_kill_types_only_subprocess_failure_as_reconcilable(
     tmp_path, controller_path, monkeypatch
 ):
@@ -1156,6 +1159,7 @@ def test_old_cgroup_members_must_be_proven_gone(tmp_path, controller_path):
     assert saved["overall"] == "FAIL"
 
 
+@pytest.mark.platforms("linux")
 def test_systemd_occupancy_blocks_when_live_gateway_status_is_missing(
     tmp_path, controller_path, monkeypatch
 ):
@@ -1170,6 +1174,7 @@ def test_systemd_occupancy_blocks_when_live_gateway_status_is_missing(
         ops.sample_occupancy(manifest)
 
 
+@pytest.mark.platforms("linux")
 def test_systemd_occupancy_uses_live_attributed_counts(
     tmp_path, controller_path, monkeypatch
 ):
@@ -1204,6 +1209,7 @@ def test_systemd_occupancy_uses_live_attributed_counts(
     )
 
 
+@pytest.mark.platforms("linux")
 def test_systemd_occupancy_blocks_on_missing_attribution(
     tmp_path, controller_path, monkeypatch
 ):
@@ -1248,6 +1254,7 @@ def test_manifest_bootstrap_rejects_target_generation_as_legacy(tmp_path, contro
         Manifest.from_mapping(raw, controller_path=controller_path, now=NOW)
 
 
+@pytest.mark.platforms("linux")
 def test_systemd_bootstrap_uses_pid_bound_legacy_status_but_never_declares_quiet(
     tmp_path, controller_path, monkeypatch
 ):
@@ -1291,6 +1298,7 @@ def test_systemd_bootstrap_uses_pid_bound_legacy_status_but_never_declares_quiet
     assert observed.quiet_for(service.pid) is False
 
 
+@pytest.mark.platforms("linux")
 def test_systemd_bootstrap_repeated_samples_accept_owned_running_to_draining_transition(
     tmp_path, controller_path, monkeypatch
 ):
@@ -1349,6 +1357,7 @@ def test_systemd_bootstrap_repeated_samples_accept_owned_running_to_draining_tra
     )
 
 
+@pytest.mark.platforms("linux")
 def test_systemd_bootstrap_rejects_draining_status_owned_by_another_transaction(
     tmp_path, controller_path, monkeypatch
 ):
@@ -1386,6 +1395,7 @@ def test_systemd_bootstrap_rejects_draining_status_owned_by_another_transaction(
         ops.sample_occupancy(manifest)
 
 
+@pytest.mark.platforms("linux")
 def test_systemd_bootstrap_rejects_unknown_gateway_state(
     tmp_path, controller_path, monkeypatch
 ):
@@ -1418,6 +1428,7 @@ def test_systemd_bootstrap_rejects_unknown_gateway_state(
         ops.sample_occupancy(manifest)
 
 
+@pytest.mark.platforms("linux")
 def test_systemd_bootstrap_rejects_old_code_identity_drift(
     tmp_path, controller_path, monkeypatch
 ):
@@ -1448,6 +1459,7 @@ def test_systemd_bootstrap_rejects_old_code_identity_drift(
         ops.sample_occupancy(manifest)
 
 
+@pytest.mark.platforms("linux")
 def test_systemd_cgroup_membership_missing_blocks_instead_of_becoming_empty(
     tmp_path, controller_path, monkeypatch
 ):
@@ -1460,6 +1472,7 @@ def test_systemd_cgroup_membership_missing_blocks_instead_of_becoming_empty(
         ops._cgroup_pids(manifest.old_control_group)
 
 
+@pytest.mark.platforms("linux")
 def test_systemd_runtime_acceptance_binds_every_surface_to_replacement(
     tmp_path, controller_path, monkeypatch
 ):
@@ -1494,6 +1507,7 @@ def test_systemd_runtime_acceptance_binds_every_surface_to_replacement(
     }
 
 
+@pytest.mark.platforms("linux")
 def test_bootstrap_runtime_acceptance_still_rejects_old_code_identity(
     tmp_path, controller_path, monkeypatch
 ):
@@ -1527,6 +1541,7 @@ def test_bootstrap_runtime_acceptance_still_rejects_old_code_identity(
     assert set(ops.runtime_acceptance(manifest, service).values()) == {"FAIL"}
 
 
+@pytest.mark.platforms("linux")
 def test_systemd_runtime_acceptance_rejects_stale_scheduler_writer(
     tmp_path, controller_path, monkeypatch
 ):

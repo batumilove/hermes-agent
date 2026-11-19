@@ -5,6 +5,46 @@ upstream:
   base_file: .github/upstream-base
   provenance_file: .github/upstream-sync-provenance.json
 patches:
+- id: ui-lane-failure-diagnostics
+  kind: operations
+  rationale: Keep normal Vitest failure details visible in hosted lane logs alongside the JSON
+    reporter consumed by exact file-coverage receipts; a failed shard must remain diagnosable.
+  paths:
+  - .github/scripts/run-ui-lane.mjs
+  tests:
+  - node --test .github/scripts/ui-sharding.test.mjs .github/scripts/ui-discovery.test.mjs
+  retirement: Remove when upstream preserves human-readable failure diagnostics alongside machine
+    receipts without changing lane selection, coverage validation or gate outcomes.
+- id: buzz-attachment-auth-and-quoted-parent
+  kind: compatibility
+  rationale: Authenticate canonical relay attachment downloads with short-lived
+    Blossom read tokens and preserve authorized same-conversation quoted images.
+    Keep exact request-origin validation, anonymous third-party downloads, bounded
+    transfer integrity checks and shared current/parent attachment limits.
+    Extract the useful behavior from PR440 into the attachment sibling.
+  paths:
+  - plugins/platforms/buzz/adapter.py
+  - plugins/platforms/buzz/attachments.py
+  - plugins/platforms/buzz/nostr_auth.py
+  - tests/gateway/test_buzz_adapter.py
+  - tests/gateway/test_buzz_attachment_auth_regression.py
+  - tests/gateway/test_buzz_quoted_parent_regression.py
+  - website/docs/user-guide/messaging/buzz.md
+  tests:
+  - scripts/run_tests.sh tests/gateway/test_buzz_attachment_auth_regression.py tests/gateway/test_buzz_quoted_parent_regression.py tests/gateway/test_buzz_adapter.py
+  retirement: Remove when upstream provides authenticated native attachment reads
+    and authorized quoted-parent context with equivalent routing and integrity checks.
+- id: ci-timing-baseline-provenance
+  kind: operations
+  rationale: Preserve and HTML-escape the timing baseline's actual source branch instead of labeling
+    every baseline as main, including trusted default-branch caches produced from batumi/live.
+  paths:
+  - scripts/ci/timings_report.py
+  - tests/ci/test_timings_report.py
+  tests:
+  - scripts/run_tests.sh tests/ci/test_timings_report.py tests/scripts/test_ci_cache_trust.py
+  retirement: Remove when upstream reports actual baseline branch provenance without changing cache
+    trust or treating unknown legacy provenance as main.
 - id: insights-private-stage-metadata
   kind: extension
   rationale: Preserve bounded read-only Insights metadata extraction and new-only private
@@ -47,6 +87,65 @@ patches:
   - scripts/run_tests.sh tests/cron/test_strict_topic_delivery.py tests/cron/test_strict_topic_recovery.py tests/gateway/test_delivery_ledger.py
   retirement: Remove when upstream preserves strict scheduled topic routing across all
     live, standalone and durable replay paths with equivalent behavioral coverage.
+- id: osv-container-output-isolation
+  kind: operations
+  rationale: Run the pinned advisory scanner and reporter with the runner UID, read-only source and tools, and a separate writable result directory.
+  paths:
+  - .github/workflows/osv-scanner.yml
+  - tests/scripts/test_osv_scanner_workflow.py
+  - tests/scripts/test_osv_container_isolation.py
+  tests:
+  - scripts/run_tests.sh tests/scripts/test_osv_scanner_workflow.py tests/scripts/test_osv_container_isolation.py
+  retirement: Remove when upstream separates scanner output from the checkout and applies equivalent container isolation.
+- id: npm-layout-canonical-path-test
+  kind: compatibility
+  rationale: Compare npm entrypoint layout under the canonical temporary root,
+    so native macOS temporary-directory spelling does not prevent the real npm
+    version probe from executing. Keep both ordinary and versioned PM layouts.
+  paths:
+  - tests-js/node-deps.test.mjs
+  tests:
+  - npm exec --workspace tests-js -- vitest run node-deps.test.mjs
+  retirement: Remove when upstream compares equivalent npm entrypoint paths by
+    canonical filesystem identity in the layout regression.
+- id: manual-compression-route-custody
+  kind: core
+  rationale: Publish a manual compression child only while the original routing
+    binding is still owned. Capture the parent before child persistence and use
+    the durable point compare-and-swap, matching automatic compression paths.
+  paths:
+  - gateway/slash_commands_session.py
+  - tests/gateway/test_compress_command.py
+  - tests/gateway/test_manual_compression_route_custody.py
+  tests:
+  - scripts/run_tests.sh tests/gateway/test_manual_compression_route_custody.py tests/gateway/test_compress_command.py tests/gateway/test_routing_save_fast_path.py
+  retirement: Remove when upstream manual compression uses equivalent durable
+    route ownership and preserves a newer binding during child persistence.
+- id: logging-default-setup-fast-path
+  kind: core
+  rationale: Repeated per-agent default logging setup must avoid filesystem and configuration I/O
+    once that home's static or profile-routed default writers exist, while preserving new-home
+    adoption and explicit component or policy setup.
+  paths:
+  - hermes_logging.py
+  - tests/test_hermes_logging.py
+  tests:
+  - scripts/run_tests.sh tests/test_hermes_logging.py
+  retirement: Remove when upstream provides equivalent home-aware default setup without per-turn
+    directory or configuration I/O and preserves profile routing and explicit setup behavior.
+- id: delegation-dispatch-persistence-refusal
+  kind: core
+  rationale: Fail closed before submitting background work when dispatch persistence or executor
+    preparation fails, release reserved capacity, and keep retention pruning from vetoing an
+    already committed dispatch. Worker cleanup must use its bound ledger rather than local SQLite.
+  paths:
+  - tools/async_delegation.py
+  - tests/tools/test_async_delegation_dispatch_persistence.py
+  tests:
+  - scripts/run_tests.sh tests/tools/test_async_delegation_dispatch_persistence.py
+    tests/tools/test_async_delegation.py tests/tools/test_async_delegation_worker_routing.py
+  retirement: Remove when upstream provides equivalent pre-submission failure containment, slot
+    release, best-effort retention, and worker-owned ledger cleanup for single and batch dispatch.
 - id: desktop-reconnect-durable-history
   kind: core
   rationale: Recover the persisted reply after reconnect retires a confirmed live
@@ -316,8 +415,10 @@ patches:
 - id: native-windows-pinned-launcher-publication
   kind: core
   rationale: Preserve both native CLI names on Windows using PM's pinned standalone supplier and staged per-destination publication; fail dependency sync when mandatory launcher publication fails. Required by the original old-gateway update journey; no diagnostic capture ships.
+    Refuse invalid private supplier modules and nested links before reuse, and discard partial imports on failure or cancellation while preserving cancellation propagation.
   paths:
   - hermes_cli/_launchers.py
+  - hermes_cli/_launcher_supplier.py
   - hermes_cli/venv_sync.py
   - tests/conftest.py
   - tests/fixtures/README-native-supplier.md
@@ -335,9 +436,11 @@ patches:
   - tests/tools/test_bot_delivery_install_launcher.py
   - tests/test_native_supplier_remediation.py
   - tests/hermes_cli/test_native_launcher_transaction.py
+  - tests/hermes_cli/test_store_launcher_supplier.py
   - tests/native_supplier.py
   - tests/test_native_supplier_fixture.py
   tests:
+  - scripts/run_tests.sh tests/hermes_cli/test_store_launcher_supplier.py tests/pm/test_python_bootstrap.py
   - python -m pytest tests/test_native_supplier_fixture.py tests/hermes_cli/test_native_launcher_transaction.py tests/hermes_cli/test_source_launcher_publication.py tests/hermes_cli/test_hermes_home_shared_launchers.py
   retirement: Remove when upstream provides equivalent pinned native pair publication and fail-closed receipts. Unit tests require the ordinary repository pytest environment; injected Windows PE generation is not native execution. Complete PM integration requires Python 3.14 and its full cached dependency set.
 - id: isolated-upgrade-empty-service-discovery
@@ -1548,7 +1651,11 @@ patches:
   - tests/gateway/test_lifecycle_counters.py
   - gateway/slash_commands_diagnostics.py
   - gateway/slash_commands_status.py
+  - gateway/run_shutdown.py
+  - gateway/run_shutdown_cache.py
+  - tests/gateway/test_lifecycle_observer_transitions.py
   tests:
+  - scripts/run_tests.sh tests/gateway/test_lifecycle_observer_transitions.py
   - scripts/run_tests.sh tests/gateway/test_lifecycle_counters.py tests/gateway/test_agents_command_delegations.py
   retirement: Remove when upstream provides equivalent opt-in, fixed-cardinality gateway lifecycle diagnostics
     with privacy and cleanup-outcome coverage.
@@ -1843,8 +1950,11 @@ patches:
   - tests/agent/test_fallback_exhaustion_cooldown.py
   - tests/agent/test_tool_call_guardrail_runtime.py
   - tests/hermes_cli/test_plugin_fallback_lifecycle.py
+  - gateway/run_config_loaders.py
+  - tests/gateway/test_lifecycle_observer_transitions.py
+  - website/docs/user-guide/features/hooks.md
   tests:
-  - scripts/run_tests.sh tests/run_agent/test_24996_fallback_exhaustion_cooldown.py tests/agent/test_primary_runtime_restore.py
+  - scripts/run_tests.sh tests/gateway/test_lifecycle_observer_transitions.py tests/agent/test_fallback_exhaustion_cooldown.py tests/agent/test_primary_runtime_restore.py
     tests/hermes_cli/test_plugins.py
   retirement: Remove when upstream provides equivalent observer hooks and episode reset.
 - id: kimi-billing-classification
@@ -2009,6 +2119,8 @@ patches:
     recovery, release drain ownership before startup acceptance, suppress scheduled and catch-up dispatch
     for the full owned transaction, and run a sealed one-restart bounded-handoff transaction whose occupancy
     and post-replacement acceptance are proven through PID-bound live status.
+    Keep native SystemdOperations tests in the Linux lane while pure controller
+    tests continue running on every host.
   paths:
   - tests/e2e/core/delivery/_cron_clock.py
   - tests/e2e/core/delivery/test_cron_virtual_clock_soak.py
@@ -2565,6 +2677,8 @@ patches:
   - gateway/session_settlement_recovery.py
   - tests/gateway/test_daemon_handoff_completion.py
   - tests/gateway/fixtures/shared_authority_peer.py
+  - tests/hermes_cli/test_runtime_maintenance_exclusion.py
+  - tests/hermes_cli/test_runtime_maintenance_oracle.py
   tests:
   - scripts/run_tests.sh tests/gateway/test_bootstrap_browse_reservation.py tests/hermes_cli/test_browse_schema_drift.py
   - scripts/run_tests.sh tests/gateway/test_agent_cache.py tests/gateway/test_shutdown_runtime_ownership.py tests/gateway/test_managed_turn_shutdown_drain.py tests/gateway/test_session_kanban.py

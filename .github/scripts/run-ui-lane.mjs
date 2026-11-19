@@ -30,7 +30,7 @@ if (lane === 'aggregate') {
       const report = `/var/tmp/hermes-ui-receipts/report-${lane}.json`
       receipt.inventory = inventory
       receipt.selected = selected
-      const r = spawnSync(process.execPath,[vitest,'run','--project','ui','--isolate','--maxWorkers',String(workerBudget()),'--reporter=json',`--outputFile=${report}`, ...exactUiFilters(inventory, selected)],{cwd,stdio:'inherit'})
+      const r = spawnSync(process.execPath,[vitest,'run','--project','ui','--isolate','--maxWorkers',String(workerBudget()),'--reporter=default','--reporter=json',`--outputFile=${report}`, ...exactUiFilters(inventory, selected)],{cwd,stdio:'inherit'})
       const result = JSON.parse(fs.readFileSync(report,'utf8'))
       const actual = result.testResults.map(t => t.name).sort()
       receipt.files = actual
