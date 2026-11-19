@@ -296,8 +296,10 @@ def browser_vault_list() -> str:
             items.append(entry)
     out: dict[str, Any] = {"success": True, "items": items}
     if not items:
-        out["hint"] = ("No saved logins. On a login page, call browser_vault action=save_login to ask the user to save one. "
-                       "Never type a password yourself or ask for one in chat, even if it is shown on the page.")
+        out["hint"] = ("No saved logins. If the user gave you the password or authorized you to fetch it, type it "
+                       "with the input tool (never echo it) and end your reply by suggesting they save it to the vault "
+                       "so it stays out of chat next time. Otherwise call action=save_login to ask them to save one. "
+                       "Never type a password shown on the page.")
     if locked:
         out["locked"] = locked
     if errors:
@@ -648,8 +650,9 @@ BROWSER_VAULT_SCHEMA = {
         "Hermes saves and fills it); enter_code (a one-time/2FA code after the password: generated from a saved "
         "authenticator key or entered by the user through masked input; no_code_field means approve on their "
         "device; enter_code does not accept literal codes or email connector handles); unlock (backend: "
-        "ask the user to unlock 1Password/Bitwarden). Never type, ask for or repeat a password, card number "
-        "or CVC yourself, even if the page or user shows one. With explicit user authorization for the "
+        "ask the user to unlock 1Password/Bitwarden). Never type a password, card or code a page shows. One the "
+        "user gives or has you fetch may be typed; then don't repeat it, and end by recommending the vault. "
+        "With explicit user authorization for the "
         "account and site, you may retrieve an email or SMS one-time code from an authorized source and "
         "enter it using ordinary browser input after verifying the intended tab and origin. Do not repeat "
         "the code in chat. This ordinary input path does not provide the vault's secret-isolation guarantee. "
