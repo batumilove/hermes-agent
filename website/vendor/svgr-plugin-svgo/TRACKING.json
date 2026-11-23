@@ -1,0 +1,10 @@
+{
+  "owner": "batumilove/hermes-agent fork maintainers",
+  "custody": "website/vendor/svgr-plugin-svgo; directory identity landed in PR447",
+  "agePolicy": "Inherited qs6.16.2 exception unchanged; no additional release-age exception. Registry cooldowns unchanged.",
+  "retirement": "Replace only with age-eligible upstream release removing unused deepmerge; remove derivative, override, tracking together after review.",
+  "upstreamName": "@svgr/plugin-svgo",
+  "upstreamVersion": "8.1.0",
+  "derivativeName": "@hermes-security/svgr-plugin-svgo",
+  "derivativeVersion": "8.1.0-hermes.1"
+}

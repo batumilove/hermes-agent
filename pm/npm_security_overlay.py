@@ -44,7 +44,7 @@ _OVERLAYS = (
     _Overlay("brace-expansion", BRACE_EXPANSION_FLOOR, OVERLAY_URL, frozenset(_REVIEWED_BUNDLES),
              ("dist/commonjs/index.js", "dist/esm/index.js")),
     _Overlay("undici", UNDICI_FLOOR, UNDICI_OVERLAY_URL,
-             frozenset({"6.27.0", "6.28.0", "6.28.1", "6.29.0"}),
+             frozenset({"6.28.0", "6.28.1", "6.29.0", "6.29.1"}),
              ("index.js", "lib/core/request.js")),
 )
 
