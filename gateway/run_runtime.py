@@ -58,6 +58,8 @@ async def _build_profile_authority(runner, name, home, *, register):
             raise RuntimeError(_store_open_failure(runner, home))
         if (await asyncio.to_thread(Path(db.db_path).resolve)).parent != home:
             raise RuntimeError(f'session authority database does not belong to the reserved profile {home}')
+        from hermes_cli.plugins import get_plugin_manager
+        get_plugin_manager().set_runtime_role("gateway")
         registry.add(home, None, name=name)
         try:
             authority = await initialize_session_authority(

@@ -1075,9 +1075,10 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         with _profile_runtime_scope(profile_home, hydrate_secrets=False):
             profile_runtime_cfg = _load_gateway_config()
             from hermes_cli.plugins import discover_plugins, get_plugin_manager
-            get_plugin_manager().set_runtime_role("gateway")
+            manager = get_plugin_manager()
+            manager.set_runtime_role("gateway")
             discover_plugins()
-            self._subscribe_plugin_rewire(get_plugin_manager(), profile_name, profile_home)
+            self._subscribe_plugin_rewire(manager, profile_name, profile_home)
             # This profile's `hooks:` block: start() registered before any profile scope existed.
             self._register_config_hooks(
                 "shell-hook/webhook registration failed for profile '%s'", profile_name, level=logging.WARNING,
