@@ -20,7 +20,11 @@ patches:
   - tests/hermes_cli/test_insights_metadata_read.py
   - tests/hermes_cli/test_insights_refresh_stage.py
   - tests/hermes_cli/test_insights_stage_platform.py
+  - tests/hermes_cli/test_insights_refresh_capacity.py
+  - tests/hermes_cli/test_insights_refresh_bytes.py
+  - website/docs/developer-guide/insights-private-refresh.md
   tests:
+  - scripts/run_tests.sh tests/hermes_cli/test_insights_refresh_capacity.py -j 2
   - scripts/run_tests.sh tests/hermes_cli/test_insights_metadata_read.py tests/hermes_cli/test_insights_refresh_stage.py tests/hermes_cli/test_insights_stage_platform.py -j 2
   - scripts/run_tests.sh tests/hermes_cli/test_state_db_cmd.py -j 2
   retirement: Remove when upstream provides equivalent bounded metadata-only reads,
@@ -1078,16 +1082,21 @@ patches:
 - id: import-restore-fidelity
   kind: core
   rationale: Restore archived POSIX rwx permissions during Hermes imports while streaming ZIP members
-    in bounded chunks and retaining secret-mode hardening.
+    in bounded chunks and retaining secret-mode hardening. Retain the backup and WhatsApp recovery
+    guidance added by PR 505 for profile-owned session paths, quick-backup credential coverage limits,
+    private credential validation and coordinated owner-assisted re-pairing.
   paths:
   - tests/hermes_cli/test_backup.py
   - hermes_cli/backup_restore.py
   - tests/hermes_cli/test_backup_restore_permissions.py
+  - website/docs/reference/faq.md
+  - website/docs/user-guide/messaging/whatsapp.md
   tests:
   - scripts/run_tests.sh tests/hermes_cli/test_backup.py
   - scripts/run_tests.sh tests/hermes_cli/test_backup_restore_permissions.py
   retirement: Remove when upstream preserves safe archived modes and imports large members with bounded
-    memory using equivalent regression coverage.
+    memory using equivalent regression coverage, and carries equivalent profile-owned WhatsApp recovery
+    and backup credential-coverage guidance.
 - id: safe-update-eol-normalization
   kind: core
   rationale: Force Git to invalidate checkout stat data before classifying CRLF-only churn so managed
