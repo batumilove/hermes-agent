@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import secrets
@@ -158,6 +159,25 @@ def parse_auth_tag(raw: Any, label: str) -> list[str]:
     if not isinstance(raw, list) or len(raw) != 4 or raw[0] != "auth" or not all(isinstance(p, str) for p in raw):
         raise ValueError(f"{label} must be a four-string auth tag")
     return raw
+
+
+def build_media_get_authorization(*, private_key: str, server: str) -> str:
+    """BUD-01 GET authorization, matching Buzz CLI's sign_blossom_get.
+
+    Callers must validate the destination before signing and never follow redirects.
+    Owner delegation is a separate x-auth-tag header, not an event tag.
+    """
+    timestamp = int(time.time())
+    tags = [["t", "get"], ["expiration", str(timestamp + 60)], ["server", server]]
+    pubkey = public_key_hex(private_key)
+    serialized = json.dumps([0, pubkey, timestamp, 24242, tags, "Get media"],
+                            separators=(",", ":"), ensure_ascii=False).encode()
+    event_id = hashlib.sha256(serialized).digest()
+    event = {"id": event_id.hex(), "pubkey": pubkey, "created_at": timestamp,
+             "kind": 24242, "tags": tags, "content": "Get media",
+             "sig": schnorr_sign(event_id, private_key).hex()}
+    encoded = base64.urlsafe_b64encode(json.dumps(event, separators=(",", ":"), ensure_ascii=False).encode())
+    return "Nostr " + encoded.decode("ascii").rstrip("=")
 
 
 def build_auth_event(
