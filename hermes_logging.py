@@ -435,14 +435,14 @@ def setup_verbose_logging() -> None:
 
     root = logging.getLogger()
 
-    if any(getattr(h, "_hermes_verbose", False) for h in _queued_file_handlers):
+    if any(getattr(h, "_hermes_verbose", False) for h in root.handlers):
         return
-    handler = logging.StreamHandler(_safe_stderr())
+    handler = _AsyncStderrHandler(_safe_stderr())
     handler.setLevel(logging.DEBUG)
     handler.setFormatter(RedactingFormatter(_LOG_FORMAT_VERBOSE, datefmt="%H:%M:%S"))
     handler._hermes_verbose = True  # type: ignore[attr-defined]
     # Console pipes can block just like files; keep all sink I/O off callers.
-    _register_queued_handler(handler)
+    root.addHandler(handler)
 
     if root.level > logging.DEBUG:
         root.setLevel(logging.DEBUG)
@@ -814,6 +814,56 @@ class _NonFormattingQueueHandler(QueueHandler):
         return copy.copy(record)
 
 
+class _AsyncStderrHandler(_NonFormattingQueueHandler):
+    """Independent, bounded stderr queue; never join the file listener.
+
+    Only this daemon touches the stream. It owns no logging handler lock,
+    so logging.shutdown cannot wait on a blocked write or flush. Console
+    records are best effort: overflow and records left at exit are dropped.
+    """
+
+    def __init__(self, stream):
+        super().__init__(queue.Queue(maxsize=1024))
+        self._stream = stream
+        self._closing = False
+        self._worker = threading.Thread(target=self._run, name="hermes-stderr", daemon=True)
+        self._worker.start()
+
+    def enqueue(self, record):
+        if not self._closing:
+            try:
+                self.queue.put_nowait(record)
+            except queue.Full:
+                pass  # never report queue overflow to the same blocked stderr
+
+    def _run(self):
+        while True:
+            record = self.queue.get()
+            if record is None:
+                return
+            try:
+                self._stream.write(self.format(record) + "\n")
+                self._stream.flush()
+            except Exception:
+                pass  # failed stderr must not recurse through logging
+
+    def close(self):
+        if not self._closing:
+            self._closing = True
+            # Make room for the stop marker without waiting for a blocked writer.
+            while True:
+                try:
+                    self.queue.put_nowait(None)
+                    break
+                except queue.Full:
+                    try:
+                        self.queue.get_nowait()
+                    except queue.Empty:
+                        pass
+            self._worker.join(.1)
+        super().close()
+
+
 def _stop_queue_listener() -> None:
     """Flush and stop the background log listener (idempotent; atexit hook, so it takes the lock)."""
     global _queue_listener
@@ -974,7 +1024,10 @@ def _reset_queued_handlers() -> None:
     with _queue_state_lock:
         root = logging.getLogger()
         for h in list(root.handlers):
-            if getattr(h, "_hermes_queue", False):
+            if isinstance(h, _AsyncStderrHandler):
+                root.removeHandler(h)
+                h.close()
+            elif getattr(h, "_hermes_queue", False):
                 root.removeHandler(h)
         for h in _queued_file_handlers:
             _quietly(h.close)
