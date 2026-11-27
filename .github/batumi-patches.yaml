@@ -2900,3 +2900,23 @@ patches:
   retirement: Remove when upstream provides equivalent bounded host-turn custody and collector attachment
     with original-reader freshness, callback lifetime, process/profile/registration binding and concurrent
     single-admission regression coverage.
+
+- id: gateway-independent-bounded-stderr
+  kind: core
+  rationale: Keep gateway stderr writes and formatting off the event loop using an
+    independent bounded console queue, without blocking file logging or lifecycle
+    operations behind stalled stderr. Preserve bounded console close and natural
+    process exit; file I/O shutdown bounds are deliberately outside this patch.
+    Offline tests require the existing repository venv and candidate source cwd;
+    no live gateway, credentials, dependency installation or restart is required.
+  paths:
+  - docs/async-stderr-candidate-evidence.md
+  - gateway/run_bootstrap.py
+  - hermes_logging.py
+  - tests/test_gateway_logging_nonblocking.py
+  - tests/test_hermes_logging.py
+  tests:
+  - /home/ubuntu/.hermes/hermes-agent/venv/bin/python -m pytest tests/test_gateway_logging_nonblocking.py tests/test_hermes_logging.py tests/test_log_isolation.py tests/gateway/test_multiplex_log_routing.py tests/hermes_cli/test_profile_delete_log_handlers.py tests/hermes_cli/test_web_logs_async.py -o addopts= -q
+  retirement: Remove when upstream provides equivalent independent bounded stderr
+    production and close, stalled-stream file/lifecycle isolation and natural-exit
+    regression coverage without changing file logging ownership.
