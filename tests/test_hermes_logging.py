@@ -480,15 +480,14 @@ class TestSetupVerboseLogging:
         hermes_logging.setup_logging(hermes_home=hermes_home)
         hermes_logging.setup_verbose_logging()
 
-        root = logging.getLogger()
+        hermes_logging.setup_verbose_logging()  # remains idempotent off-root
         verbose_handlers = [
-            h for h in root.handlers
-            if isinstance(h, logging.StreamHandler)
-            and not isinstance(h, RotatingFileHandler)
-            and getattr(h, "_hermes_verbose", False)
+            h for h in logging.getLogger().handlers
+            if getattr(h, "_hermes_verbose", False)
         ]
         assert len(verbose_handlers) == 1
         assert verbose_handlers[0].level == logging.DEBUG
+        assert isinstance(verbose_handlers[0], hermes_logging._AsyncStderrHandler)
 
 
 
