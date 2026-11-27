@@ -144,7 +144,7 @@ def _start_gateway_configure_logging(verbosity: Optional[int]) -> None:
     _best_effort(_sync_skills)
 
     # Centralized logging (agent.log INFO+, errors.log WARNING+, gateway.log gateway-only); idempotent.
-    from hermes_logging import setup_logging, _safe_stderr
+    from hermes_logging import setup_logging, _safe_stderr, _register_queued_handler
     setup_logging(hermes_home=_hermes_home, mode="gateway")
 
     def _security_audit() -> None:
@@ -166,7 +166,9 @@ def _start_gateway_configure_logging(verbosity: Optional[int]) -> None:
         _stderr_handler.setLevel(_stderr_level)
         _stderr_handler.setFormatter(_gateway_stderr_formatter())
         root = logging.getLogger()
-        root.addHandler(_stderr_handler)
+        # A supervisor's stderr pipe may stall; never hold its handler lock
+        # on the gateway event loop (or on a conversation worker).
+        _register_queued_handler(_stderr_handler)
         if _stderr_level < root.level:  # so DEBUG records can reach the handler
             root.setLevel(_stderr_level)
 

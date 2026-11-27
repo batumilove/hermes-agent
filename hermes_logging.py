@@ -435,13 +435,14 @@ def setup_verbose_logging() -> None:
 
     root = logging.getLogger()
 
-    if any(getattr(h, "_hermes_verbose", False) for h in root.handlers):
+    if any(getattr(h, "_hermes_verbose", False) for h in _queued_file_handlers):
         return
     handler = logging.StreamHandler(_safe_stderr())
     handler.setLevel(logging.DEBUG)
     handler.setFormatter(RedactingFormatter(_LOG_FORMAT_VERBOSE, datefmt="%H:%M:%S"))
     handler._hermes_verbose = True  # type: ignore[attr-defined]
-    root.addHandler(handler)
+    # Console pipes can block just like files; keep all sink I/O off callers.
+    _register_queued_handler(handler)
 
     if root.level > logging.DEBUG:
         root.setLevel(logging.DEBUG)
