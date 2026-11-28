@@ -86,6 +86,42 @@ def test_exact_hash_does_not_replace_header_validation(release_repo, monkeypatch
     assert compat.validate_receipt(repo, receipt) is None
 
 
+def test_object_info_reports_present_and_missing_without_single_lookup(release_repo):
+    repo, receipt = release_repo
+    oid = receipt['tag_object']
+    assert compat._object_info(repo, oid).split()[:2] == [oid, 'tag']
+    assert compat._object_info(repo, '0' * 40) == '0' * 40 + ' missing'
+
+
+def test_tag_proof_never_looks_up_one_object(release_repo, monkeypatch):
+    # A per-object lookup of an absent object takes Git's slow promisor path in
+    # a partial clone; the proof must only enumerate local objects.
+    repo, receipt = release_repo
+    artifact(repo, receipt)
+    remove_native(repo, receipt)
+    original, calls = compat._git, []
+    def recording(repo, *args, **kwargs):
+        calls.append(args)
+        return original(repo, *args, **kwargs)
+    monkeypatch.setattr(compat, '_git', recording)
+    assert compat.validate_receipt(repo, receipt) == receipt['release_tag'][1:]
+    assert not [args for args in calls
+                if args[0] == 'cat-file' and '--batch-all-objects' not in args
+                and ('--batch-check' in args or args[1] in ('-e', '-t'))]
+
+
+def test_object_info_enumerates_once_per_object_per_process(release_repo, monkeypatch):
+    repo, receipt = release_repo
+    compat._OBJECT_INFO.clear()
+    original, calls = compat._git, []
+    def counting(repo, *args, **kwargs):
+        calls.append(args)
+        return original(repo, *args, **kwargs)
+    monkeypatch.setattr(compat, '_git', counting)
+    assert compat._object_info(repo, receipt['tag_object']) == compat._object_info(repo, receipt['tag_object'])
+    assert len([args for args in calls if args[0] == 'cat-file']) == 1
+
+
 def test_present_native_conflict_no_artifact_fallback(release_repo, monkeypatch):
     repo, receipt = release_repo
     artifact(repo, receipt)

@@ -40,9 +40,14 @@ def _tag_proof(repo: Path, anchor: dict) -> None:
         if working.read_bytes() != artifact:
             raise ValueError("tag artifact custody mismatch")
         _check_tag_bytes(artifact, anchor)
-    # cat-file --batch-check distinguishes absent from present wrong-type objects.
-    # Errors/corruption do not become absence and never select a fallback.
-    info = _git(repo, "cat-file", "--batch-check", input_text=oid + "\n")
+    # Presence, type and size come from a full enumeration of local objects,
+    # not a lookup of this one object. In a partial clone, looking up an object
+    # that is absent locally makes Git walk its promisor path for tens of
+    # seconds of CPU before answering "missing"; on a blobless clone that
+    # overran the 10 s budget, so no worker ever finished booting. The
+    # enumeration stays on the local path and answers the same way, and still
+    # distinguishes absent from present wrong-type objects.
+    info = _object_info(repo, oid)
     if info == oid + " missing":
         if artifact is None:
             raise ValueError("annotated tag required")
@@ -55,6 +60,28 @@ def _tag_proof(repo: Path, anchor: dict) -> None:
         raise ValueError("tag representations disagree")
     if _git(repo, "rev-parse", f"{oid}^{{commit}}") != anchor["release_commit"]:
         raise ValueError("peeled release mismatch")
+
+
+_OBJECT_INFO: dict[tuple[str, str], str] = {}
+
+
+def _object_info(repo: Path, oid: str) -> str:
+    """Return ``"<oid> <type> <size>"`` or ``"<oid> missing"`` for a local object.
+
+    Errors/corruption do not become absence and never select a fallback: any
+    Git failure raises, exactly as the former single-object lookup did.
+    """
+    # One enumeration per object per process: start-up asks several times and
+    # a stale "missing" only selects the separately verified committed artifact.
+    key = (str(repo), oid)
+    if key not in _OBJECT_INFO:
+        lines = _git(
+            repo, "cat-file", "--batch-all-objects", "--unordered",
+            "--batch-check=%(objectname) %(objecttype) %(objectsize)", timeout=60,
+        ).splitlines()
+        _OBJECT_INFO[key] = next(
+            (line for line in lines if line.split(" ", 1)[0] == oid), oid + " missing")
+    return _OBJECT_INFO[key]
 
 
 def _check_tag_bytes(raw: bytes, anchor: dict) -> None:
@@ -71,13 +98,14 @@ def _check_tag_bytes(raw: bytes, anchor: dict) -> None:
             raise ValueError("annotated tag mismatch")
 
 
-def _git(repo: Path, *args: str, preserve: bool = False, input_text: str | None = None) -> str:
+def _git(repo: Path, *args: str, preserve: bool = False, input_text: str | None = None,
+         timeout: float = 10) -> str:
     env = dict(os.environ, GIT_NO_LAZY_FETCH="1", GIT_NO_REPLACE_OBJECTS="1",
                GIT_ALLOW_PROTOCOL="", GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0")
     result = subprocess.run(
         ["git", *args], cwd=repo, env=env, capture_output=True,
         text=not preserve, encoding=None if preserve else "utf-8", errors=None if preserve else "strict",
-        timeout=10, check=False, input=input_text,
+        timeout=timeout, check=False, input=input_text,
     )
     if result.returncode:
         raise ValueError("local Git proof unavailable")
